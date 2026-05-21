@@ -1,24 +1,23 @@
 ## Repo contents:
 
-|---------------------------|-----------------------------------------------------------------|
 |Files: | |
 |---------------------------|-----------------------------------------------------------------|
-| - 0-vmware-mount-dir.sh   | Script to mount host fs in VMware VM |
-| - certify-shell.sh        | Script to run vnap:latest image w/ bash shell for tool use  |
-| - convert-sign-key.sh     | Script to convert .pem format keys to .der format |
-| - docker-build.sh         | Script to build vnap:latest docker image |
-| - docker-compose.yml      | Modified docker-compose.yml that sets new env vars. |
-| - docker.env              | Environment vars for host execution context |
-| - src-diffs.sh            | Script to generate diff of orig vs. modified source files |
-| - start-vnap.sh           | Script to start RSU/OBU simulation w/ docker-compose |
-| - stop-vnap.sh            | Script to stop RSU/OBU simulation w/ docker-compose |
+| 0-vmware-mount-dir.sh   | Script to mount host fs in VMware VM |
+| certify-shell.sh        | Script to run vnap:latest image w/ bash shell for tool use  |
+| convert-sign-key.sh     | Script to convert .pem format keys to .der format |
+| docker-build.sh         | Script to build vnap:latest docker image |
+| docker-compose.yml      | Modified docker-compose.yml that sets new env vars. |
+| docker.env              | Environment vars for host execution context |
+| src-diffs.sh            | Script to generate diff of orig vs. modified source files |
+| start-vnap.sh           | Script to start RSU/OBU simulation w/ docker-compose |
+| stop-vnap.sh            | Script to stop RSU/OBU simulation w/ docker-compose |
 | | |
 |Directories: | |
-| - vnap-certs/             | Certs & keys - certify-generated and C-ITS-PKI generated
-| - vnap-docker/            | Artifacts to run RSU/OBU containers w/o docker-compose |
-| - vnap-k8s/               | Artifacts to run RSU/OBU containers in kind K8s cluster (not working) |
-| - vnap-origs/             | Original Vanetza-NAP source files modifed for security=certs |
-| - vnap-patches/           | Modified Vanetza-NAP source files. |
+| vnap-certs/             | Certs & keys - certify-generated and C-ITS-PKI generated
+| vnap-docker/            | Artifacts to run RSU/OBU containers w/o docker-compose |
+| vnap-k8s/               | Artifacts to run RSU/OBU containers in kind K8s cluster (not working) |
+| vnap-origs/             | Original Vanetza-NAP source files modifed for security=certs |
+| vnap-patches/           | Modified Vanetza-NAP source files. |
 
 ## Build Notes:
 The vnap:latest Docker image was built in an Ubuntu 24.04 VM running in VMware on a MacBook Pro.
