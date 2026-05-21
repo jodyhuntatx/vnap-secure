@@ -35,14 +35,14 @@ Otherwise it's probably easier to just clone this repo directly into the VM.
 ## Build Instructions:
 #### 1: MacOS setup w/ VMware Ubuntu 24.04 VM:
 
-##### Config option 1: Clone the vnap-docker repo in the Linux VM
-  - Run: git clone
+ - Config option 1: Clone this repo in the Linux VM
+   - Run: git clone
 
-##### Config option 2: Mount vnap-docker directory in VM
-  - Share the vnap-docker folder in the VM settings
-  - scp 0-vmware-mount-dir.sh into the Linux VM
-  - Run the script to mount it at the /mnt/hgfs mount point.
-  - You can create soft links to the mounted directory for convenience.
+ - Config option 2: Clone this repo to the host fs and mount it in VM
+   - Share the vnap-docker folder in the VM settings
+   - scp 0-vmware-mount-dir.sh into the Linux VM
+   - Run the script to mount it at the /mnt/hgfs mount point.
+   - You can create soft links to the mounted directory for convenience.
 
 #### 2. Clone vanetza-nap repo in VM
   - Clone the repo in the Linux VM in the user's home directory.
