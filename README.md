@@ -63,10 +63,10 @@ Otherwise it's probably easier to just clone this repo directly into the VM.
 ## Summary of file changes (original on left):
 
 ### Build mods:
-==========================================<br>
+* * *
 **CMakeLists.txt:** Turn BUILD_CERTIFY on:
 option(BUILD_CERTIFY "Build certify application" OFF)         | option(BUILD_CERTIFY "Build certify application" ON)
-==========================================<br>
+* * *
 **Dockerfile:** Trigger certify build & copy to /usr/bin:
                                                               > RUN cmake --build . --target certify -j $(nproc)
                                                               > RUN cp /vanetza/bin/certify /usr/local/bin/certify
