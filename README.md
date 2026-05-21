@@ -65,13 +65,14 @@ Otherwise it's probably easier to just clone this repo directly into the VM.
 ### Build mods:
 * * *
 **CMakeLists.txt:** Turn BUILD_CERTIFY on:
+
 option(BUILD_CERTIFY "Build certify application" OFF)         | option(BUILD_CERTIFY "Build certify application" ON)
 * * *
 **Dockerfile:** Trigger certify build & copy to /usr/bin:
                                                               > RUN cmake --build . --target certify -j $(nproc)
                                                               > RUN cp /vanetza/bin/certify /usr/local/bin/certify
                                                               > COPY --from=build /vanetza/bin/certify /usr/local/bin/certify
-==========================================
+* * *
 **entrypoint.sh:** Add logic to run with security=[certs | none]
 /usr/local/bin/socktap -c /config.ini                         | if [ -n "$SECURITY" ] && [ $SECURITY = certs ]; then
                                                               >     echo "Running with security=certs."
@@ -88,13 +89,13 @@ option(BUILD_CERTIFY "Build certify application" OFF)         | option(BUILD_CER
                                                               >     echo "Running with security=none."
                                                               >     /usr/local/bin/socktap -c /config.ini
                                                               > fi
-==========================================
+* * *
 
 ### Parser fixes:
-==========================================
+* * *
 **security/secured_message.cpp:** Uncomment protocol version parsing:
     //ar >> protocol_version;                                 |     ar >> protocol_version;
-==========================================
+* * *
 **security/basic_header.cpp:** Delete redundant secure header parsing:
                                                               <
     if (hdr.next_header == vanetza::geonet::NextHeaderBasic:: <
@@ -119,19 +120,19 @@ option(BUILD_CERTIFY "Build certify application" OFF)         | option(BUILD_CER
         deserialize(ignore, ar);                              <
     }                                                         <
 } // namespace vanetza                                        | } // namespace vanetza
-==========================================
+* * *
 **security/common_header:** Read first byte from archive:
     uint8_t nextHeaderAndReserved = 0x20;                     |     uint8_t nextHeaderAndReserved = 0;
     //deserialize(nextHeaderAndReserved, ar);                 |     deserialize(nextHeaderAndReserved, ar);
                                                               > 
 
 ### LRU cache fixes:
-==========================================
+* * *
 **security/backend_cryptopp.hpp:** Mutex defined to protect cache access:
                                                               > #include <mutex>
                                                               >     std::mutex m_mutex; // guards m_prng and both LRU caches
                                                               > 
-==========================================
+* * *
 **security/backend_cryptopp.cpp:** Mutex implemented to protect cache access:
     return sign_data(m_private_cache[generic_key], data);     |     std::lock_guard<std::mutex> lock(m_mutex);
                                                               >     PrivateKey key = m_private_cache[generic_key]; // copy un
@@ -142,8 +143,8 @@ option(BUILD_CERTIFY "Build certify application" OFF)         | option(BUILD_CER
                                                               >         key = m_public_cache[generic_key]; // copy under lock
                                                               >     }
                                                               >     return verify_data(key, msg, sigbuf);
-==========================================
+* * *
 **security/ecdsa256.cpp:** Make public key hash deterministic:
     boost::hash_combine(seed, k.x);                           |     boost::hash_range(seed, k.x.begin(), k.x.end());
     boost::hash_combine(seed, k.y);                           |     boost::hash_range(seed, k.y.begin(), k.y.end());
-==========================================
+* * *
