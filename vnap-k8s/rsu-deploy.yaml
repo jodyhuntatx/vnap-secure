@@ -1,0 +1,40 @@
+---
+# rsu-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsu
+  labels:
+    app: rsu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsu
+  template:
+    metadata:
+      labels:
+        app: rsu
+      annotations:
+    spec:
+      hostNetwork: true # Uses host node's network stack
+      dnsPolicy: ClusterFirstWithHostNet # Ensures internal DNS resolution
+      restartPolicy: Always           # implicit for Deployments; shown for clarity
+      containers:
+        - name: rsu
+          image: vnap:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          envFrom:
+            - configMapRef:
+                name: rsu-env
+          volumeMounts:
+            - name: vnap-certs
+              mountPath: /vnap-certs
+      volumes:
+        - name: vnap-certs
+          hostPath:
+            path: /vnap-certs
+            type: Directory

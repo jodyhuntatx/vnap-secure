@@ -1,0 +1,40 @@
+---
+# obu-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obu
+  labels:
+    app: obu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: obu
+  template:
+    metadata:
+      labels:
+        app: obu
+      annotations:
+    spec:
+      hostNetwork: true # Uses host node's network stack
+      dnsPolicy: ClusterFirstWithHostNet # Ensures internal DNS resolution
+      restartPolicy: Always           # implicit for Deployments; shown for clarity
+      containers:
+        - name: obu
+          image: vnap:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          envFrom:
+            - configMapRef:
+                name: obu-env
+          volumeMounts:
+            - name: vnap-certs
+              mountPath: /vnap-certs
+      volumes:
+        - name: vnap-certs
+          hostPath:
+            path: /vnap-certs
+            type: Directory

@@ -1,0 +1,44 @@
+---
+# rsu-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsu
+  labels:
+    app: rsu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsu
+  template:
+    metadata:
+      labels:
+        app: rsu
+      annotations:
+        # Multus: attach pod to vanetzalan0 bridge with static IP 192.168.98.10
+        k8s.v1.cni.cncf.io/networks: |
+          [{
+            "name": "vanetzalan0",
+            "ips": ["192.168.98.10/24"]
+          }]
+    spec:
+      restartPolicy: Always           # implicit for Deployments; shown for clarity
+      containers:
+        - name: rsu
+          image: vnap:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          envFrom:
+            - configMapRef:
+                name: rsu-env         # equivalent of --env-file rsu.env
+          volumeMounts:
+            - name: vnap-certs
+              mountPath: /vnap-certs
+      volumes:
+        - name: vnap-certs
+          hostPath:
+            path: /vnap-certs
+            type: Directory

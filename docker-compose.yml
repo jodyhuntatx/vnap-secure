@@ -1,0 +1,50 @@
+services:
+    rsu:
+        hostname: rsu
+        restart: always
+        image: vnap:latest
+        volumes:
+            - $EXEC_DIR/vnap-certs:/vnap-certs
+        cap_add:
+            - "NET_ADMIN"
+        environment:
+            - VANETZA_STATION_ID=1
+            - VANETZA_STATION_TYPE=15
+            - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
+            - VANETZA_INTERFACE=br0
+            - START_EMBEDDED_MOSQUITTO=true
+            - SUPPORT_MAC_BLOCKING=true
+            - AT_CERT=/vnap-certs/c-its-pki/bke-tickets/bke_at_0.cert
+            - AT_KEY=/vnap-certs/c-its-pki/bke-tickets/bke_at_0_sign.der
+            - AA_CERT=/vnap-certs/c-its-pki/aa.cert
+            - ROOT_CERT=/vnap-certs/c-its-pki/root_ca.cert
+        networks:
+            vanetzalan0:
+                ipv4_address: 192.168.98.10
+
+    obu:
+        hostname: obu
+        restart: always
+        image: vnap:latest
+        volumes:
+            - $EXEC_DIR/vnap-certs:/vnap-certs
+        cap_add:
+            - "NET_ADMIN"
+        environment:
+            - VANETZA_STATION_ID=2
+            - VANETZA_STATION_TYPE=5
+            - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:02
+            - VANETZA_INTERFACE=br0
+            - START_EMBEDDED_MOSQUITTO=true
+            - SUPPORT_MAC_BLOCKING=true
+            - AT_CERT=/vnap-certs/c-its-pki/bke-tickets/bke_at_1.cert
+            - AT_KEY=/vnap-certs/c-its-pki/bke-tickets/bke_at_1_sign.der
+            - AA_CERT=/vnap-certs/c-its-pki/aa.cert
+            - ROOT_CERT=/vnap-certs/c-its-pki/root_ca.cert
+        networks:
+            vanetzalan0:
+                ipv4_address: 192.168.98.20
+            
+networks:
+  vanetzalan0:
+    external: true

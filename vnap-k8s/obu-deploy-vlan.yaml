@@ -1,0 +1,43 @@
+---
+# obu-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obu
+  labels:
+    app: obu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: obu
+  template:
+    metadata:
+      labels:
+        app: obu
+      annotations:
+        k8s.v1.cni.cncf.io/networks: |
+          [{
+            "name": "vanetzalan0",
+            "ips": ["192.168.98.20/24"]
+          }]
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: obu
+          image: vnap:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          envFrom:
+            - configMapRef:
+                name: obu-env
+          volumeMounts:
+            - name: vnap-certs
+              mountPath: /vnap-certs
+      volumes:
+        - name: vnap-certs
+          hostPath:
+            path: /vnap-certs
+            type: Directory
