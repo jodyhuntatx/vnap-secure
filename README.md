@@ -60,8 +60,6 @@ Otherwise it's probably easier to just clone this repo directly into the VM.
   - Run ./start-vnap.sh to bring up the RSU and OBU containers.
   - It will bring up the log for the RSU container to monitor execution. 
 
-## Summary of file changes (original on left):
-
 ### Change Summary
 
 ---
