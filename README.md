@@ -198,3 +198,21 @@ Otherwise it's probably easier to just clone this repo directly into the VM.
 + boost::hash_range(seed, k.x.begin(), k.x.end());
 + boost::hash_range(seed, k.y.begin(), k.y.end());
 ```
+
+---
+
+## Certificate Validation
+
+### `tools/socktap/main.cpp`: Turn on strict certificate validation when `security=certs`, only use `Non_Strict` when `security=none`
+
+```diff
+-         // NON_STRICT
+-         mib.itsGnSnDecapResultHandling = vanetza::geonet::SecurityDecapHandling::Non_Strict;
+          if (security) {
+              mib.itsGnSecurity = true;
++             // Strict mode (the MIB default) is kept: reject messages that fail PKI validation
++         } else {
++             // Without a security entity, accept unsigned messages from the network
++             mib.itsGnSnDecapResultHandling = vanetza::geonet::SecurityDecapHandling::Non_Strict;
+          }
+```

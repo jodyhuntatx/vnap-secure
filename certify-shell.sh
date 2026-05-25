@@ -2,7 +2,7 @@
 
 docker run -d \
   --name vnap-tools \
-  --volume /home/demo/vnap-certs:/vnap-certs \
+  --volume /Users/josephhunt/COIMBRA/vnap-secure/vnap-certs:/vnap-certs \
   --entrypoint /bin/sleep \
   vnap:latest \
   infinity

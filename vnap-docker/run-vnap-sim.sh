@@ -16,7 +16,7 @@ docker run -d \
     --network vanetzalan0 \
     --ip 192.168.98.10 \
     --cap-add "NET_ADMIN" \
-    --env-file rsu.env \
+    --env-file rsu-certify.env \
     vnap:latest
 
 docker run -d \
