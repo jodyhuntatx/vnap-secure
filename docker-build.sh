@@ -23,6 +23,8 @@ cp_origs() {
   cp vnap-origs/ecdsa256.cpp $VNAP_REPO/vanetza/security
   cp vnap-origs/backend_cryptopp.hpp $VNAP_REPO/vanetza/security
   cp vnap-origs/backend_cryptopp.cpp $VNAP_REPO/vanetza/security
+  cp vnap-origs/main.cpp $VNAP_REPO/tools/socktap
+  cp vnap-origs/verify_service.cpp $VNAP_REPO/vanetza/security
 }
 
 cp_patches() {
@@ -40,6 +42,9 @@ cp_patches() {
   cp vnap-patches/ecdsa256.cpp $VNAP_REPO/vanetza/security
   cp vnap-patches/backend_cryptopp.hpp $VNAP_REPO/vanetza/security
   cp vnap-patches/backend_cryptopp.cpp $VNAP_REPO/vanetza/security
+  cp vnap-patches/main.cpp $VNAP_REPO/tools/socktap
+  # verify_service.cpp debug version w/ output to stderr
+  cp vnap-patches/verify_service.cpp $VNAP_REPO/vanetza/security
 }
 
 main "$@"

@@ -1,9 +1,9 @@
 #!/bin/bash
 
-OUTPUT_DIR=/vnap-certs/certify
+OUTPUT_DIR=/vnap-secure/vnap-certs/certify
 
-# This script to be executed in an instance of a vnap:latest image.
-# It uses vanetza certify tool tt generate PKI authority creds
+# This script must be executed in an instance of a vnap:latest image.
+# It uses vanetza certify tool to generate PKI authority creds.
 
 main() {
     cd $OUTPUT_DIR
@@ -33,8 +33,9 @@ gen-native() {
     #                                         (DEN) if empty.
     echo "Generating root CA cert..."
     certify generate-root --output ./root_ca_vnap.cert \
-                            --subject-key ./root_ca_vnap.key \
-                            --subject-name "Test root CA"
+                          --subject-key ./root_ca_vnap.key \
+                          --subject-name "Test root CA" \
+                          --aid 36 --aid 37 --aid 141
 
     ########################################### 
     # Generate AA signing key & cert
@@ -61,7 +62,8 @@ gen-native() {
                           --sign-key ./root_ca_vnap.key \
                           --sign-cert ./root_ca_vnap.cert \
                           --subject-key ./aa_vnap.key \
-                          --subject-name "Authorization Authority"
+                          --subject-name "Authorization Authority" \
+                          --aid 36 --aid 37 --aid 141
 
 
     ###########################################
@@ -83,7 +85,8 @@ gen-native() {
     #   --denm-permissions arg DENM permissions as binary string (e.g. 
     #                          '000000000000000000000000' to grant no SSPs)
     #   --permit-gn-mgmt       Generated ticket can be used to sign GN-MGMT messages 
-    #                          (e.g. beacons).
+    #                          (e.g. beacons). If used, root & AA certs must be
+    #                          generated w/ --aid 141
     echo "Generating ticket cert..."
     certify generate-ticket \
                         --output ./ticket_vnap.cert \
@@ -91,8 +94,7 @@ gen-native() {
                         --sign-key ./aa_vnap.key \
                         --sign-cert ./aa_vnap.cert \
                         --cam-permissions '1111111111111100' \
-                        --denm-permissions '000000000000000000000000' \
-                        --permit-gn-mgmt
+                        --denm-permissions '000000000000000000000000'
 }
 
 main "$@"

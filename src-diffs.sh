@@ -38,12 +38,12 @@ sdiff -s vnap-origs/backend_cryptopp.cpp vnap-patches/backend_cryptopp.cpp
 printf '=%.0s' $(seq 1 $(tput cols))
 echo; echo "### security/ecdsa256.cpp: Make public key hash deterministic:"
 sdiff -s vnap-origs/ecdsa256.cpp vnap-patches/ecdsa256.cpp
+printf '=%.0s' $(seq 1 $(tput cols))
 
 echo
 printf '#%.0s' $(seq 1 $(tput cols))
-echo; echo "Certificate validation:" 
+echo; echo "Turn on strict certficate validation:"
 printf '=%.0s' $(seq 1 $(tput cols))
-echo; echo "### tools/socktap/main.cpp: Turn on strict certificate validation when security=certs, only use Non_Strict when security=none"
+echo; echo "### tools/socktap/main.cpp: Only use Non_Strict for secure=none"
 sdiff -s vnap-origs/main.cpp vnap-patches/main.cpp
 
-printf '=%.0s' $(seq 1 $(tput cols))
