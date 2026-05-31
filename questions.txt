@@ -1,0 +1,7 @@
+In default_certificate_validator.cpp
+line 113: new logic
+    // Assurance_Level is optional. Only enforce ordering when both certs carry it.
+    if (!certificate_assurance || !signer_assurance) {
+        return true;
+    }
+should maybe return False if signer has it?

@@ -1,17 +1,16 @@
 #!/bin/bash
 
-OUTPUT_DIR=/vnap-certs/certify
+OUTPUT_DIR=./certify
 
 # This script to be executed in an instance of a vnap:latest image.
 # It uses vanetza certify tool tt generate PKI authority creds
 
 main() {
     cd $OUTPUT_DIR
-    rm ./*
-    gen-native
+    gen-certify
 }
 
-gen-native() {
+gen-certify() {
     ########################################### 
     # certify generate-key
     # Available options:
@@ -30,11 +29,15 @@ gen-native() {
     #   --days arg (=365)                     Validity in days.
     #   --aid arg                             Allowed ITS-AIDs to restrict 
     #                                         permissions, defaults to 36 (CA) and 37
-    #                                         (DEN) if empty.
+    #                                         (DEN) if empty. If ITS ticket cert includes
+    #                                         --permit-gn-mgmt flag then --aid 141 must
+    #                                         be included for both AT and root certs.
     echo "Generating root CA cert..."
     certify generate-root --output ./root_ca_vnap.cert \
                             --subject-key ./root_ca_vnap.key \
-                            --subject-name "Test root CA"
+                            --subject-name "Test root CA" \
+			    --aid 36 --aid 37
+#			    --aid 141
 
     ########################################### 
     # Generate AA signing key & cert
@@ -55,13 +58,17 @@ gen-native() {
     #   --days arg (=180)                     Validity in days.
     #   --aid arg                             Allowed ITS-AIDs to restrict 
     #                                         permissions, defaults to 36 (CA) and 37
-    #                                        (DEN) if empty.
+    #                                         (DEN) if empty. If ITS ticket cert includes
+    #                                         --permit-gn-mgmt flag then --aid 141 must
+    #                                         be included for both AT and root certs.
     echo "Generating AA cert..."
     certify generate-aa --output ./aa_vnap.cert \
                           --sign-key ./root_ca_vnap.key \
                           --sign-cert ./root_ca_vnap.cert \
                           --subject-key ./aa_vnap.key \
-                          --subject-name "Authorization Authority"
+                          --subject-name "Authorization Authority" \
+			  --aid 36 --aid 37
+#			  --aid 141
 
 
     ###########################################
@@ -91,8 +98,7 @@ gen-native() {
                         --sign-key ./aa_vnap.key \
                         --sign-cert ./aa_vnap.cert \
                         --cam-permissions '1111111111111100' \
-                        --denm-permissions '000000000000000000000000' \
-                        --permit-gn-mgmt
+                        --denm-permissions '000000000000000000000000'
 }
 
 main "$@"

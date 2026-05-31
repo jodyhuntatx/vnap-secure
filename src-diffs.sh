@@ -42,8 +42,22 @@ printf '=%.0s' $(seq 1 $(tput cols))
 
 echo
 printf '#%.0s' $(seq 1 $(tput cols))
-echo; echo "Turn on strict certficate validation:"
+echo; echo "Certificate validation fixes:"
 printf '=%.0s' $(seq 1 $(tput cols))
 echo; echo "### tools/socktap/main.cpp: Only use Non_Strict for secure=none"
 sdiff -s vnap-origs/main.cpp vnap-patches/main.cpp
+echo; echo "Fix time sync issues that cause certificate rejection."
+printf '=%.0s' $(seq 1 $(tput cols))
+echo; echo "### tools/socktap/time_trigger.hpp: Add a dedicated 10ms wall-clock sync pulse to TimeTrigger"
+sdiff -s vnap-origs/time_trigger.hpp vnap-patches/time_trigger.hpp
+printf '=%.0s' $(seq 1 $(tput cols))
+echo; echo "### tools/socktap/time_trigger.cpp: Add a dedicated 10ms wall-clock sync pulse to TimeTrigger"
+sdiff -s vnap-origs/time_trigger.cpp vnap-patches/time_trigger.cpp
+printf '=%.0s' $(seq 1 $(tput cols))
+echo; echo "### vanetza/security/default_certificate_validator.cpp: Make Assurance_Level optional"
+sdiff -s vnap-origs/default_certificate_validator.cpp vnap-patches/default_certificate_validator.cpp
+printf '=%.0s' $(seq 1 $(tput cols))
+echo; echo "### vanetza/security/verify_service.cpp: Make good verification decisions w/ debug output"
+sdiff -s vnap-origs/verify_service.cpp vnap-patches/verify_service.cpp
 
+printf '=%.0s' $(seq 1 $(tput cols))

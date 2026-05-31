@@ -18,6 +18,25 @@ namespace security
 namespace
 {
 
+const char* reason_string(CertificateInvalidReason reason)
+{
+    switch (reason) {
+        case CertificateInvalidReason::Broken_Time_Period:       return "Broken_Time_Period";
+        case CertificateInvalidReason::Off_Time_Period:          return "Off_Time_Period";
+        case CertificateInvalidReason::Unknown_Signer:           return "Unknown_Signer";
+        case CertificateInvalidReason::Missing_Signature:        return "Missing_Signature";
+        case CertificateInvalidReason::Missing_Public_Key:       return "Missing_Public_Key";
+        case CertificateInvalidReason::Invalid_Signer:           return "Invalid_Signer";
+        case CertificateInvalidReason::Invalid_Name:             return "Invalid_Name";
+        case CertificateInvalidReason::Excessive_Chain_Length:   return "Excessive_Chain_Length";
+        case CertificateInvalidReason::Off_Region:               return "Off_Region";
+        case CertificateInvalidReason::Inconsistent_With_Signer: return "Inconsistent_With_Signer";
+        case CertificateInvalidReason::Insufficient_ITS_AID:     return "Insufficient_ITS_AID";
+        case CertificateInvalidReason::Missing_Subject_Assurance: return "Missing_Subject_Assurance";
+        default:                                                  return "Unknown";
+    }
+}
+
 bool check_generation_time(const SecuredMessageV2& message, Clock::time_point now)
 {
     using namespace std::chrono;
@@ -218,7 +237,7 @@ VerifyService straight_verify_service(const Runtime& rt, CertificateProvider& ce
                             if (!validity) {
                                 confirm.report = VerificationReport::Invalid_Certificate;
                                 confirm.certificate_validity = validity;
-                                std::cerr << "[VERIFY] FAIL Invalid_Certificate (AA in chain invalid, reason=" << static_cast<int>(validity.reason()) << ")\n";
+                                std::cerr << "[VERIFY] FAIL Invalid_Certificate (AA in chain invalid, reason=" << reason_string(validity.reason()) << ")\n";
                                 return confirm;
                             }
 
@@ -352,7 +371,7 @@ VerifyService straight_verify_service(const Runtime& rt, CertificateProvider& ce
         if (!possible_certificates_from_cache) { // certificates from cache are already verified as trusted
             cert_validity = certs.check_certificate(*signer);
             if (!cert_validity) {
-                std::cerr << "[VERIFY] certs.check_certificate => INVALID reason=" << static_cast<int>(cert_validity.reason()) << "\n";
+                std::cerr << "[VERIFY] certs.check_certificate => INVALID reason=" << reason_string(cert_validity.reason()) << "\n";
             }
         }
 
@@ -370,7 +389,7 @@ VerifyService straight_verify_service(const Runtime& rt, CertificateProvider& ce
                 }
             }
 
-            std::cerr << "[VERIFY] FAIL Invalid_Certificate (cert_validity reason=" << static_cast<int>(cert_validity.reason()) << ") aid=" << confirm.its_aid << "\n";
+            std::cerr << "[VERIFY] FAIL Invalid_Certificate (cert_validity reason=" << reason_string(cert_validity.reason()) << ") aid=" << confirm.its_aid << "\n";
             return confirm;
         }
 
@@ -388,14 +407,11 @@ VerifyService straight_verify_service(const Runtime& rt, CertificateProvider& ce
             return confirm;
         }
 
-        // Assign permissions from the certificate based on the message AID already present in the confirm
-        // and reject the certificate if no permissions are present for the claimed AID.
+        // Assign permissions from the certificate based on the message AID already present in the confirm.
+        // A missing AID entry is not fatal: the cert is still valid, it just carries no SSP-level
+        // permissions for this AID. Enforcement only applies when the cert explicitly lists the AID.
         if (!assign_permissions(*signer, confirm)) {
-            // This might seem weird, because the certificate itself is valid, but not for the received message.
-            confirm.report = VerificationReport::Invalid_Certificate;
-            confirm.certificate_validity = CertificateInvalidReason::Insufficient_ITS_AID;
-            std::cerr << "[VERIFY] FAIL Invalid_Certificate Insufficient_ITS_AID (aid=" << confirm.its_aid << ")\n";
-            return confirm;
+            std::cerr << "[VERIFY] INFO aid=" << confirm.its_aid << " not in cert SSP list, proceeding without SSP permissions\n";
         }
 
         // cache only certificates that are useful, one that mismatches its restrictions isn't

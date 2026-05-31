@@ -25,6 +25,9 @@ cp_origs() {
   cp vnap-origs/backend_cryptopp.cpp $VNAP_REPO/vanetza/security
   cp vnap-origs/main.cpp $VNAP_REPO/tools/socktap
   cp vnap-origs/verify_service.cpp $VNAP_REPO/vanetza/security
+  cp vnap-orig/time_trigger.hpp $VNAP_REPO/tools/socktap
+  cp vnap-orig/time_trigger.cpp $VNAP_REPO/tools/socktap
+  cp vnap-origs/default_certificate_validator.cpp VNAP_REPO/vanetza/security
 }
 
 cp_patches() {
@@ -45,6 +48,11 @@ cp_patches() {
   cp vnap-patches/main.cpp $VNAP_REPO/tools/socktap
   # verify_service.cpp debug version w/ output to stderr
   cp vnap-patches/verify_service.cpp $VNAP_REPO/vanetza/security
+  # Add a dedicated 10ms wall-clock sync pulse to TimeTrigger
+  cp vnap-patches/time_trigger.hpp $VNAP_REPO/tools/socktap
+  cp vnap-patches/time_trigger.cpp $VNAP_REPO/tools/socktap
+  # Make Assurance_Level optional — only enforce the if both certs carry the attribute
+  cp vnap-patches/default_certificate_validator.cpp $VNAP_REPO/vanetza/security
 }
 
 main "$@"
