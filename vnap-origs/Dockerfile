@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     && rm -rf /var/lib/apt/lists/*
 
+
 # Zenoh dependencies
 RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
@@ -52,12 +53,13 @@ RUN git clone https://github.com/eclipse-zenoh/zenoh-cpp.git \
     && cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DZENOHCXX_ENABLE_TESTS=OFF -DZENOHCXX_ENABLE_EXAMPLES=OFF -Dzenohc_DIR=/usr/local/lib/cmake/zenohc \
     && cmake --build . --target install
 
+
 # Prometheus dependencies
 WORKDIR /tmp
 RUN git clone https://github.com/jupp0r/prometheus-cpp.git
 WORKDIR /tmp/prometheus-cpp
-RUN git submodule update --init
 RUN git checkout a944ec100251019cd44d070bbf2fd22f5139d6d0
+RUN git submodule update --init
 RUN cmake -B_build -DCPACK_GENERATOR=DEB -DBUILD_SHARED_LIBS=ON
 RUN cmake --build _build --target package --parallel $(nproc)
 RUN dpkg -i _build/*.deb
@@ -71,6 +73,8 @@ RUN cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/ -DBUILD_SHARED_LIBS=ON
 RUN cmake --build . --target install --parallel $(nproc)
 WORKDIR /tmp
 RUN git clone https://github.com/eProsima/Fast-CDR.git
+WORKDIR /tmp/Fast-CDR/
+RUN git checkout v2.2.6
 RUN mkdir /tmp/Fast-CDR/build
 WORKDIR /tmp/Fast-CDR/build
 RUN cmake ..
@@ -78,7 +82,7 @@ RUN cmake --build . --target install --parallel $(nproc)
 WORKDIR /tmp
 RUN git clone https://github.com/eProsima/Fast-DDS.git
 WORKDIR /tmp/Fast-DDS/
-RUN git checkout v2.13.2
+RUN git checkout v2.14.6
 RUN mkdir /tmp/Fast-DDS/build
 WORKDIR /tmp/Fast-DDS/build
 RUN cmake ..
@@ -89,7 +93,7 @@ RUN mkdir /vanetza
 COPY . /vanetza
 WORKDIR /vanetza
 RUN rm -f CMakeCache.txt
-RUN cmake .
+RUN cmake . -DBUILD_SOCKTAP=ON
 RUN cmake --build . --target socktap -j $(nproc)
 RUN cp /vanetza/bin/socktap /usr/local/bin/socktap
 

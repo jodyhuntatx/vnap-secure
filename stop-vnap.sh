@@ -1,6 +1,7 @@
 #!/bin/bash
+# Stop the RSU/OBU pair started by start-vnap.sh and remove the vanetzalan0 network.
 
 source docker.env
 
-docker rm -f ${DIR_NAME}_rsu_1 ${DIR_NAME}_obu_1 &> /dev/null
+cd $EXEC_DIR && docker-compose down &> /dev/null
 docker network rm vanetzalan0 &> /dev/null

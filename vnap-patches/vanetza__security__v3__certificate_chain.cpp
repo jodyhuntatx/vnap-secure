@@ -1,0 +1,216 @@
+#include <vanetza/asn1/asn1c_wrapper.hpp>
+#include <vanetza/security/backend.hpp>
+#include <vanetza/security/v3/certificate_cache.hpp>
+#include <vanetza/security/v3/certificate_chain.hpp>
+#include <boost/optional.hpp>
+
+namespace vanetza
+{
+namespace security
+{
+namespace v3
+{
+
+namespace
+{
+
+// memoized digests are dropped wholesale beyond this size (e.g. many pseudonym ATs over time)
+constexpr std::size_t max_verified_digests = 4096;
+
+HashAlgorithm issuer_hash_algorithm(const asn1::EtsiTs103097Certificate& cert)
+{
+    switch (cert.issuer.present) {
+        case Vanetza_Security_IssuerIdentifier_PR_sha256AndDigest:
+            return HashAlgorithm::SHA256;
+        case Vanetza_Security_IssuerIdentifier_PR_sha384AndDigest:
+            return HashAlgorithm::SHA384;
+        case Vanetza_Security_IssuerIdentifier_PR_self:
+            switch (cert.issuer.choice.self) {
+                case Vanetza_Security_HashAlgorithm_sha256:
+                    return HashAlgorithm::SHA256;
+                case Vanetza_Security_HashAlgorithm_sha384:
+                    return HashAlgorithm::SHA384;
+                default:
+                    return HashAlgorithm::Unspecified;
+            }
+        default:
+            return HashAlgorithm::Unspecified;
+    }
+}
+
+ByteBuffer encode_canonical(const asn1::EtsiTs103097Certificate& cert)
+{
+    if (is_canonical(cert)) {
+        return CertificateView { &cert }.encode();
+    }
+    auto canonical = canonicalize(cert);
+    return canonical ? canonical->encode() : ByteBuffer {};
+}
+
+ByteBuffer encode_canonical_tbs(const asn1::EtsiTs103097Certificate& cert)
+{
+    if (is_canonical(cert)) {
+        return asn1::encode_oer(asn_DEF_Vanetza_Security_ToBeSignedCertificate, &cert.toBeSigned);
+    }
+    auto canonical = canonicalize(cert);
+    if (!canonical) {
+        return ByteBuffer {};
+    }
+    return asn1::encode_oer(asn_DEF_Vanetza_Security_ToBeSignedCertificate, &(*canonical)->toBeSigned);
+}
+
+} // namespace
+
+bool verify_certificate_signature(Backend& backend, const asn1::EtsiTs103097Certificate& cert,
+    const asn1::EtsiTs103097Certificate& issuer)
+{
+    const HashAlgorithm algo = issuer_hash_algorithm(cert);
+    if (algo == HashAlgorithm::Unspecified) {
+        return false;
+    }
+
+    auto signature = get_signature(cert);
+    auto issuer_key = get_public_key(issuer);
+    if (!signature || !issuer_key) {
+        return false;
+    }
+
+    ByteBuffer tbs = encode_canonical_tbs(cert);
+    if (tbs.empty()) {
+        return false;
+    }
+
+    // self-signed: signer identifier input is the empty string
+    ByteBuffer signer;
+    if (cert.issuer.present != Vanetza_Security_IssuerIdentifier_PR_self) {
+        signer = encode_canonical(issuer);
+        if (signer.empty()) {
+            return false;
+        }
+    }
+
+    ByteBuffer tbs_hash = backend.calculate_hash(algo, tbs);
+    ByteBuffer signer_hash = backend.calculate_hash(algo, signer);
+    ByteBuffer concat;
+    concat.reserve(tbs_hash.size() + signer_hash.size());
+    concat.insert(concat.end(), tbs_hash.begin(), tbs_hash.end());
+    concat.insert(concat.end(), signer_hash.begin(), signer_hash.end());
+    return backend.verify_digest(*issuer_key, backend.calculate_hash(algo, concat), *signature);
+}
+
+bool validity_within_issuer(const asn1::EtsiTs103097Certificate& cert, const asn1::EtsiTs103097Certificate& issuer)
+{
+    auto cert_validity = CertificateView { &cert }.get_start_and_end_validity();
+    auto issuer_validity = CertificateView { &issuer }.get_start_and_end_validity();
+    return cert_validity.start_validity >= issuer_validity.start_validity &&
+        cert_validity.end_validity <= issuer_validity.end_validity;
+}
+
+CertificateChainVerifier::CertificateChainVerifier(Backend& backend, const CertificateCache& trust_store) :
+    m_backend(backend), m_trust_store(trust_store)
+{
+}
+
+bool CertificateChainVerifier::is_verified(const HashedId8& digest) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_verified.count(digest) > 0;
+}
+
+void CertificateChainVerifier::mark_verified(const HashedId8& digest)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_verified.size() >= max_verified_digests) {
+        m_verified.clear();
+    }
+    m_verified.insert(digest);
+}
+
+CertificateValidity CertificateChainVerifier::verify_ca(const asn1::EtsiTs103097Certificate& ca, Clock::time_point now)
+{
+    CertificateView ca_view { &ca };
+    if (!ca_view.is_ca_certificate()) {
+        return CertificateInvalidReason::Invalid_Signer;
+    } else if (!ca_view.valid_at_timepoint(now)) {
+        return CertificateInvalidReason::Off_Time_Period;
+    }
+
+    auto ca_digest = ca_view.calculate_digest();
+    if (!ca_digest) {
+        return CertificateInvalidReason::Invalid_Signer;
+    } else if (is_verified(*ca_digest)) {
+        return CertificateValidity::valid();
+    }
+
+    const Certificate* root = nullptr;
+    if (ca_view.issuer_is_self()) {
+        // a root CA is only acceptable if it is itself a trust anchor
+        root = m_trust_store.lookup(*ca_digest);
+    } else {
+        auto root_digest = ca_view.issuer_digest();
+        root = root_digest ? m_trust_store.lookup(*root_digest) : nullptr;
+    }
+    if (!root) {
+        return CertificateInvalidReason::Unknown_Signer;
+    }
+
+    const asn1::EtsiTs103097Certificate& root_asn = *root->content();
+    CertificateView root_view { &root_asn };
+    if (!root_view.issuer_is_self() || !root_view.is_ca_certificate()) {
+        return CertificateInvalidReason::Invalid_Signer;
+    } else if (!root_view.valid_at_timepoint(now)) {
+        return CertificateInvalidReason::Off_Time_Period;
+    } else if (!verify_certificate_signature(m_backend, root_asn, root_asn)) {
+        return CertificateInvalidReason::Missing_Signature;
+    }
+
+    if (!ca_view.issuer_is_self()) {
+        if (!validity_within_issuer(ca, root_asn)) {
+            return CertificateInvalidReason::Inconsistent_With_Signer;
+        } else if (!verify_certificate_signature(m_backend, ca, root_asn)) {
+            return CertificateInvalidReason::Missing_Signature;
+        }
+    }
+
+    mark_verified(*ca_digest);
+    return CertificateValidity::valid();
+}
+
+CertificateValidity CertificateChainVerifier::verify(const asn1::EtsiTs103097Certificate& at, const CertificateCache* cache, Clock::time_point now)
+{
+    CertificateView at_view { &at };
+    auto at_digest = at_view.calculate_digest();
+    if (!at_digest) {
+        return CertificateInvalidReason::Invalid_Signer;
+    }
+
+    auto aa_digest = at_view.issuer_digest();
+    if (at_view.issuer_is_self() || !aa_digest) {
+        return CertificateInvalidReason::Invalid_Signer;
+    }
+
+    const Certificate* aa = cache ? cache->lookup(*aa_digest) : nullptr;
+    if (!aa) {
+        return CertificateInvalidReason::Unknown_Signer;
+    }
+
+    // AA chain (memoized) is checked on every call, so an AA that expires is noticed
+    const asn1::EtsiTs103097Certificate& aa_asn = *aa->content();
+    CertificateValidity aa_validity = verify_ca(aa_asn, now);
+    if (!aa_validity) {
+        return aa_validity;
+    } else if (is_verified(*at_digest)) {
+        return CertificateValidity::valid();
+    } else if (!validity_within_issuer(at, aa_asn)) {
+        return CertificateInvalidReason::Inconsistent_With_Signer;
+    } else if (!verify_certificate_signature(m_backend, at, aa_asn)) {
+        return CertificateInvalidReason::Missing_Signature;
+    }
+
+    mark_verified(*at_digest);
+    return CertificateValidity::valid();
+}
+
+} // namespace v3
+} // namespace security
+} // namespace vanetza
