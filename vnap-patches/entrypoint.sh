@@ -49,7 +49,8 @@ fi
 # Security mode dispatch on $SECURITY (vnap-secure):
 #   unset      -> socktap with config.ini settings (security=none by default)
 #   certs      -> static AT cert/key; AA via --certificate-chain, root via --trusted-certificate
-#   pseudonyms -> pseudonym pool rotation (not yet ported to release2)
+#   pseudonyms -> pseudonym pool rotation: PSEUDO_CERT_0/PSEUDO_KEY_0, PSEUDO_CERT_1/PSEUDO_KEY_1, ...
+#                 (consecutive pairs from index 0), PSEUDO_LIFETIME seconds per pseudonym (default 120)
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
@@ -68,8 +69,34 @@ if [ -n "$SECURITY" ]; then
             set +x
             ;;
         pseudonyms)
-            echo "SECURITY=pseudonyms is not yet supported on the release2 build."
-            exit 1
+            export VANETZA_SECURITY=${VANETZA_SECURITY:-certs-v2}
+            # POSIX sh (dash): collect PSEUDO_CERT_<i>/PSEUDO_KEY_<i> pairs into the positional parameters
+            set --
+            i=0
+            while true; do
+                eval "cert=\${PSEUDO_CERT_$i:-}"
+                eval "key=\${PSEUDO_KEY_$i:-}"
+                [ -n "$cert" ] || break
+                if [ -z "$key" ]; then
+                    echo "PSEUDO_CERT_$i is set but PSEUDO_KEY_$i is not."
+                    exit 1
+                fi
+                set -- "$@" --pseudonym-certificate "$cert" --pseudonym-certificate-key "$key"
+                i=$((i + 1))
+            done
+            if [ $i -eq 0 ]; then
+                echo "SECURITY=pseudonyms needs at least PSEUDO_CERT_0 and PSEUDO_KEY_0."
+                exit 1
+            fi
+            echo "Running with $VANETZA_SECURITY, pseudonym pool of $i certificate(s)..."
+            set -x
+            /usr/local/bin/socktap \
+                --config /config.ini \
+                "$@" \
+                --pseudonym-lifetime ${PSEUDO_LIFETIME:-120} \
+                --certificate-chain $AA_CERT \
+                --trusted-certificate $ROOT_CERT
+            set +x
             ;;
         *)
             echo "Invalid value $SECURITY for SECURITY env var."

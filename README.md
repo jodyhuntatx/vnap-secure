@@ -111,6 +111,7 @@ NATIVE=1 ./run-r2-sim.sh c-its-pki vnap:latest   # scenario, image
 | `naive-v3` | `certs-v3` with self-generated certificates per station (negative test: must be rejected) |
 | `c-its-pki` | `certs-v3` (or `PKI_SECURITY=certs-v2`) from `vnap-certs/c-its-pki`: RSU `at`, OBU `bke_at_0` |
 | `c-its-pki-badroot` | as above, but the OBU trusts `tlm.cert` instead of the root (negative test) |
+| `c-its-pki-pseudo` | as `c-its-pki`, but the OBU rotates through butterfly ATs `bke_at_0`–`bke_at_7` every `PSEUDO_LIFETIME` seconds (default 30); needs `NATIVE=1` |
 
 Options:
 
@@ -127,7 +128,7 @@ Options:
 | `SECURITY=certs` | run socktap with `--certificate $AT_CERT --certificate-key $AT_KEY --certificate-chain $AA_CERT --trusted-certificate $ROOT_CERT` |
 | `VANETZA_SECURITY` | `certs-v2` (default when `SECURITY=certs`) or `certs-v3`; must match the certificate format |
 | unset `SECURITY` | socktap runs with `config.ini` (`security=none`), or with whatever `VANETZA_SECURITY` selects |
-| `SECURITY=pseudonyms` | not supported on release2 (the pseudonym-rotation patch was not ported; the container exits) |
+| `SECURITY=pseudonyms` | rotate through a pool of ATs: `PSEUDO_CERT_0`/`PSEUDO_KEY_0`, `PSEUDO_CERT_1`/`PSEUDO_KEY_1`, … (consecutive pairs from 0), `PSEUDO_LIFETIME` seconds each (default 120), plus `AA_CERT`/`ROOT_CERT`; works with `certs-v2` and `certs-v3` |
 
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
 are.
@@ -164,7 +165,8 @@ the vanetza-nap `jodyhuntatx` branch:
 | Optional Assurance_Level | `vanetza/security/v2/default_certificate_validator.cpp` | accept older v2 certificates without the attribute (TS 103 097 V1.2.1 requires it; current C-ITS-PKI and `certify` output include it) |
 | v3 DER keys | `vanetza/security/v3/persistence.cpp` | load PKCS#8 DER keys; readable errors instead of `terminate … char const*` |
 | v3 full-chain verification | `vanetza/security/v3/certificate_chain.{hpp,cpp}` (new), `straight_verify_service.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/security.cpp` | upstream v3 accepted any AT regardless of issuer; now AT → AA → trusted root is verified (IEEE 1609.2 signing input), and `--trusted-certificate` works for v3 |
-| Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT |
+| Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT(s) |
+| Pseudonym rotation | `vanetza/security/v{2,3}/pseudonym_certificate_provider.{hpp,cpp}` (new), `vanetza/security/CMakeLists.txt`, `tools/socktap/security.{hpp,cpp}`, `entrypoint.sh` | rotate through a pre-provisioned pool of ATs (e.g. a butterfly batch) on a fixed countdown; after each change the full new certificate is sent in the next message so receivers learn it immediately. Options `--pseudonym-certificate`, `--pseudonym-certificate-key` (repeatable, paired in order) and `--pseudonym-lifetime`; logs `[PSEUDONYM]` |
 
 ## Validation and troubleshooting
 
@@ -195,6 +197,9 @@ the vanetza-nap `jodyhuntatx` branch:
   - v2 puts `--certificate-chain` AAs into the cache without checking them against the
     trusted root.
   - The v2 verifier accepts only payload type `signed`.
+  - Pseudonym rotation changes only the certificate and signing key. The MAC and
+    GeoNetworking addresses stay the same, so consecutive pseudonyms remain linkable at
+    lower layers.
 
 ## History
 
@@ -206,7 +211,8 @@ Before 2026-09, this repo held a patch set for Vanetza-NAP `main`:
 - pseudonym rotation (`pseudonym_certificate_provider`);
 - a docker-compose-free harness and a kind/K8s attempt.
 
-It was replaced by the release2 patch set above on 2026-09-28. The removed `vnap-origs/`,
+It was replaced by the release2 patch set above on 2026-09-28, and the pseudonym rotation
+was ported to release2 the same day (for both v2 and v3). The removed `vnap-origs/`,
 `vnap-patches/` and `vnap-docker/` directories, including files that were never
 committed, are archived in `~/vnap-secure-removed-dirs-20260928.tar.gz` in the
 development VM. Their committed versions remain in git history, up to the commit that

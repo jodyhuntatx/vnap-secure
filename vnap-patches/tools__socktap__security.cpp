@@ -6,6 +6,7 @@
 #include <vanetza/security/v2/default_certificate_validator.hpp>
 #include <vanetza/security/v2/naive_certificate_provider.hpp>
 #include <vanetza/security/v2/persistence.hpp>
+#include <vanetza/security/v2/pseudonym_certificate_provider.hpp>
 #include <vanetza/security/v2/sign_service.hpp>
 #include <vanetza/security/v2/static_certificate_provider.hpp>
 #include <vanetza/security/v2/trust_store.hpp>
@@ -14,10 +15,12 @@
 #include <vanetza/security/v3/certificate_validator.hpp>
 #include <vanetza/security/v3/naive_certificate_provider.hpp>
 #include <vanetza/security/v3/persistence.hpp>
+#include <vanetza/security/v3/pseudonym_certificate_provider.hpp>
 #include <vanetza/security/v3/sign_header_policy.hpp>
 #include <vanetza/security/v3/sign_service.hpp>
 #include <vanetza/security/v3/static_certificate_provider.hpp>
 
+#include <chrono>
 #include <stdexcept>
 #include <iostream>
 
@@ -193,7 +196,7 @@ const char* chain_result(const security::CertificateValidity& validity)
 
 // Load trusted root CAs and check the configured chain once at startup, so that a broken
 // PKI setup is visible in the log instead of only as rejected messages at runtime.
-void setup_v3_trust(const po::variables_map& vm, SecurityContextV3& context, const std::vector<std::string>& chain_paths, const std::string& at_path)
+void setup_v3_trust(const po::variables_map& vm, SecurityContextV3& context, const std::vector<std::string>& chain_paths, const std::vector<std::string>& at_paths)
 {
     if (vm.count("trusted-certificate")) {
         for (auto& path : vm["trusted-certificate"].as<std::vector<std::string>>()) {
@@ -215,23 +218,27 @@ void setup_v3_trust(const po::variables_map& vm, SecurityContextV3& context, con
         auto cert = security::v3::load_certificate_from_file(path);
         std::cerr << "[V3-CHAIN] chain certificate " << path << ": " << chain_result(verifier.verify_ca(*cert, now)) << "\n";
     }
-    if (!at_path.empty()) {
+    for (auto& at_path : at_paths) {
         auto at = security::v3::load_certificate_from_file(at_path);
         std::cerr << "[V3-CHAIN] own authorization ticket " << at_path << ": "
             << chain_result(verifier.verify(*at, &context.cert_provider->cache(), now)) << "\n";
     }
 }
 
+security::PrivateKey load_v3_private_key(const security::v3::Certificate& certificate, const std::string& key_path)
+{
+    auto key_pair = security::v3::load_private_key_from_file(key_path);
+    security::PrivateKey priv_key;
+    priv_key.type = certificate.get_verification_key_type();
+    std::copy(key_pair.private_key.key.begin(), key_pair.private_key.key.end(), std::back_inserter(priv_key.key));
+    return priv_key;
+}
+
 std::unique_ptr<security::v3::CertificateProvider>
 load_v3_certificates(const std::string& cert_path, const std::string& cert_key_path, const std::vector<std::string> cert_chain_path)
 {
     auto authorization_ticket = security::v3::load_certificate_from_file(cert_path);
-    auto authorization_ticket_key = security::v3::load_private_key_from_file(cert_key_path);
-
-    security::PrivateKey priv_key;
-    priv_key.type = authorization_ticket.get_verification_key_type();
-    std::copy(authorization_ticket_key.private_key.key.begin(), authorization_ticket_key.private_key.key.end(),
-        std::back_inserter(priv_key.key));
+    auto priv_key = load_v3_private_key(authorization_ticket, cert_key_path);
 
     auto provider = std::make_unique<security::v3::StaticCertificateProvider>(authorization_ticket, priv_key);
     for (auto& chain_path : cert_chain_path) {
@@ -242,7 +249,7 @@ load_v3_certificates(const std::string& cert_path, const std::string& cert_key_p
 }
 
 std::unique_ptr<security::SecurityEntity>
-create_security_entity(const po::variables_map& vm, const Runtime& runtime, PositionProvider& positioning, config_t config_s)
+create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionProvider& positioning, config_t config_s)
 {
     std::unique_ptr<security::SecurityEntity> security;
     // const std::string name = vm["security"].as<std::string>();
@@ -264,7 +271,86 @@ create_security_entity(const po::variables_map& vm, const Runtime& runtime, Posi
             throw std::runtime_error("Either --certificate and --certificate-key must be present or none.");
         }
 
-        if (vm.count("certificate") && vm.count("certificate-key")) {
+        const bool pseudonym_pool = vm.count("pseudonym-certificate") || vm.count("pseudonym-certificate-key");
+        if (pseudonym_pool && vm.count("certificate")) {
+            throw std::runtime_error("--pseudonym-certificate cannot be combined with --certificate.");
+        }
+
+        if (pseudonym_pool) {
+            // pre-provisioned pool of authorization tickets (e.g. a butterfly batch), rotated on a countdown
+            const auto cert_paths = vm.count("pseudonym-certificate")
+                ? vm["pseudonym-certificate"].as<std::vector<std::string>>() : std::vector<std::string> {};
+            const auto key_paths = vm.count("pseudonym-certificate-key")
+                ? vm["pseudonym-certificate-key"].as<std::vector<std::string>>() : std::vector<std::string> {};
+            if (cert_paths.empty() || cert_paths.size() != key_paths.size()) {
+                throw std::runtime_error("--pseudonym-certificate and --pseudonym-certificate-key must be given "
+                    "the same number of times (matching certificate/key pairs, in the same order).");
+            }
+            const int lifetime_s = vm["pseudonym-lifetime"].as<int>();
+            if (lifetime_s <= 0) {
+                throw std::runtime_error("--pseudonym-lifetime must be a positive number of seconds.");
+            }
+            const auto lifetime = std::chrono::seconds(lifetime_s);
+            std::vector<std::string> chain_paths;
+            if (vm.count("certificate-chain")) {
+                chain_paths = vm["certificate-chain"].as<std::vector<std::string>>();
+            }
+
+            if (version == 3) {
+                std::vector<security::v3::PseudonymCertificateProvider::Pseudonym> pool;
+                for (std::size_t i = 0; i < cert_paths.size(); ++i) {
+                    auto certificate = security::v3::load_certificate_from_file(cert_paths[i]);
+                    auto key = load_v3_private_key(certificate, key_paths[i]);
+                    pool.push_back({ std::move(certificate), std::move(key) });
+                }
+                auto provider = std::make_unique<security::v3::PseudonymCertificateProvider>(runtime, std::move(pool), lifetime);
+                for (auto& chain_path : chain_paths) {
+                    provider->cache().store(security::v3::load_certificate_from_file(chain_path));
+                }
+                auto* pseudonyms = provider.get();
+                auto context = std::make_unique<SecurityContextV3>(runtime, positioning);
+                context->cert_provider = std::move(provider);
+                setup_v3_trust(vm, *context, chain_paths, cert_paths);
+                context->build_entity();
+                pseudonyms->set_sign_header_policy(context->sign_header_policy.get());
+                security = std::move(context);
+            } else {
+                auto context = std::make_unique<SecurityContextV2>(runtime, positioning);
+                std::vector<security::v2::PseudonymCertificateProvider::Pseudonym> pool;
+                for (std::size_t i = 0; i < cert_paths.size(); ++i) {
+                    auto certificate = security::v2::load_certificate_from_file(cert_paths[i]);
+                    auto key_pair = security::v2::load_private_key_from_file(key_paths[i]);
+                    pool.push_back({ std::move(certificate), key_pair.private_key });
+                }
+                std::list<security::v2::Certificate> chain;
+                for (auto& chain_path : chain_paths) {
+                    auto chain_certificate = security::v2::load_certificate_from_file(chain_path);
+                    chain.push_back(chain_certificate);
+                    context->cert_cache.insert(chain_certificate);
+                }
+                auto provider = std::make_unique<security::v2::PseudonymCertificateProvider>(
+                    runtime, std::move(pool), lifetime, std::move(chain));
+                provider->set_sign_header_policy(&context->sign_header_policy);
+                context->cert_provider = std::move(provider);
+                if (vm.count("trusted-certificate")) {
+                    for (auto& trusted_path : vm["trusted-certificate"].as<std::vector<std::string> >()) {
+                        context->trust_store.insert(security::v2::load_certificate_from_file(trusted_path));
+                    }
+                }
+                for (auto& chain_path : chain_paths) {
+                    auto chain_cert = security::v2::load_certificate_from_file(chain_path);
+                    std::cerr << "[V2-CHAIN] chain certificate " << chain_path << ": "
+                        << chain_result(context->cert_validator.check_certificate(chain_cert)) << "\n";
+                }
+                for (auto& at_path : cert_paths) {
+                    std::cerr << "[V2-CHAIN] own authorization ticket " << at_path << ": "
+                        << chain_result(context->cert_validator.check_certificate(
+                               security::v2::load_certificate_from_file(at_path))) << "\n";
+                }
+                context->build_entity();
+                security = std::move(context);
+            }
+        } else if (vm.count("certificate") && vm.count("certificate-key")) {
             const std::string& cert_path = vm["certificate"].as<std::string>();
             const std::string& cert_key_path = vm["certificate-key"].as<std::string>();
             std::vector<std::string> chain_paths;
@@ -275,7 +361,7 @@ create_security_entity(const po::variables_map& vm, const Runtime& runtime, Posi
             if (version == 3) {
                 auto context = std::make_unique<SecurityContextV3>(runtime, positioning);
                 context->cert_provider = load_v3_certificates(cert_path, cert_key_path, chain_paths);
-                setup_v3_trust(vm, *context, chain_paths, cert_path);
+                setup_v3_trust(vm, *context, chain_paths, { cert_path });
                 context->build_entity();
                 security = std::move(context);
             } else {
@@ -302,7 +388,7 @@ create_security_entity(const po::variables_map& vm, const Runtime& runtime, Posi
             if (version == 3) {
                 auto context = std::make_unique<SecurityContextV3>(runtime, positioning);
                 context->cert_provider = std::make_unique<security::v3::NaiveCertificateProvider>(runtime);
-                setup_v3_trust(vm, *context, {}, "");
+                setup_v3_trust(vm, *context, {}, {});
                 context->build_entity();
                 security = std::move(context);
             } else {
@@ -331,6 +417,14 @@ void add_security_options(po::options_description& options)
         ("certificate-key", po::value<std::string>(), "Certificate key to use for secured messages.")
         ("certificate-chain", po::value<std::vector<std::string> >()->multitoken(), "Certificate chain to use, use as often as needed.")
         ("trusted-certificate", po::value<std::vector<std::string> >()->multitoken(), "Trusted certificate, use as often as needed.")
+        ("pseudonym-certificate", po::value<std::vector<std::string> >()->multitoken(),
+            "Pseudonym pool certificate (authorization ticket), use as often as needed, paired in order with "
+            "--pseudonym-certificate-key. The security entity rotates through the pool; cannot be combined "
+            "with --certificate.")
+        ("pseudonym-certificate-key", po::value<std::vector<std::string> >()->multitoken(),
+            "Private key of a --pseudonym-certificate entry, given the same number of times and in the same order.")
+        ("pseudonym-lifetime", po::value<int>()->default_value(120),
+            "Seconds each pseudonym is used before rotating to the next (only with --pseudonym-certificate).")
     ;
 }
 

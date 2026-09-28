@@ -30,6 +30,7 @@ add_vanetza_component(security
     v2/null_certificate_validator.cpp
     v2/payload.cpp
     v2/persistence.cpp
+    v2/pseudonym_certificate_provider.cpp
     v2/public_key.cpp
     v2/recipient_info.cpp
     v2/region.cpp
@@ -63,6 +64,7 @@ add_vanetza_component(security
     v3/sign_header_policy.cpp
     v3/static_certificate_provider.cpp
     v3/persistence.cpp
+    v3/pseudonym_certificate_provider.cpp
     v3/trust_store.cpp
     v3/validity_restriction.cpp
 )

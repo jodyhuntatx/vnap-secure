@@ -1,11 +1,13 @@
 #!/bin/bash
 # Start an RSU + OBU pair from a release2-main image on vanetzalan0.
-# usage: ./run-r2-sim.sh [none|certify|certify-fresh|certify-fresh-badroot|naive-v3|c-its-pki|c-its-pki-badroot] [image]
+# usage: ./run-r2-sim.sh [none|certify|certify-fresh|certify-fresh-badroot|naive-v3|c-its-pki|c-its-pki-badroot|c-its-pki-pseudo] [image]
 #   none          - no security (baseline: proves the link/CAM path works)
 #   certify       - certs-v2 with vnap-certs/certify (both stations use ticket_vnap; AT EXPIRED 2026-06-07)
 #   certify-fresh - certs-v2, certify root/AA + per-station ATs issued 2026-09-24
 #   naive-v3      - certs-v3, self-generated certs per station (exercises v3 sign/verify)
 #   c-its-pki     - certs-v3 with vnap-certs/c-its-pki (RSU: at, OBU: bke_at_0); -badroot: OBU trusts tlm.cert
+#   c-its-pki-pseudo - like c-its-pki, but the OBU rotates through bke_at_0..7 (SECURITY=pseudonyms,
+#                   PSEUDO_LIFETIME seconds per pseudonym, default 30)
 
 SCENARIO=${1:-none}
 IMAGE=${2:-vnap:r2-stock}
@@ -40,6 +42,18 @@ case $SCENARIO in
     # (NaiveCertificateProvider) and has no trusted root, so with full-chain verification
     # every received message must be rejected -- a negative control for the chain check.
     RSU_SEC=(-e VANETZA_SECURITY=certs-v3); OBU_SEC=(-e VANETZA_SECURITY=certs-v3) ;;
+  c-its-pki-pseudo)
+    # OBU rotates through the butterfly ATs bke_at_0..7 every PSEUDO_LIFETIME seconds (default 30);
+    # needs NATIVE=1 and an image with the pseudonym rotation patch
+    C=/vnap-certs/c-its-pki
+    SEC=${PKI_SECURITY:-certs-v3}
+    RSU_SEC=(-e VANETZA_SECURITY=$SEC -e AA_CERT=$C/aa.cert -e ROOT_CERT=$C/root_ca.cert
+             -e AT_CERT=$C/at.cert -e AT_KEY=$C/at.der)
+    OBU_SEC=(-e VANETZA_SECURITY=$SEC -e SECURITY=pseudonyms -e PSEUDO_LIFETIME=${PSEUDO_LIFETIME:-30}
+             -e AA_CERT=$C/aa.cert -e ROOT_CERT=$C/root_ca.cert)
+    for i in 0 1 2 3 4 5 6 7; do
+      OBU_SEC+=(-e PSEUDO_CERT_$i=$C/bke_at_$i.cert -e PSEUDO_KEY_$i=$C/bke_at_${i}_sign.der)
+    done ;;
   c-its-pki|c-its-pki-badroot)
     # v3 certs from the C-ITS-PKI tool; -badroot is a negative control: OBU trusts the
     # TLM certificate (self-signed, but not the issuer of aa.cert) instead of root_ca
