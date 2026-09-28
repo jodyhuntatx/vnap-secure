@@ -10,7 +10,7 @@
 SCENARIO=${1:-none}
 IMAGE=${2:-vnap:r2-stock}
 # NATIVE=1 uses the image's own (patched) /entrypoint.sh with SECURITY=certs instead of
-# mounting r2-entrypoint.sh -- only for images built with the vnap-patches-r2 entrypoint
+# mounting r2-entrypoint.sh -- only for images built with the vnap-patches entrypoint
 NATIVE=${NATIVE:-0}
 
 HERE=$(cd "$(dirname "$0")" && pwd)

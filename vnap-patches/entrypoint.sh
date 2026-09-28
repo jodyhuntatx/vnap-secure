@@ -46,18 +46,38 @@ if [ -n "$START_EMBEDDED_MOSQUITTO" ] && [ $START_EMBEDDED_MOSQUITTO = true ] ; 
     sleep 2
 fi
 
-if [ -n "$SECURITY" ] && [ $SECURITY = certs ]; then
-    echo "Running with security=certs."
-    set -x
-    /usr/local/bin/socktap \
-        --config /config.ini \
-        --security certs \
-        --certificate $AT_CERT \
-        --certificate-key $AT_KEY \
-        --certificate-chain $AA_CERT \
-        --certificate-chain $ROOT_CERT
-    set +x
+# Security mode dispatch on $SECURITY (vnap-secure):
+#   unset      -> socktap with config.ini settings (security=none by default)
+#   certs      -> static AT cert/key; AA via --certificate-chain, root via --trusted-certificate
+#   pseudonyms -> pseudonym pool rotation (not yet ported to release2)
+# release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
+# not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
+# certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
+if [ -n "$SECURITY" ]; then
+    case $SECURITY in
+        certs)
+            export VANETZA_SECURITY=${VANETZA_SECURITY:-certs-v2}
+            echo "Running with $VANETZA_SECURITY, no pseudonym rotation..."
+            set -x
+            /usr/local/bin/socktap \
+                --config /config.ini \
+                --certificate $AT_CERT \
+                --certificate-key $AT_KEY \
+                --certificate-chain $AA_CERT \
+                --trusted-certificate $ROOT_CERT
+            set +x
+            ;;
+        pseudonyms)
+            echo "SECURITY=pseudonyms is not yet supported on the release2 build."
+            exit 1
+            ;;
+        *)
+            echo "Invalid value $SECURITY for SECURITY env var."
+            echo "Valid values are 'certs' or 'pseudonyms'."
+            exit 1
+            ;;
+    esac
 else
-    echo "Running with security=none."
+    echo "Running with security from config.ini/VANETZA_SECURITY."
     /usr/local/bin/socktap -c /config.ini
 fi
