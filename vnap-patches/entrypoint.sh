@@ -49,8 +49,11 @@ fi
 # Security mode dispatch on $SECURITY (vnap-secure):
 #   unset      -> socktap with config.ini settings (security=none by default)
 #   certs      -> static AT cert/key; AA via --certificate-chain, root via --trusted-certificate
-#   pseudonyms -> pseudonym pool rotation: PSEUDO_CERT_0/PSEUDO_KEY_0, PSEUDO_CERT_1/PSEUDO_KEY_1, ...
-#                 (consecutive pairs from index 0), PSEUDO_LIFETIME seconds per pseudonym (default 120)
+#   pseudonyms -> pseudonym pool: PSEUDO_CERT_0/PSEUDO_KEY_0, PSEUDO_CERT_1/PSEUDO_KEY_1, ...
+#                 (consecutive pairs from index 0), changed on events from the control channel:
+#                 PSEUDO_CONTROL_BROKER (MQTT broker host, required for changes), PSEUDO_CONTROL_PORT
+#                 (1883), PSEUDO_CONTROL_TOPIC (default vnap/pseudonym/<station id>),
+#                 PSEUDO_CONTROL_USERNAME/PSEUDO_CONTROL_PASSWORD, PSEUDO_MIN_INTERVAL (ms, 1000)
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
@@ -88,12 +91,21 @@ if [ -n "$SECURITY" ]; then
                 echo "SECURITY=pseudonyms needs at least PSEUDO_CERT_0 and PSEUDO_KEY_0."
                 exit 1
             fi
+            if [ -n "$PSEUDO_CONTROL_BROKER" ]; then
+                set -- "$@" --pseudonym-control-broker "$PSEUDO_CONTROL_BROKER" \
+                    --pseudonym-control-port "${PSEUDO_CONTROL_PORT:-1883}" \
+                    --pseudonym-min-interval "${PSEUDO_MIN_INTERVAL:-1000}"
+                [ -n "$PSEUDO_CONTROL_TOPIC" ] && set -- "$@" --pseudonym-control-topic "$PSEUDO_CONTROL_TOPIC"
+                [ -n "$PSEUDO_CONTROL_USERNAME" ] && set -- "$@" --pseudonym-control-username "$PSEUDO_CONTROL_USERNAME"
+                # PSEUDO_CONTROL_PASSWORD is read by socktap from the environment (kept out of argv and set -x)
+            else
+                echo "PSEUDO_CONTROL_BROKER is not set: the pseudonym will not change."
+            fi
             echo "Running with $VANETZA_SECURITY, pseudonym pool of $i certificate(s)..."
             set -x
             /usr/local/bin/socktap \
                 --config /config.ini \
                 "$@" \
-                --pseudonym-lifetime ${PSEUDO_LIFETIME:-120} \
                 --certificate-chain $AA_CERT \
                 --trusted-certificate $ROOT_CERT
             set +x

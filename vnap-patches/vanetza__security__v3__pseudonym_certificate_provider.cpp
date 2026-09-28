@@ -1,5 +1,4 @@
 #include <vanetza/security/v3/pseudonym_certificate_provider.hpp>
-#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -31,26 +30,15 @@ std::string to_hex(const Certificate& cert)
 
 } // namespace
 
-PseudonymCertificateProvider::PseudonymCertificateProvider(Runtime& runtime, std::vector<Pseudonym> pool,
-        Clock::duration lifetime) :
-    m_runtime(runtime), m_pool(std::move(pool)), m_index(0), m_lifetime(lifetime)
+PseudonymCertificateProvider::PseudonymCertificateProvider(std::vector<Pseudonym> pool) :
+    m_pool(std::move(pool)), m_index(0)
 {
     if (m_pool.empty()) {
         throw std::invalid_argument("PseudonymCertificateProvider requires a non-empty pseudonym pool");
     }
-    if (m_lifetime <= Clock::duration::zero()) {
-        throw std::invalid_argument("PseudonymCertificateProvider requires a positive pseudonym lifetime");
-    }
 
-    std::cerr << "[PSEUDONYM] v3 pool of " << m_pool.size() << " certificate(s), rotating every "
-              << std::chrono::duration_cast<std::chrono::seconds>(m_lifetime).count()
-              << "s, starting at index 0 (certificate=" << to_hex(m_pool[0].certificate) << ")\n";
-    schedule_rotation();
-}
-
-PseudonymCertificateProvider::~PseudonymCertificateProvider()
-{
-    m_runtime.cancel(this);
+    std::cerr << "[PSEUDONYM] v3 pool of " << m_pool.size() << " certificate(s), changed on events only, "
+              << "starting at index 0 (certificate=" << to_hex(m_pool[0].certificate) << ")\n";
 }
 
 const Certificate& PseudonymCertificateProvider::own_certificate()
@@ -63,21 +51,31 @@ const PrivateKey& PseudonymCertificateProvider::own_private_key()
     return m_pool[m_index].private_key;
 }
 
-void PseudonymCertificateProvider::schedule_rotation()
+PseudonymControl::Result PseudonymCertificateProvider::change_pseudonym(boost::optional<std::size_t> index)
 {
-    // "this" as scope lets the destructor cancel a pending rotation
-    m_runtime.schedule(m_lifetime, [this](Clock::time_point) { rotate(); }, this);
-}
+    Result result;
+    result.previous = m_index;
+    const std::size_t next = index ? *index : (result.previous + 1) % m_pool.size();
 
-void PseudonymCertificateProvider::rotate()
-{
-    const std::size_t previous = m_index;
-    const std::size_t next = (previous + 1) % m_pool.size();
-    m_index = next;
+    if (next >= m_pool.size()) {
+        result.error = "index out of range";
+    } else if (next == result.previous) {
+        result.error = "pseudonym already in use";
+    } else {
+        m_index = next;
+        result.changed = true;
+    }
+    result.current = m_index;
+    result.certificate = to_hex(m_pool[result.current].certificate);
 
-    std::cerr << "[PSEUDONYM] rotated pool index " << previous << " -> " << next << " (of " << m_pool.size()
-              << "), certificate=" << to_hex(m_pool[next].certificate);
-    if (next <= previous) {
+    if (!result.changed) {
+        std::cerr << "[PSEUDONYM] change to index " << next << " rejected: " << result.error << "\n";
+        return result;
+    }
+
+    std::cerr << "[PSEUDONYM] changed pool index " << result.previous << " -> " << result.current
+              << " (of " << m_pool.size() << "), certificate=" << result.certificate;
+    if (!index && result.current < result.previous) {
         std::cerr << " [pool wrapped around, reusing an earlier pseudonym]";
     }
     std::cerr << "\n";
@@ -86,7 +84,7 @@ void PseudonymCertificateProvider::rotate()
     if (m_sign_header_policy) {
         m_sign_header_policy->request_certificate();
     }
-    schedule_rotation();
+    return result;
 }
 
 } // namespace v3

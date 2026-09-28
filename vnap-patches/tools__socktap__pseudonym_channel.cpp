@@ -1,0 +1,198 @@
+#include "pseudonym_channel.hpp"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
+#include <cstdlib>
+#include <iostream>
+#include <stdexcept>
+
+namespace po = boost::program_options;
+using vanetza::security::PseudonymControl;
+
+PseudonymChannel::PseudonymChannel(const Options& options, const std::string& client_id,
+        PseudonymControl& control, TimeTrigger& trigger) :
+    mosquittopp(client_id.c_str()),
+    m_options(options),
+    m_change_topic(options.topic + "/change"),
+    m_status_topic(options.topic + "/status"),
+    m_control(control),
+    m_trigger(trigger)
+{
+    mosqpp::lib_init();
+    if (!m_options.username.empty()) {
+        username_pw_set(m_options.username.c_str(), m_options.password.c_str());
+    } else {
+        std::cerr << "[PSEUDONYM] WARNING: control channel without credentials, anyone who can publish to "
+                  << m_change_topic << " can change pseudonyms\n";
+    }
+    reconnect_delay_set(1, 30, true);
+    // start the network thread first: it keeps retrying if the broker is not reachable yet
+    loop_start();
+    int rc = connect_async(m_options.host.c_str(), m_options.port, 60);
+    std::cerr << "[PSEUDONYM] control channel " << m_options.host << ":" << m_options.port
+              << ", listening on " << m_change_topic << ", answering on " << m_status_topic;
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << " (connect: " << mosqpp::strerror(rc) << ", retrying)";
+    }
+    std::cerr << "\n";
+}
+
+PseudonymChannel::~PseudonymChannel()
+{
+    disconnect();
+    loop_stop(true);
+}
+
+void PseudonymChannel::on_connect(int rc)
+{
+    if (rc == 0) {
+        subscribe(nullptr, m_change_topic.c_str(), 1);
+        std::cerr << "[PSEUDONYM] control channel connected\n";
+    } else {
+        std::cerr << "[PSEUDONYM] control channel connection refused (" << mosqpp::connack_string(rc) << ")\n";
+    }
+}
+
+void PseudonymChannel::on_disconnect(int rc)
+{
+    if (rc != 0) {
+        std::cerr << "[PSEUDONYM] control channel lost (" << mosqpp::strerror(rc) << "), reconnecting\n";
+    }
+}
+
+void PseudonymChannel::on_message(const struct mosquitto_message* message)
+{
+    // MQTT network thread: only copy the payload here, the change runs on the io_context thread
+    if (message->retain) {
+        std::cerr << "[PSEUDONYM] ignoring retained change event on " << message->topic << "\n";
+        return;
+    }
+    std::string payload(static_cast<const char*>(message->payload), message->payloadlen);
+    m_trigger.post([this, payload]() { handle_event(payload); });
+}
+
+void PseudonymChannel::handle_event(const std::string& payload)
+{
+    rapidjson::Document event;
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> status(buffer);
+    status.StartObject();
+
+    auto reject = [&](const std::string& error) {
+        std::cerr << "[PSEUDONYM] change event rejected: " << error << "\n";
+        status.Key("result"); status.String("rejected");
+        status.Key("error"); status.String(error.c_str());
+        status.Key("index"); status.Uint64(m_control.current_pseudonym());
+        status.Key("pool_size"); status.Uint64(m_control.pseudonym_pool_size());
+        status.EndObject();
+        publish_status(buffer.GetString());
+    };
+
+    // an empty payload is not an event (e.g. clearing a retained message with a zero-length publish)
+    if (event.Parse(payload.c_str(), payload.size()).HasParseError() || !event.IsObject()) {
+        return reject("payload is not a JSON object");
+    }
+
+    if (event.HasMember("event_id")) {
+        status.Key("event_id");
+        event["event_id"].Accept(status);
+    }
+    std::string reason;
+    if (event.HasMember("reason") && event["reason"].IsString()) {
+        reason = event["reason"].GetString();
+    }
+
+    boost::optional<std::size_t> index;
+    if (event.HasMember("index")) {
+        if (!event["index"].IsUint64()) {
+            return reject("index must be a non-negative integer");
+        }
+        index = event["index"].GetUint64();
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_changed_once && now - m_last_change < m_options.min_interval) {
+        return reject("rate limited (minimum interval " + std::to_string(m_options.min_interval.count()) + " ms)");
+    }
+
+    std::cerr << "[PSEUDONYM] change event" << (reason.empty() ? "" : " (" + reason + ")") << "\n";
+    PseudonymControl::Result result = m_control.change_pseudonym(index);
+    if (result.changed) {
+        m_last_change = now;
+        m_changed_once = true;
+    }
+
+    status.Key("result"); status.String(result.changed ? "changed" : "rejected");
+    if (!result.changed) {
+        status.Key("error"); status.String(result.error.c_str());
+    }
+    status.Key("previous"); status.Uint64(result.previous);
+    status.Key("index"); status.Uint64(result.current);
+    status.Key("pool_size"); status.Uint64(m_control.pseudonym_pool_size());
+    status.Key("certificate"); status.String(result.certificate.c_str());
+    status.EndObject();
+    publish_status(buffer.GetString());
+}
+
+void PseudonymChannel::publish_status(const std::string& json)
+{
+    publish(nullptr, m_status_topic.c_str(), json.size(), json.data(), 1, false);
+}
+
+void add_pseudonym_channel_options(po::options_description& options)
+{
+    options.add_options()
+        ("pseudonym-control-broker", po::value<std::string>(),
+            "MQTT broker of the pseudonym change event channel (only with --pseudonym-certificate). "
+            "Without it the pseudonym never changes.")
+        ("pseudonym-control-port", po::value<int>()->default_value(1883), "Port of --pseudonym-control-broker.")
+        ("pseudonym-control-topic", po::value<std::string>(),
+            "Topic prefix of the pseudonym change event channel: events on <prefix>/change, answers on "
+            "<prefix>/status (default vnap/pseudonym/<station id>).")
+        ("pseudonym-control-username", po::value<std::string>(), "Username for --pseudonym-control-broker.")
+        ("pseudonym-control-password", po::value<std::string>(),
+            "Password for --pseudonym-control-broker (default: environment variable PSEUDO_CONTROL_PASSWORD).")
+        ("pseudonym-min-interval", po::value<int>()->default_value(1000),
+            "Minimum milliseconds between two pseudonym changes; events arriving earlier are rejected.")
+    ;
+}
+
+std::unique_ptr<PseudonymChannel> create_pseudonym_channel(const po::variables_map& vm,
+    PseudonymControl* control, TimeTrigger& trigger, int station_id)
+{
+    if (!control) {
+        if (vm.count("pseudonym-control-broker")) {
+            std::cerr << "[PSEUDONYM] WARNING: --pseudonym-control-broker ignored, no pseudonym pool configured\n";
+        }
+        return nullptr;
+    }
+    if (!vm.count("pseudonym-control-broker")) {
+        std::cerr << "[PSEUDONYM] WARNING: no --pseudonym-control-broker, the pseudonym will not change\n";
+        return nullptr;
+    }
+
+    PseudonymChannel::Options options;
+    options.host = vm["pseudonym-control-broker"].as<std::string>();
+    options.port = vm["pseudonym-control-port"].as<int>();
+    options.topic = vm.count("pseudonym-control-topic") ? vm["pseudonym-control-topic"].as<std::string>()
+        : "vnap/pseudonym/" + std::to_string(station_id);
+    if (vm.count("pseudonym-control-username")) {
+        options.username = vm["pseudonym-control-username"].as<std::string>();
+    }
+    if (vm.count("pseudonym-control-password")) {
+        options.password = vm["pseudonym-control-password"].as<std::string>();
+    } else if (const char* password = std::getenv("PSEUDO_CONTROL_PASSWORD")) {
+        options.password = password;
+    }
+    const int min_interval = vm["pseudonym-min-interval"].as<int>();
+    if (min_interval < 0) {
+        throw std::runtime_error("--pseudonym-min-interval must not be negative.");
+    }
+    options.min_interval = std::chrono::milliseconds(min_interval);
+    if (options.topic.empty() || options.topic.find_first_of("+#") != std::string::npos) {
+        throw std::runtime_error("--pseudonym-control-topic must be a non-empty topic without wildcards.");
+    }
+
+    const std::string client_id = "vanetza-pseudonym-" + std::to_string(station_id);
+    return std::make_unique<PseudonymChannel>(options, client_id, *control, trigger);
+}

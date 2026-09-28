@@ -5,6 +5,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/date_time/posix_time/posix_time_types.hpp>
+#include <functional>
 #include <mutex>
 
 class TimeTrigger
@@ -13,6 +14,12 @@ public:
     TimeTrigger(boost::asio::io_context&);
     vanetza::Runtime& runtime() { return runtime_; }
     void schedule();
+
+    /**
+     * Run a function on the io_context thread, serialized with all runtime callbacks.
+     * May be called from any thread (e.g. an MQTT client callback).
+     */
+    void post(std::function<void()>);
 
 private:
     boost::posix_time::ptime now() const;

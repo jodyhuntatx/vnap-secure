@@ -20,7 +20,6 @@
 #include <vanetza/security/v3/sign_service.hpp>
 #include <vanetza/security/v3/static_certificate_provider.hpp>
 
-#include <chrono>
 #include <stdexcept>
 #include <iostream>
 
@@ -277,7 +276,7 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
         }
 
         if (pseudonym_pool) {
-            // pre-provisioned pool of authorization tickets (e.g. a butterfly batch), rotated on a countdown
+            // pre-provisioned pool of authorization tickets (e.g. a butterfly batch), changed on events
             const auto cert_paths = vm.count("pseudonym-certificate")
                 ? vm["pseudonym-certificate"].as<std::vector<std::string>>() : std::vector<std::string> {};
             const auto key_paths = vm.count("pseudonym-certificate-key")
@@ -286,11 +285,6 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
                 throw std::runtime_error("--pseudonym-certificate and --pseudonym-certificate-key must be given "
                     "the same number of times (matching certificate/key pairs, in the same order).");
             }
-            const int lifetime_s = vm["pseudonym-lifetime"].as<int>();
-            if (lifetime_s <= 0) {
-                throw std::runtime_error("--pseudonym-lifetime must be a positive number of seconds.");
-            }
-            const auto lifetime = std::chrono::seconds(lifetime_s);
             std::vector<std::string> chain_paths;
             if (vm.count("certificate-chain")) {
                 chain_paths = vm["certificate-chain"].as<std::vector<std::string>>();
@@ -303,7 +297,7 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
                     auto key = load_v3_private_key(certificate, key_paths[i]);
                     pool.push_back({ std::move(certificate), std::move(key) });
                 }
-                auto provider = std::make_unique<security::v3::PseudonymCertificateProvider>(runtime, std::move(pool), lifetime);
+                auto provider = std::make_unique<security::v3::PseudonymCertificateProvider>(std::move(pool));
                 for (auto& chain_path : chain_paths) {
                     provider->cache().store(security::v3::load_certificate_from_file(chain_path));
                 }
@@ -329,7 +323,7 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
                     context->cert_cache.insert(chain_certificate);
                 }
                 auto provider = std::make_unique<security::v2::PseudonymCertificateProvider>(
-                    runtime, std::move(pool), lifetime, std::move(chain));
+                    std::move(pool), std::move(chain));
                 provider->set_sign_header_policy(&context->sign_header_policy);
                 context->cert_provider = std::move(provider);
                 if (vm.count("trusted-certificate")) {
@@ -409,6 +403,16 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
     return security;
 }
 
+security::PseudonymControl* pseudonym_control(security::SecurityEntity* entity)
+{
+    if (auto* v3 = dynamic_cast<SecurityContextV3*>(entity)) {
+        return dynamic_cast<security::PseudonymControl*>(v3->cert_provider.get());
+    } else if (auto* v2 = dynamic_cast<SecurityContextV2*>(entity)) {
+        return dynamic_cast<security::PseudonymControl*>(v2->cert_provider.get());
+    }
+    return nullptr;
+}
+
 void add_security_options(po::options_description& options)
 {
     options.add_options()
@@ -419,12 +423,10 @@ void add_security_options(po::options_description& options)
         ("trusted-certificate", po::value<std::vector<std::string> >()->multitoken(), "Trusted certificate, use as often as needed.")
         ("pseudonym-certificate", po::value<std::vector<std::string> >()->multitoken(),
             "Pseudonym pool certificate (authorization ticket), use as often as needed, paired in order with "
-            "--pseudonym-certificate-key. The security entity rotates through the pool; cannot be combined "
-            "with --certificate.")
+            "--pseudonym-certificate-key. The pseudonym changes on events from --pseudonym-control-broker; "
+            "cannot be combined with --certificate.")
         ("pseudonym-certificate-key", po::value<std::vector<std::string> >()->multitoken(),
             "Private key of a --pseudonym-certificate entry, given the same number of times and in the same order.")
-        ("pseudonym-lifetime", po::value<int>()->default_value(120),
-            "Seconds each pseudonym is used before rotating to the next (only with --pseudonym-certificate).")
     ;
 }
 

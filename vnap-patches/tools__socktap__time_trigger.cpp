@@ -1,4 +1,5 @@
 #include "time_trigger.hpp"
+#include <boost/asio/post.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <iostream>
 #include <functional>
@@ -32,6 +33,14 @@ void TimeTrigger::schedule()
     } else {
         timer_.cancel();
     }
+}
+
+void TimeTrigger::post(std::function<void()> fn)
+{
+    asio::post(io_context_, [this, fn]() {
+        std::lock_guard<std::recursive_mutex> lock(schedule_mtx);
+        fn();
+    });
 }
 
 void TimeTrigger::on_timeout(const boost::system::error_code& ec)

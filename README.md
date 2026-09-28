@@ -111,7 +111,7 @@ NATIVE=1 ./run-r2-sim.sh c-its-pki vnap:latest   # scenario, image
 | `naive-v3` | `certs-v3` with self-generated certificates per station (negative test: must be rejected) |
 | `c-its-pki` | `certs-v3` (or `PKI_SECURITY=certs-v2`) from `vnap-certs/c-its-pki`: RSU `at`, OBU `bke_at_0` |
 | `c-its-pki-badroot` | as above, but the OBU trusts `tlm.cert` instead of the root (negative test) |
-| `c-its-pki-pseudo` | as `c-its-pki`, but the OBU rotates through butterfly ATs `bke_at_0`–`bke_at_7` every `PSEUDO_LIFETIME` seconds (default 30); needs `NATIVE=1` |
+| `c-its-pki-pseudo` | as `c-its-pki`, but the OBU holds butterfly ATs `bke_at_0`–`bke_at_7` and changes pseudonym on events from the control channel (see [Pseudonym change events](#pseudonym-change-events)); needs `NATIVE=1` |
 
 Options:
 
@@ -120,6 +120,8 @@ Options:
 - `CERTS_DIR=<dir>`: use another certificate set. `<dir>` must contain `c-its-pki/` and be
   under `$HOME`.
 - `PKI_SECURITY=certs-v2|certs-v3`: security mode for the `c-its-pki` scenarios.
+- `PSEUDO_*`: pseudonym event client settings for `c-its-pki-pseudo` (see
+  [Pseudonym change events](#pseudonym-change-events)).
 
 ### Container environment (`entrypoint.sh`)
 
@@ -128,10 +130,84 @@ Options:
 | `SECURITY=certs` | run socktap with `--certificate $AT_CERT --certificate-key $AT_KEY --certificate-chain $AA_CERT --trusted-certificate $ROOT_CERT` |
 | `VANETZA_SECURITY` | `certs-v2` (default when `SECURITY=certs`) or `certs-v3`; must match the certificate format |
 | unset `SECURITY` | socktap runs with `config.ini` (`security=none`), or with whatever `VANETZA_SECURITY` selects |
-| `SECURITY=pseudonyms` | rotate through a pool of ATs: `PSEUDO_CERT_0`/`PSEUDO_KEY_0`, `PSEUDO_CERT_1`/`PSEUDO_KEY_1`, … (consecutive pairs from 0), `PSEUDO_LIFETIME` seconds each (default 120), plus `AA_CERT`/`ROOT_CERT`; works with `certs-v2` and `certs-v3` |
+| `SECURITY=pseudonyms` | pool of ATs `PSEUDO_CERT_0`/`PSEUDO_KEY_0`, `PSEUDO_CERT_1`/`PSEUDO_KEY_1`, … (consecutive pairs from 0), plus `AA_CERT`/`ROOT_CERT`; starts with index 0 and changes only on control channel events; works with `certs-v2` and `certs-v3` |
+| `PSEUDO_CONTROL_BROKER` | MQTT broker of the pseudonym control channel; without it the pseudonym never changes |
+| `PSEUDO_CONTROL_PORT` | control broker port (1883) |
+| `PSEUDO_CONTROL_TOPIC` | control topic prefix (default `vnap/pseudonym/<station id>`) |
+| `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | control broker account (the password is read from the environment, not passed on the command line) |
+| `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
 
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
 are.
+
+## Pseudonym change events
+
+A station with `SECURITY=pseudonyms` keeps its current pseudonym (AT and signing key) until
+it receives a change event. Events travel on a control channel that is separate from the
+V2X messages:
+
+```
+ vanetzalan0 (192.168.98.0/24): GeoNetworking/CAMs    vnapctl0 (192.168.99.0/24): control only
+ ┌─────┐  CAMs  ┌─────────────────────────┐ eth1   ┌───────────────┐       ┌───────────────┐
+ │ rsu │◀──────▶│ obu  socktap ─ Pseudonym│───────▶│ pseudo-broker │◀──────│ pseudo-client │
+ └─────┘  eth0  │      Channel (own MQTT  │ .20    │ MQTT  .2      │       │ events  .3    │
+                │      client)            │        └───────────────┘       └───────────────┘
+                └─────────────────────────┘
+```
+
+- **Channel:** a dedicated MQTT connection from socktap (`tools/socktap/pseudonym_channel.cpp`)
+  to its own broker on its own network. It is not the station's embedded broker, which
+  carries `vanetza/in|out/*` application messages, and the RSU is not on that network.
+- **Topics:** events on `<prefix>/change`, answers on `<prefix>/status`; prefix
+  `vnap/pseudonym/<station id>` by default.
+- **Event** (JSON, all members optional):
+  `{"event_id": "c1-7", "index": 3, "reason": "periodic"}`. Without `index`, the next
+  pseudonym of the pool is used (wrapping around).
+- **Answer:** `{"event_id": "c1-7", "result": "changed", "previous": 2, "index": 3,
+  "pool_size": 8, "certificate": "<HashedId8>"}`, or `"result": "rejected"` with an `error`.
+- **Rejected:**
+  - an empty payload or malformed JSON (`{}` is a valid event);
+  - an index outside the pool, or the index already in use;
+  - events closer together than `PSEUDO_MIN_INTERVAL`;
+  - retained messages replayed by the broker when socktap (re)subscribes, so a stale event
+    has no effect.
+- **Thread safety:** the MQTT thread only queues the event. The change runs on socktap's
+  `io_context` under the `TimeTrigger` mutex, which also guards CAM signing, so a change
+  cannot fall between the certificate and private key lookups.
+- **After a change:** the next signed message carries the full new certificate, so
+  receivers learn it at once.
+
+**Client container** (`vnap-docker/pseudo-ctl/`, image `vnap-pseudo-ctl`, built on demand by
+`run-r2-sim.sh`). The same image runs the broker (`broker`) and the event client (`client`):
+
+```bash
+cd vnap-docker
+NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest       # periodic events every 30 s
+PSEUDO_MODE=random PSEUDO_RANDOM_MIN=5 PSEUDO_RANDOM_MAX=20 NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest
+PSEUDO_MODE=manual NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest
+docker exec pseudo-client change 2          # station 2: next pseudonym
+docker exec pseudo-client change 2 5        # station 2: pool index 5
+docker logs -f pseudo-client                # events sent and the stations' answers
+docker logs obu 2>&1 | grep PSEUDONYM       # the OBU's side
+```
+
+| `run-r2-sim.sh` variable | Client setting |
+|---|---|
+| `PSEUDO_MODE` | `periodic` (default), `random`, `once` (one event after 5 s; `PSEUDO_INDEX` picks the index) or `manual` |
+| `PSEUDO_INTERVAL` | seconds between events in `periodic` mode (30) |
+| `PSEUDO_RANDOM_MIN` / `PSEUDO_RANDOM_MAX` | interval range in `random` mode (10 / 60 s) |
+| `PSEUDO_COUNT` | stop after this many events (0 = no limit) |
+| `PSEUDO_MIN_CHANGE_MS` | the OBU's `PSEUDO_MIN_INTERVAL` (1000) |
+| `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | require this account on the broker; used by the OBU and the client |
+
+**Security of the channel.** Whoever can publish on `<prefix>/change` controls when the
+station changes pseudonym. That is useful to an attacker who wants to correlate a change
+with a location, or to exhaust a small pool.
+- The simulation limits access by network: only the OBU and the client are on `vnapctl0`.
+  It also offers broker authentication.
+- There is no TLS, and one account is shared by all participants.
+- Use TLS and per-client ACLs before anything outside the simulation.
+- socktap logs a warning when it connects without credentials.
 
 ## Certificates
 
@@ -166,7 +242,8 @@ the vanetza-nap `jodyhuntatx` branch:
 | v3 DER keys | `vanetza/security/v3/persistence.cpp` | load PKCS#8 DER keys; readable errors instead of `terminate … char const*` |
 | v3 full-chain verification | `vanetza/security/v3/certificate_chain.{hpp,cpp}` (new), `straight_verify_service.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/security.cpp` | upstream v3 accepted any AT regardless of issuer; now AT → AA → trusted root is verified (IEEE 1609.2 signing input), and `--trusted-certificate` works for v3 |
 | Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT(s) |
-| Pseudonym rotation | `vanetza/security/v{2,3}/pseudonym_certificate_provider.{hpp,cpp}` (new), `vanetza/security/CMakeLists.txt`, `tools/socktap/security.{hpp,cpp}`, `entrypoint.sh` | rotate through a pre-provisioned pool of ATs (e.g. a butterfly batch) on a fixed countdown; after each change the full new certificate is sent in the next message so receivers learn it immediately. Options `--pseudonym-certificate`, `--pseudonym-certificate-key` (repeatable, paired in order) and `--pseudonym-lifetime`; logs `[PSEUDONYM]` |
+| Pseudonym pool | `vanetza/security/v{2,3}/pseudonym_certificate_provider.{hpp,cpp}` (new), `vanetza/security/CMakeLists.txt`, `tools/socktap/security.{hpp,cpp}`, `entrypoint.sh` | pre-provisioned pool of ATs (e.g. a butterfly batch); after each change the full new certificate is sent in the next message so receivers learn it immediately. Options `--pseudonym-certificate`, `--pseudonym-certificate-key` (repeatable, paired in order); logs `[PSEUDONYM]` |
+| Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting
 
@@ -197,7 +274,7 @@ the vanetza-nap `jodyhuntatx` branch:
   - v2 puts `--certificate-chain` AAs into the cache without checking them against the
     trusted root.
   - The v2 verifier accepts only payload type `signed`.
-  - Pseudonym rotation changes only the certificate and signing key. The MAC and
+  - A pseudonym change replaces only the certificate and signing key. The MAC and
     GeoNetworking addresses stay the same, so consecutive pseudonyms remain linkable at
     lower layers.
 
@@ -212,7 +289,8 @@ Before 2026-09, this repo held a patch set for Vanetza-NAP `main`:
 - a docker-compose-free harness and a kind/K8s attempt.
 
 It was replaced by the release2 patch set above on 2026-09-28, and the pseudonym rotation
-was ported to release2 the same day (for both v2 and v3). The removed `vnap-origs/`,
+was ported to release2 the same day (for both v2 and v3). Its fixed countdown was then
+replaced by change events on a separate control channel. The removed `vnap-origs/`,
 `vnap-patches/` and `vnap-docker/` directories, including files that were never
 committed, are archived in `~/vnap-secure-removed-dirs-20260928.tar.gz` in the
 development VM. Their committed versions remain in git history, up to the commit that
