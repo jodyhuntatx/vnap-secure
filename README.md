@@ -140,6 +140,98 @@ Options:
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
 are.
 
+## Monitor messages between stations
+
+The stations exchange messages over the `vanetzalan0` docker network: RSU 192.168.98.10,
+OBU 192.168.98.20, in both run options. The container commands below use the
+plain-docker names `rsu` and `obu`; with docker-compose, run `docker-compose exec rsu …`
+from `EXEC_DIR` instead.
+
+| What | Where to look | Shows |
+|---|---|---|
+| Received messages | MQTT `vanetza/out/<type>` on the receiving station's broker | decoded message as JSON, plus its verification result |
+| Sent CAMs | MQTT `vanetza/own/cam` on the sending station's broker | the station's own CAMs as sent (`own_topic_out` in `config.ini`) |
+| Frames on the link | `tcpdump` on `br0` inside a station | raw GeoNetworking frames (ethertype 0x8947), including the security header |
+| Pseudonym changes | MQTT `vnap/pseudonym/#` on `pseudo-broker` (network `vnapctl0`) | change events and the stations' answers |
+
+### Application messages (MQTT)
+
+Each station runs an embedded MQTT broker on port 1883. socktap publishes every message
+it receives on `vanetza/out/<type>` (`cam`, `denm`, `cpm`, …):
+
+```bash
+# everything the RSU receives, with the topic (use .20 for the OBU)
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 \
+  mosquitto_sub -h 192.168.98.10 -t 'vanetza/out/#' -v
+
+# one line per received CAM: sender, receiver, verification result, payload size
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 \
+  mosquitto_sub -h 192.168.98.10 -t vanetza/out/cam |
+  jq -c '{from: .stationID, to: .receiverID, secured, report: .security_report.description, size: .packet_size}'
+#  {"from":2,"to":1,"secured":true,"report":"Success","size":82}
+
+# only messages that failed verification
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 \
+  mosquitto_sub -h 192.168.98.10 -t 'vanetza/out/#' |
+  jq -c 'select(.security_report.description != "Success")'
+
+# CAMs the OBU sends
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 \
+  mosquitto_sub -h 192.168.98.20 -t vanetza/own/cam
+```
+
+Useful JSON fields:
+- `stationID` / `stationAddr`: the sender's station ID and MAC address.
+- `receiverID` / `receiverType`: the receiving station.
+- `secured`, `security_report.description`: the verification result, `Success` or a
+  failure reason such as `Invalid_Certificate`.
+- `packet_size`: size of the message payload in bytes.
+- `fields`: the decoded message.
+
+socktap always delivers received messages, even those that fail verification (non-strict
+decapsulation). Judge a message by `security_report`, not by whether it arrived.
+`vnap-docker/check-r2-cams.sh [seconds]` counts CAMs and tallies `security_report` per
+station. `jq` is installed in the VM.
+
+### Frames on the simulated link (tcpdump)
+
+The image includes `tcpdump`. With `SUPPORT_MAC_BLOCKING=true` (set by `run-r2-sim.sh`)
+the station's link interface is the bridge `br0`:
+
+```bash
+# live, GeoNetworking frames only (both directions, as seen by the RSU)
+docker exec rsu tcpdump -i br0 -e -nn ether proto 0x8947
+
+# frames sent by the OBU only
+docker exec rsu tcpdump -i br0 -e -nn ether src 6e:06:e0:03:00:02 and ether proto 0x8947
+
+# save a capture for Wireshark (Ctrl-C to stop); under /mnt/hgfs it is visible on the host
+docker exec rsu tcpdump -i br0 -U -w - ether proto 0x8947 > /mnt/hgfs/COIMBRA/vnap.pcap
+```
+
+- **tcpdump output:** it decodes the GeoNetworking and BTP headers. It does not parse the
+  secured header, so for signed packets the values printed after it are wrong (e.g.
+  `Payload:`, `lat`/`lon`).
+- **Wireshark:** its GeoNetworking, BTP, ITS (CAM/DENM) and IEEE 1609.2 dissectors decode
+  the full frame, including the signer certificate. Wireshark is not installed in the VM;
+  open the capture on the host.
+- **Frame size:** with v3 and 1 Hz CAMs, every CAM carries the full signer certificate,
+  so frame size does not reveal a pseudonym change. Use the control channel below or
+  compare the certificate in Wireshark.
+
+### Pseudonym control channel
+
+```bash
+# change events and answers (add -u USER -P PASSWORD if the broker requires them)
+docker run --rm --network vnapctl0 eclipse-mosquitto:2 \
+  mosquitto_sub -h pseudo-broker -t 'vnap/pseudonym/#' -v
+#  vnap/pseudonym/2/change {"event_id":"1ac5c8f170da-4","reason":"manual"}
+#  vnap/pseudonym/2/status {"event_id":"1ac5c8f170da-4","result":"changed","previous":6,"index":7,...}
+
+docker logs -f obu 2>&1 | grep PSEUDONYM       # the OBU's side
+docker logs -f pseudo-client                   # events sent by the client and the answers
+```
+
 ## Pseudonym change events
 
 A station with `SECURITY=pseudonyms` keeps its current pseudonym (AT and signing key) until
@@ -249,16 +341,9 @@ the vanetza-nap `jodyhuntatx` branch:
 
 - **Startup log** (`docker logs rsu`): `[V3-CHAIN]` / `[V2-CHAIN]` lines show whether the
   configured chain and own AT are valid. A wrong root shows up there.
-- **Received messages** are not logged to stdout. socktap publishes each as JSON on MQTT
-  `vanetza/out/cam` (and `…/denm` etc.) on the station's embedded broker. The
-  `security_report` field holds the verification result:
-
-  ```bash
-  docker run --rm --network vanetzalan0 eclipse-mosquitto:2 \
-    mosquitto_sub -h 192.168.98.10 -t vanetza/out/cam -v      # .10 = RSU, .20 = OBU
-  ```
-
-  `check-r2-cams.sh` counts and tallies these per station.
+- **Received messages** are not logged to stdout. socktap publishes them on MQTT;
+  `security_report` holds the verification result. See
+  [Monitor messages between stations](#monitor-messages-between-stations).
 - **Message files** (signed or encrypted, e.g. from C-ITS-PKI) can be checked offline
   with Vanetza's own security code:
 
