@@ -28,7 +28,7 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 | `exec-to-vm.sh`, `run-build.sh`, `sync-vnap-dist.sh` | host-side helpers: ssh into the VM, build remotely and load the image on the host, copy `~/vanetza-nap` back |
 | `vnap-patches/` | patched Vanetza-NAP files (see [Patch set](#patch-set)) |
 | `vnap-origs/` | the corresponding upstream `release2-main` files |
-| `vnap-docker/` | plain-docker simulation harness and the `vnap-msgcheck` message checker |
+| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (status, events and checks of a running simulation) and the `vnap-msgcheck` message checker |
 | `vnap-certs/certify/` | Root/AA/AT generated with Vanetza's `certify` (TS 103 097 V1.2.1, `certs-v2`) |
 | `vnap-certs/c-its-pki/` | Root/AA/EA/TLM/AT and butterfly ATs from C-ITS-PKI (currently the v3 set, `certs-v3`) |
 
@@ -153,6 +153,73 @@ from `EXEC_DIR` instead.
 | Sent CAMs | MQTT `vanetza/own/cam` on the sending station's broker | the station's own CAMs as sent (`own_topic_out` in `config.ini`) |
 | Frames on the link | `tcpdump` on `br0` inside a station | raw GeoNetworking frames (ethertype 0x8947), including the security header |
 | Pseudonym changes | MQTT `vnap/pseudonym/#` on `pseudo-broker` (network `vnapctl0`) | change events and the stations' answers |
+
+### vnapctl (prototype)
+
+`vnap-docker/vnapctl` merges these sources into one tool. It needs only `python3`, the
+docker CLI and the `eclipse-mosquitto:2` image.
+
+- **Read-only:** it never starts, stops or changes anything.
+- **Bounded time:** every command finishes on its own; none waits for Ctrl-C.
+- **Output:** text by default, `--json` for scripts and agents.
+- **Discovery:** it finds stations on the `vanetzalan0` network, so docker-compose runs
+  work too (`--lan` and `--ctl` select other networks).
+
+```bash
+cd vnap-docker
+./vnapctl status          # stations, image, certificates, chain checks, pseudonym index, control channel, disk
+./vnapctl events --duration 10s                      # merged, time-ordered stream
+./vnapctl events --since 10m --kind pseudonym,chain  # history from container logs only
+./vnapctl events --kind rx --station rsu --count 5 --json
+./vnapctl check --duration 15s                       # default expectations -> PASS/FAIL
+./vnapctl check --duration 20s --expect 'obu.pseudonym.changed>=1' --expect 'rsu.cam.rx_per_s>=0.9'
+./vnapctl check --no-defaults --expect 'obu.cam.success_rate==0'  # negative controls (e.g. *-badroot)
+```
+
+**Events.** Each event has a timestamp, a station and a kind:
+
+| Kind | Source | Content |
+|---|---|---|
+| `rx` | `vanetza/out/<type>` | message type, sender, `secured`, `report`, size |
+| `tx` | `vanetza/own/cam` | message type |
+| `control` | `vnap/pseudonym/#` | change events and status answers |
+| `pseudonym` | `[PSEUDONYM]` log lines | pool start, changes, rejections, control-channel connection |
+| `chain` | `[V2-CHAIN]` / `[V3-CHAIN]` log lines | startup chain checks |
+| `error` | log lines | `Exit:`, failed assertions, crashes |
+
+- **Live and history:** MQTT has no history, so live capture covers `--duration`, and
+  `--since` adds older events from the container logs only.
+- **Start-up gap:** the first ~1 s of a live window is missed while the subscriber
+  containers start.
+
+**Checks.** `check` collects events for `--duration`, computes metrics and evaluates
+expectations of the form `metric OP number|metric` (`>=`, `<=`, `==`, `!=`, `>`, `<`).
+
+- **Metrics per station and message type:**
+  - `<station>.<type>.rx`, `.rx_from.<station>`, `.success`, `.failed`,
+    `.failed.<reason>`, `.success_rate`, `.rx_per_s`;
+  - `<station>.<type>.tx`;
+  - `<station>.pseudonym.changed`, `.rejected`, `.control_connected`;
+  - `<station>.chain.fail`, `<station>.errors.total`.
+- **Global metrics:** `control.event`, `control.status`, `control.changed`,
+  `stations.running`, `stations.total`, `disk.free_gb`.
+- **Metric list:** `check --json` returns every metric.
+- **Missing counters** (e.g. no DENMs) count as 0. A misspelled name fails and lists the
+  metrics that do exist.
+- **Default expectations**, unless `--no-defaults`:
+  - all stations running;
+  - at least 2 GB free disk;
+  - no failed chain checks and no crash lines;
+  - every station receives CAMs from every other;
+  - with security enabled, a CAM success rate of 1;
+  - pseudonym stations connected to their control channel.
+
+**Exit codes:** 0 ok/pass, 1 check failed, 2 usage error, 3 nothing running,
+4 `status` degraded.
+
+- **Run labels:** `run-r2-sim.sh` labels its containers with the scenario, the user and the
+  start time; `status` shows them, so it is clear who started a running simulation.
+- **Debugging:** `VNAPCTL_DEBUG=1` prints timings to stderr.
 
 ### Application messages (MQTT)
 

@@ -82,6 +82,10 @@ esac
 
 docker network inspect vanetzalan0 >/dev/null 2>&1 || docker network create vanetzalan0 --subnet=192.168.98.0/24
 
+# run labels, shown by "vnapctl status" (who started what, when)
+LABELS=(--label vnap.scenario=$SCENARIO --label vnap.started_by=${USER:-unknown}
+        --label vnap.started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ))
+
 # pseudonym control channel: its own network and broker, apart from vanetzalan0 and the stations' brokers
 CTL_IMAGE=vnap-pseudo-ctl
 CTL_AUTH=()
@@ -89,7 +93,7 @@ CTL_AUTH=()
 if [ "${PSEUDO_CTL:-0}" = 1 ]; then
   docker image inspect $CTL_IMAGE >/dev/null 2>&1 || tar -C "$HERE/pseudo-ctl" -c . | docker build -q -t $CTL_IMAGE - >/dev/null  # stdin: snap docker cannot read /mnt/hgfs
   docker network inspect vnapctl0 >/dev/null 2>&1 || docker network create vnapctl0 --subnet=192.168.99.0/24
-  docker run -d --name pseudo-broker --network vnapctl0 --ip 192.168.99.2 "${CTL_AUTH[@]}" $CTL_IMAGE broker
+  docker run -d --name pseudo-broker --network vnapctl0 --ip 192.168.99.2 "${LABELS[@]}" "${CTL_AUTH[@]}" $CTL_IMAGE broker
 fi
 
 run_station() {  # name ip station_id station_type mac sec-args...
@@ -99,7 +103,7 @@ run_station() {  # name ip station_id station_type mac sec-args...
     ep=(); cmd=()
     [[ " $* " == *AT_CERT=* ]] && ep=(-e SECURITY=certs)
   fi
-  docker create --name $name \
+  docker create --name $name "${LABELS[@]}" \
     --volume "$CERTS_DIR":/vnap-certs:ro \
     "${ep[@]}" \
     --network vanetzalan0 --ip $ip --cap-add NET_ADMIN \
@@ -117,7 +121,7 @@ run_station rsu 192.168.98.10 1 15 6e:06:e0:03:00:01 "${RSU_SEC[@]}"
 run_station obu 192.168.98.20 2 5  6e:06:e0:03:00:02 "${OBU_SEC[@]}"
 
 if [ "${PSEUDO_CTL:-0}" = 1 ]; then
-  docker run -d --name pseudo-client --network vnapctl0 --ip 192.168.99.3 "${CTL_AUTH[@]}" \
+  docker run -d --name pseudo-client --network vnapctl0 --ip 192.168.99.3 "${LABELS[@]}" "${CTL_AUTH[@]}" \
     -e STATIONS=2 -e MODE=${PSEUDO_MODE:-periodic} -e INTERVAL=${PSEUDO_INTERVAL:-30} \
     -e MIN_INTERVAL=${PSEUDO_RANDOM_MIN:-10} -e MAX_INTERVAL=${PSEUDO_RANDOM_MAX:-60} \
     -e INDEX=${PSEUDO_INDEX:-} -e COUNT=${PSEUDO_COUNT:-0} \

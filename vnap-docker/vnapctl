@@ -1,0 +1,683 @@
+#!/usr/bin/env python3
+"""vnapctl -- inspect a running Vanetza-NAP RSU/OBU simulation (prototype).
+
+  vnapctl status [--json]                 what is running: stations, security, chain checks,
+                                          pseudonym state, control channel, disk
+  vnapctl events [--duration 10s] [--since 5m] [--kind rx,tx,...] [--station obu] [--count N] [--json]
+                                          merged, timestamped event stream from MQTT and container logs
+  vnapctl check [--duration 15s] [--expect 'rsu.cam.success_rate>=0.99' ...] [--no-defaults] [--json]
+                                          collect events, compute metrics, return a pass/fail verdict
+
+All commands are read-only and finish in bounded time. Exit codes: 0 ok/pass, 1 check failed,
+2 usage error, 3 no simulation running, 4 status degraded.
+
+Stations are found by membership of the simulation network (default vanetzalan0), so both the
+plain-docker harness (run-r2-sim.sh) and docker-compose runs are covered. Requires only python3,
+the docker CLI and the eclipse-mosquitto:2 image (used for MQTT subscriptions).
+"""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import os
+import time
+from datetime import datetime, timezone
+
+MQTT_IMAGE = "eclipse-mosquitto:2"
+DISK_WARN_GB = 2.0
+EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "chain", "error")
+
+EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_DOWN, EXIT_DEGRADED = 0, 1, 2, 3, 4
+
+
+# ---------------------------------------------------------------- helpers
+
+DEBUG = os.environ.get("VNAPCTL_DEBUG") == "1"
+T0 = time.time()
+
+
+def debug(msg):
+    if DEBUG:
+        print(f"[vnapctl +{time.time() - T0:6.2f}s] {msg}", file=sys.stderr)
+
+
+def docker(*args, check=True):
+    """Run a docker CLI command and return stdout (stderr merged for logs)."""
+    t = time.time()
+    result = subprocess.run(["docker", *args], capture_output=True, text=True)
+    debug(f"docker {' '.join(args[:3])} ({time.time() - t:.2f}s)")
+    if check and result.returncode != 0:
+        raise RuntimeError(f"docker {' '.join(args[:2])}: {result.stderr.strip()}")
+    return result.stdout + (result.stderr if args[0] == "logs" else "")
+
+
+def parse_duration(text):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s|m|h)?", text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(f"invalid duration '{text}' (e.g. 500ms, 10s, 5m, 1h)")
+    value, unit = float(m.group(1)), m.group(2) or "s"
+    return value * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
+
+
+def parse_docker_time(text):
+    """RFC 3339 with nanoseconds (docker) -> epoch seconds."""
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?Z", text)
+    if not m:
+        return None
+    base = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    return base.timestamp() + float("0." + (m.group(2) or "0"))
+
+
+def clock(t):
+    return datetime.fromtimestamp(t).strftime("%H:%M:%S.%f")[:-3] if t else "--:--:--.---"
+
+
+def env_of(info):
+    env = {}
+    for item in info["Config"].get("Env") or []:
+        key, _, value = item.partition("=")
+        env[key] = value
+    return env
+
+
+# ---------------------------------------------------------------- discovery
+
+class Simulation:
+    """Containers of one simulation, found through its docker networks."""
+
+    def __init__(self, lan, ctl):
+        self.lan, self.ctl = lan, ctl
+        self.stations = []   # docker inspect dicts of V2X stations (have VANETZA_STATION_ID)
+        self.broker = None   # control channel broker
+        self.client = None   # control channel event client
+        self.networks = {}
+        members = {}
+        for net in (lan, ctl):
+            try:
+                self.networks[net] = json.loads(docker("network", "inspect", net))[0]
+            except (RuntimeError, IndexError, json.JSONDecodeError):
+                continue
+            out = docker("ps", "-a", "--filter", f"network={net}", "--format", "{{.Names}}", check=False)
+            members[net] = {n for n in out.split() if n}
+        names = set().union(*members.values()) if members else set()
+        infos = json.loads(docker("inspect", *sorted(names))) if names else []
+        for info in infos:
+            env, name = env_of(info), Simulation.name(info)
+            cmd = info["Config"].get("Cmd") or []
+            # stations only count on the simulation network, control containers only on the control network
+            if "VANETZA_STATION_ID" in env and name in members.get(lan, ()):
+                self.stations.append(info)
+            elif name in members.get(ctl, ()) and "broker" in cmd:
+                self.broker = info
+            elif name in members.get(ctl, ()) and "client" in cmd:
+                self.client = info
+        self.stations.sort(key=lambda i: int(env_of(i).get("VANETZA_STATION_ID", 0)))
+
+    @property
+    def running(self):
+        return bool(self.stations)
+
+    @staticmethod
+    def name(info):
+        return info["Name"].lstrip("/")
+
+    def ip(self, info, net):
+        return ((info["NetworkSettings"]["Networks"] or {}).get(net) or {}).get("IPAddress", "")
+
+    def station_by_id(self):
+        return {int(env_of(i)["VANETZA_STATION_ID"]): self.name(i) for i in self.stations}
+
+    def control_auth(self):
+        """Broker account for our own subscriptions (never printed)."""
+        if not self.broker:
+            return None
+        env = env_of(self.broker)
+        if env.get("CONTROL_USERNAME"):
+            return env["CONTROL_USERNAME"], env.get("CONTROL_PASSWORD", "")
+        return None
+
+
+# ---------------------------------------------------------------- log parsing
+
+RE_POOL_START = re.compile(r"\[PSEUDONYM\] (v\d) pool of (\d+) certificate\(s\).*starting at index (\d+) \(certificate=(\w+)\)")
+RE_CHANGED = re.compile(r"\[PSEUDONYM\] changed pool index (\d+) -> (\d+) \(of (\d+)\), certificate=(\w+)")
+RE_REJECTED = re.compile(r"\[PSEUDONYM\] (?:change to index (\d+) rejected|change event rejected): (.*)")
+RE_CHAIN = re.compile(r"\[(V[23])-CHAIN\] (chain certificate|own authorization ticket) (\S+): (.*)")
+RE_CHAIN_WARN = re.compile(r"\[(V[23])-CHAIN\] WARNING: (.*)")
+RE_ERROR = re.compile(r"^(Exit[: ]|terminate called|.*Assertion .* failed|Segmentation fault|Aborted)")
+
+
+def log_events(station, since=None, until=None):
+    """Parse a station's container log into events (docker log timestamps)."""
+    args = ["logs", "--timestamps"]
+    if since is not None:
+        args += ["--since", f"{since:.3f}"]
+    if until is not None:
+        args += ["--until", f"{until:.3f}"]
+    out = docker(*args, station, check=False)
+    events = []
+    for raw in out.splitlines():
+        stamp, _, line = raw.partition(" ")
+        t = parse_docker_time(stamp)
+        if t is None:
+            continue
+        ev = None
+        if m := RE_POOL_START.search(line):
+            ev = {"kind": "pseudonym", "action": "start", "version": m[1], "pool_size": int(m[2]),
+                  "index": int(m[3]), "certificate": m[4]}
+        elif m := RE_CHANGED.search(line):
+            ev = {"kind": "pseudonym", "action": "changed", "previous": int(m[1]), "index": int(m[2]),
+                  "pool_size": int(m[3]), "certificate": m[4], "wrapped": "wrapped around" in line}
+        elif m := RE_REJECTED.search(line):
+            ev = {"kind": "pseudonym", "action": "rejected", "error": m[2]}
+            if m[1]:
+                ev["requested"] = int(m[1])
+        elif "[PSEUDONYM] control channel connected" in line:
+            ev = {"kind": "pseudonym", "action": "connected"}
+        elif "[PSEUDONYM] control channel lost" in line or "[PSEUDONYM] control channel connection refused" in line:
+            ev = {"kind": "pseudonym", "action": "disconnected", "text": line.split("] ", 1)[1]}
+        elif "[PSEUDONYM] WARNING" in line:
+            ev = {"kind": "pseudonym", "action": "warning", "text": line.split("WARNING: ", 1)[1]}
+        elif m := RE_CHAIN.search(line):
+            ev = {"kind": "chain", "version": m[1], "role": "chain" if m[2].startswith("chain") else "own_at",
+                  "cert": m[3], "result": m[4], "ok": m[4] == "OK"}
+        elif m := RE_CHAIN_WARN.search(line):
+            ev = {"kind": "chain", "version": m[1], "role": "warning", "result": m[2], "ok": False}
+        elif RE_ERROR.search(line):
+            ev = {"kind": "error", "text": line.strip()}
+        if ev:
+            events.append({"t": t, "station": station, **ev})
+    return events
+
+
+# ---------------------------------------------------------------- status
+
+def station_status(sim, info):
+    env, name = env_of(info), Simulation.name(info)
+    state = info["State"]
+    security = env.get("VANETZA_SECURITY") or "none"
+    pool = sorted(k for k in env if re.fullmatch(r"PSEUDO_CERT_\d+", k))
+    st = {
+        "name": name,
+        "station_id": int(env.get("VANETZA_STATION_ID", 0)),
+        "station_type": int(env.get("VANETZA_STATION_TYPE", 0) or 0),
+        "state": state["Status"],
+        "started_at": None if state.get("StartedAt", "").startswith("0001") else state.get("StartedAt"),
+        "exit_code": state.get("ExitCode") if state["Status"] != "running" else None,
+        "image": info["Config"]["Image"],
+        "image_id": info["Image"].split(":")[-1][:12],
+        "mac": env.get("VANETZA_MAC_ADDRESS"),
+        "networks": {n: v.get("IPAddress") for n, v in (info["NetworkSettings"]["Networks"] or {}).items()},
+        "security": {
+            "entity": security,
+            "mode": env.get("SECURITY") or "config",
+            "at_cert": env.get("AT_CERT"),
+            "aa_cert": env.get("AA_CERT"),
+            "root_cert": env.get("ROOT_CERT"),
+            "pseudonym_pool": len(pool) or None,
+        },
+        "chain": [], "pseudonym": None, "errors": [],
+    }
+    events = log_events(name)
+    st["chain"] = [{k: e[k] for k in ("role", "cert", "result", "ok") if k in e} for e in events if e["kind"] == "chain"]
+    st["errors"] = [e["text"] for e in events if e["kind"] == "error"]
+    ps = [e for e in events if e["kind"] == "pseudonym"]
+    if pool or ps:
+        current = next((e for e in reversed(ps) if e["action"] in ("changed", "start")), None)
+        conn = next((e for e in reversed(ps) if e["action"] in ("connected", "disconnected")), None)
+        st["pseudonym"] = {
+            "pool_size": current["pool_size"] if current else len(pool),
+            "index": current["index"] if current else None,
+            "certificate": current["certificate"] if current else None,
+            "last_change": clock(current["t"]) if current and current["action"] == "changed" else None,
+            "changes": sum(e["action"] == "changed" for e in ps),
+            "rejected": sum(e["action"] == "rejected" for e in ps),
+            "control": {
+                "broker": env.get("PSEUDO_CONTROL_BROKER"),
+                "topic": env.get("PSEUDO_CONTROL_TOPIC") or f"vnap/pseudonym/{st['station_id']}",
+                "auth": bool(env.get("PSEUDO_CONTROL_USERNAME")),
+                "connected": bool(conn and conn["action"] == "connected"),
+            } if env.get("PSEUDO_CONTROL_BROKER") else None,
+        }
+    return st
+
+
+def build_status(sim):
+    labels = {}
+    for info in sim.stations:
+        labels.update({k: v for k, v in (info["Config"].get("Labels") or {}).items() if k.startswith("vnap.")})
+    stations = [station_status(sim, i) for i in sim.stations]
+    control = None
+    if sim.broker or sim.client:
+        control = {}
+        if sim.broker:
+            env = env_of(sim.broker)
+            control["broker"] = {"name": Simulation.name(sim.broker), "state": sim.broker["State"]["Status"],
+                                 "ip": sim.ip(sim.broker, sim.ctl), "auth": bool(env.get("CONTROL_USERNAME"))}
+        if sim.client:
+            env = env_of(sim.client)
+            control["client"] = {"name": Simulation.name(sim.client), "state": sim.client["State"]["Status"],
+                                 "mode": env.get("MODE", "periodic"), "stations": env.get("STATIONS", "2"),
+                                 "interval": env.get("INTERVAL") if env.get("MODE", "periodic") == "periodic" else None}
+    free_gb = shutil.disk_usage("/").free / 1e9
+
+    warnings = []
+    for st in stations:
+        if st["state"] != "running":
+            warnings.append(f"{st['name']} is {st['state']} (exit code {st['exit_code']})")
+        for c in st["chain"]:
+            if not c["ok"]:
+                warnings.append(f"{st['name']}: chain check {c.get('cert', '')} {c['result']}")
+        for e in st["errors"]:
+            warnings.append(f"{st['name']}: {e}")
+        p = st["pseudonym"]
+        if p and st["security"]["pseudonym_pool"]:
+            if not p["control"]:
+                warnings.append(f"{st['name']}: pseudonym pool without control broker, pseudonym never changes")
+            elif not p["control"]["connected"]:
+                warnings.append(f"{st['name']}: control channel not connected")
+    for part in (control or {}).values():
+        if part["state"] != "running":
+            warnings.append(f"{part['name']} is {part['state']}")
+    if free_gb < DISK_WARN_GB:
+        warnings.append(f"only {free_gb:.1f} GB free on / (docker builds need several GB)")
+
+    return {
+        "health": "down" if not stations else ("degraded" if warnings else "ok"),
+        "run": {
+            "scenario": labels.get("vnap.scenario"),
+            "started_by": labels.get("vnap.started_by"),
+            "started_at": labels.get("vnap.started_at") or min((s["started_at"] for s in stations if s["started_at"]), default=None),
+        },
+        "networks": {n: (v.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet") for n, v in sim.networks.items()},
+        "stations": stations,
+        "control": control,
+        "disk": {"free_gb": round(free_gb, 1), "low": free_gb < DISK_WARN_GB},
+        "warnings": warnings,
+    }
+
+
+def print_status(s):
+    run = s["run"]
+    print(f"health: {s['health']}")
+    if not s["stations"]:
+        print("no simulation running (no stations on the simulation network)")
+        return
+    owner = f", started by {run['started_by']}" if run["started_by"] else ""
+    print(f"run: scenario {run['scenario'] or '(unlabelled)'}{owner}, since {run['started_at']}")
+    print("networks: " + ", ".join(f"{n} {sub}" for n, sub in s["networks"].items()))
+    for st in s["stations"]:
+        sec = st["security"]
+        ips = " ".join(f"{ip}" for ip in st["networks"].values())
+        print(f"\n{st['name']}  id {st['station_id']} type {st['station_type']}  {st['state']}  "
+              f"{st['image']} ({st['image_id']})  {ips}")
+        certs = f"pool of {sec['pseudonym_pool']}" if sec["pseudonym_pool"] else (sec["at_cert"] or "-")
+        print(f"  security: {sec['entity']} ({sec['mode']}), AT {certs}, AA {sec['aa_cert'] or '-'}, root {sec['root_cert'] or '-'}")
+        if st["chain"]:
+            bad = [c for c in st["chain"] if not c["ok"]]
+            print(f"  chain checks: {len(st['chain']) - len(bad)}/{len(st['chain'])} OK"
+                  + "".join(f"\n    FAIL {c.get('cert', '')}: {c['result']}" for c in bad))
+        p = st["pseudonym"]
+        if p:
+            ctl = p["control"]
+            ctl_text = (f"control {ctl['broker']} topic {ctl['topic']} "
+                        f"{'connected' if ctl['connected'] else 'NOT connected'}{', auth' if ctl['auth'] else ', no auth'}"
+                        if ctl else "no control channel")
+            print(f"  pseudonym: index {p['index']}/{p['pool_size']} cert {p['certificate']}, "
+                  f"{p['changes']} change(s), {p['rejected']} rejected, last {p['last_change'] or '-'}; {ctl_text}")
+        for e in st["errors"]:
+            print(f"  ERROR {e}")
+    if s["control"]:
+        c = s["control"]
+        print()
+        if "broker" in c:
+            b = c["broker"]
+            print(f"control broker: {b['name']} {b['state']} {b['ip']} {'auth' if b['auth'] else 'anonymous'}")
+        if "client" in c:
+            cl = c["client"]
+            every = f" every {cl['interval']}s" if cl["interval"] else ""
+            print(f"control client: {cl['name']} {cl['state']} mode {cl['mode']}{every} stations [{cl['stations']}]")
+    print(f"\ndisk: {s['disk']['free_gb']} GB free on /")
+    for w in s["warnings"]:
+        print(f"WARNING: {w}")
+
+
+# ---------------------------------------------------------------- events
+
+class MqttProbe(threading.Thread):
+    """Subscribe to a broker for a bounded time via a throwaway mosquitto_sub container."""
+
+    def __init__(self, sim, network, host, topics, label, seconds, sink, run_id, auth=None):
+        super().__init__(daemon=True)
+        self.sim, self.label, self.sink = sim, label, sink
+        cmd = ["docker", "run", "--rm", "--network", network, "--label", f"vnapctl.probe={run_id}", MQTT_IMAGE,
+               "mosquitto_sub", "-h", host, "-F", "%U %t %p", "-W", str(max(1, int(seconds + 0.999)))]
+        for t in topics:
+            cmd += ["-t", t]
+        if auth:
+            cmd += ["-u", auth[0], "-P", auth[1]]
+        self.cmd = cmd
+        self.proc = None
+
+    def run(self):
+        self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        first = True
+        for line in self.proc.stdout:
+            if first:
+                debug(f"probe {self.label}: first message")
+                first = False
+            parts = line.rstrip("\n").split(" ", 2)
+            if len(parts) == 3:
+                self.sink(self.label, float(parts[0]), parts[1], parts[2])
+        self.proc.wait()
+        debug(f"probe {self.label}: exited ({self.proc.returncode})")
+
+    def stop(self):
+        """Stop reading: kill the local docker client. The container ends by itself (-W)."""
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+
+    @staticmethod
+    def kill_all(run_id):
+        """Stop this run's probe containers early (--count reached), without waiting for the daemon."""
+        subprocess.Popen(["sh", "-c", f"docker ps -q --filter label=vnapctl.probe={run_id} | xargs -r docker kill"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def mqtt_event(sim, ids, label, t, topic, payload):
+    """Normalize one MQTT message into an event."""
+    try:
+        msg = json.loads(payload)
+    except json.JSONDecodeError:
+        msg = {"raw": payload[:200]}
+    parts = topic.split("/")
+    if parts[0] == "vanetza" and len(parts) == 3 and parts[1] in ("out", "own"):
+        ev = {"t": t, "station": label, "kind": "rx" if parts[1] == "out" else "tx", "type": parts[2]}
+        if parts[1] == "out":
+            sender = msg.get("stationID")
+            report = msg.get("security_report") or {}
+            ev.update({"from": ids.get(sender, str(sender)), "from_id": sender, "from_addr": msg.get("stationAddr"),
+                       "secured": msg.get("secured"), "report": report.get("description"),
+                       "size": msg.get("packet_size"), "rssi": msg.get("rssi")})
+        return ev
+    if parts[:2] == ["vnap", "pseudonym"] and len(parts) == 4:
+        station = ids.get(int(parts[2]), parts[2]) if parts[2].isdigit() else parts[2]
+        ev = {"t": t, "station": station, "kind": "control", "direction": "event" if parts[3] == "change" else "status"}
+        ev.update({k: msg[k] for k in ("event_id", "index", "reason", "result", "error", "previous", "certificate", "raw")
+                   if k in msg})
+        return ev
+    return None
+
+
+def collect_events(sim, duration, since=None, count=None, kinds=None, stations=None):
+    """Live MQTT events for `duration` seconds plus log events from `since` (or the window start)."""
+    ids = sim.station_by_id()
+    events, lock, done = [], threading.Lock(), threading.Event()
+
+    def keep(ev):
+        return ev and (not kinds or ev["kind"] in kinds) and (not stations or ev["station"] in stations)
+
+    def sink(label, t, topic, payload):
+        ev = mqtt_event(sim, ids, label, t, topic, payload)
+        if keep(ev):
+            with lock:
+                events.append(ev)
+                if count and len(events) >= count:
+                    done.set()
+
+    start = time.time()
+    run_id = f"{int(start * 1000)}-{threading.get_ident()}"
+    probes = []
+    if duration > 0:
+        if not kinds or kinds & {"rx", "tx"}:
+            for info in sim.stations:
+                name = Simulation.name(info)
+                if info["State"]["Status"] == "running":  # station filter is applied to the events
+                    probes.append(MqttProbe(sim, sim.lan, sim.ip(info, sim.lan), ["vanetza/out/#", "vanetza/own/#"],
+                                            name, duration, sink, run_id))
+        if sim.broker and sim.broker["State"]["Status"] == "running" and (not kinds or "control" in kinds):
+            probes.append(MqttProbe(sim, sim.ctl, sim.ip(sim.broker, sim.ctl), ["vnap/pseudonym/#"],
+                                    "control", duration, sink, run_id, sim.control_auth()))
+        for p in probes:
+            p.start()
+        # mosquitto_sub -W ends each probe `duration` after it connects; wait for that
+        # (container start-up adds ~1 s), and stop early only when --count is reached
+        deadline = start + duration + 8
+        while any(p.is_alive() for p in probes) and not done.is_set() and time.time() < deadline:
+            done.wait(0.2)
+        if any(p.is_alive() for p in probes):
+            debug("stopping probes" + (" (--count reached)" if done.is_set() else " (deadline)"))
+            if done.is_set():
+                MqttProbe.kill_all(run_id)
+            for p in probes:
+                p.stop()
+            for p in probes:
+                p.join(timeout=1)
+
+    log_since = since if since is not None else start
+    for info in sim.stations:
+        for ev in log_events(Simulation.name(info), since=log_since):
+            if keep(ev):
+                events.append(ev)
+    events.sort(key=lambda e: e["t"])
+    if count:
+        events = events[:count]
+    return events, start, time.time()
+
+
+def describe(ev):
+    k = ev["kind"]
+    if k == "rx":
+        sec = ev["report"] if ev.get("secured") else "unsecured"
+        return f"rx {ev['type']} from {ev['from']}  {sec}  {ev.get('size')}B"
+    if k == "tx":
+        return f"tx {ev['type']}"
+    if k == "control":
+        if ev["direction"] == "event":
+            idx = f" index {ev['index']}" if "index" in ev else ""
+            return f"control event {ev.get('event_id', '-')}{idx} ({ev.get('reason', '')})"
+        detail = f"{ev.get('previous')} -> {ev.get('index')}" if ev.get("result") == "changed" else ev.get("error", "")
+        return f"control status {ev.get('event_id', '-')} {ev.get('result')} {detail}"
+    if k == "pseudonym":
+        a = ev["action"]
+        if a == "changed":
+            return f"pseudonym changed {ev['previous']} -> {ev['index']} cert {ev['certificate']}" + (" (wrapped)" if ev["wrapped"] else "")
+        if a == "start":
+            return f"pseudonym pool {ev['pool_size']} ({ev['version']}), index {ev['index']} cert {ev['certificate']}"
+        if a == "rejected":
+            return f"pseudonym change rejected: {ev['error']}"
+        return f"pseudonym {a}" + (f": {ev['text']}" if "text" in ev else "")
+    if k == "chain":
+        return f"chain {ev['role']} {ev.get('cert', '')}: {ev['result']}"
+    if k == "error":
+        return f"ERROR {ev['text']}"
+    return json.dumps(ev)
+
+
+# ---------------------------------------------------------------- check
+
+def compute_metrics(sim, status, events, seconds):
+    m = {}
+
+    def inc(key, n=1):
+        m[key] = m.get(key, 0) + n
+
+    names = [s["name"] for s in status["stations"]]
+    for ev in events:
+        s = ev["station"]
+        if ev["kind"] == "rx":
+            base = f"{s}.{ev['type']}"
+            inc(f"{base}.rx")
+            inc(f"{base}.rx_from.{ev['from']}")
+            if ev.get("secured") and ev.get("report") == "Success":
+                inc(f"{base}.success")
+            elif ev.get("secured"):
+                inc(f"{base}.failed")
+                inc(f"{base}.failed.{ev.get('report')}")
+            else:
+                inc(f"{base}.unsecured")
+        elif ev["kind"] == "tx":
+            inc(f"{s}.{ev['type']}.tx")
+        elif ev["kind"] == "pseudonym" and ev["action"] in ("changed", "rejected"):
+            inc(f"{s}.pseudonym.{ev['action']}")
+        elif ev["kind"] == "control":
+            inc(f"control.{ev['direction']}")
+            if ev.get("result"):
+                inc(f"control.{ev['result']}")
+        elif ev["kind"] == "error":
+            inc(f"{s}.errors")
+    for key in [k for k in m if k.endswith(".rx")]:
+        base = key[:-3]
+        m[f"{base}.success_rate"] = round(m.get(f"{base}.success", 0) / m[key], 4)
+        m[f"{base}.rx_per_s"] = round(m[key] / seconds, 2) if seconds else 0
+    for st in status["stations"]:
+        n = st["name"]
+        m.setdefault(f"{n}.running", int(st["state"] == "running"))
+        m[f"{n}.chain.fail"] = sum(not c["ok"] for c in st["chain"])
+        m[f"{n}.errors.total"] = len(st["errors"])
+        p = st["pseudonym"]
+        if p and p["control"]:
+            m[f"{n}.pseudonym.control_connected"] = int(p["control"]["connected"])
+    m["stations.running"] = sum(st["state"] == "running" for st in status["stations"])
+    m["stations.total"] = len(names)
+    m["disk.free_gb"] = status["disk"]["free_gb"]
+    return m
+
+
+def default_expectations(status):
+    exps = ["stations.running==stations.total", "disk.free_gb>=2"]
+    running = [s for s in status["stations"] if s["state"] == "running"]
+    for st in running:
+        n = st["name"]
+        exps += [f"{n}.chain.fail==0", f"{n}.errors.total==0"]
+        for other in running:
+            if other is not st:
+                exps.append(f"{n}.cam.rx_from.{other['name']}>=1")
+        if st["security"]["entity"] not in ("none", "") and len(running) > 1:
+            exps.append(f"{n}.cam.success_rate==1")
+        if st["pseudonym"] and st["pseudonym"]["control"]:
+            exps.append(f"{n}.pseudonym.control_connected==1")
+    return exps
+
+
+RE_EXPECT = re.compile(r"\s*([\w.\-]+)\s*(>=|<=|==|!=|>|<)\s*([\w.\-]+)\s*")
+OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, "==": lambda a, b: a == b,
+       "!=": lambda a, b: a != b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
+
+
+def evaluate(expr, metrics):
+    m = RE_EXPECT.fullmatch(expr)
+    if not m:
+        return {"expect": expr, "ok": False, "detail": "cannot parse (use: metric OP number|metric)"}
+    left, op, right = m.groups()
+
+    def value(token):
+        try:
+            return float(token), None
+        except ValueError:
+            pass
+        if token in metrics:
+            return metrics[token], None
+        # counters that never occurred are 0; rates and states must exist
+        if re.search(r"\.(rx|tx|success|unsecured|failed(\.\w+)?|rx_from\.[\w\-]+|changed|rejected|errors|event|status)$", token):
+            return 0, None
+        near = sorted(k for k in metrics if k.split(".")[0] == token.split(".")[0])[:8]
+        return None, f"no metric {token}" + (f" (have: {', '.join(near)})" if near else "")
+
+    a, err_a = value(left)
+    b, err_b = value(right)
+    if err_a or err_b:
+        return {"expect": expr, "ok": False, "detail": err_a or err_b}
+    return {"expect": expr, "ok": OPS[op](a, b), "actual": a,
+            "detail": f"{left} = {a:g}" + (f", {right} = {b:g}" if not re.fullmatch(r"[\d.]+", right) else "")}
+
+
+# ---------------------------------------------------------------- CLI
+
+def main():
+    ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--lan", default="vanetzalan0", help="simulation network (default vanetzalan0)")
+    ap.add_argument("--ctl", default="vnapctl0", help="pseudonym control network (default vnapctl0)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("status", help="show what is running")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("events", help="merged event stream (MQTT + container logs)")
+    p.add_argument("--duration", type=parse_duration, default=None,
+                   help="live capture time (default 10s, or 0 with --since)")
+    p.add_argument("--since", type=parse_duration, help="also include log events from this long ago (MQTT has no history)")
+    p.add_argument("--kind", help=f"comma list of {','.join(EVENT_KINDS)}")
+    p.add_argument("--station", help="comma list of station names")
+    p.add_argument("--count", type=int, help="stop after this many events")
+    p.add_argument("--json", action="store_true", help="JSON lines")
+
+    p = sub.add_parser("check", help="collect events and evaluate expectations")
+    p.add_argument("--duration", type=parse_duration, default=15.0, help="observation time (default 15s)")
+    p.add_argument("--expect", action="append", default=[], metavar="EXPR",
+                   help="e.g. 'rsu.cam.success_rate>=0.99', 'obu.pseudonym.changed>=1' (repeatable)")
+    p.add_argument("--no-defaults", action="store_true", help="evaluate only --expect expressions")
+    p.add_argument("--json", action="store_true")
+
+    args = ap.parse_args()
+    try:
+        sim = Simulation(args.lan, args.ctl)
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"vnapctl: {e}", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.cmd == "status":
+        s = build_status(sim)
+        print(json.dumps(s, indent=2)) if args.json else print_status(s)
+        return {"ok": EXIT_OK, "degraded": EXIT_DEGRADED, "down": EXIT_DOWN}[s["health"]]
+
+    if not sim.running:
+        msg = f"no simulation running (no stations on {args.lan})"
+        print(json.dumps({"error": msg}) if args.json else msg, file=sys.stdout if args.json else sys.stderr)
+        return EXIT_DOWN
+
+    if args.cmd == "events":
+        kinds = set(args.kind.split(",")) if args.kind else None
+        if kinds and kinds - set(EVENT_KINDS):
+            print(f"vnapctl: unknown kind(s) {', '.join(kinds - set(EVENT_KINDS))}", file=sys.stderr)
+            return EXIT_USAGE
+        stations = set(args.station.split(",")) if args.station else None
+        duration = args.duration if args.duration is not None else (0 if args.since else 10.0)
+        since = time.time() - args.since if args.since else None
+        events, _, _ = collect_events(sim, duration, since, args.count, kinds, stations)
+        for ev in events:
+            if args.json:
+                print(json.dumps(ev))
+            else:
+                print(f"{clock(ev['t'])}  {ev['station']:<8} {describe(ev)}")
+        return EXIT_OK
+
+    if args.cmd == "check":
+        status = build_status(sim)
+        events, start, end = collect_events(sim, args.duration)
+        # rates use the requested window: the wall time also covers container start-up and log reads
+        metrics = compute_metrics(sim, status, events, args.duration)
+        exps = ([] if args.no_defaults else default_expectations(status)) + args.expect
+        results = [evaluate(e, metrics) for e in exps]
+        verdict = "pass" if results and all(r["ok"] for r in results) else "fail"
+        if args.json:
+            print(json.dumps({"verdict": verdict, "window_s": args.duration, "elapsed_s": round(end - start, 1),
+                              "results": results,
+                              "metrics": dict(sorted(metrics.items())), "warnings": status["warnings"]}, indent=2))
+        else:
+            print(f"verdict: {verdict.upper()}  ({len(results)} expectation(s), {args.duration:g}s window, "
+                  f"{len(events)} event(s))")
+            for r in results:
+                print(f"  {'ok  ' if r['ok'] else 'FAIL'}  {r['expect']:<42} {r['detail']}")
+            for w in status["warnings"]:
+                print(f"  WARNING: {w}")
+        return EXIT_OK if verdict == "pass" else EXIT_FAIL
+
+
+if __name__ == "__main__":
+    sys.exit(main())
