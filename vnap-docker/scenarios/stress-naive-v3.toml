@@ -1,0 +1,43 @@
+description = "stress: naive-v3 with 4 stations at 50 Hz CAMs; aborted socktap (PeerRequestTracker race) before the sign header policy mutex"
+image = "vnap:latest"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+env = { VANETZA_CAM_PERIODICITY = "20" }
+
+[[stations]]
+name = "s1"
+ip = "192.168.98.11"
+station_id = 11
+station_type = 5
+mac = "6e:06:e0:03:00:11"
+
+[[stations]]
+name = "s2"
+ip = "192.168.98.12"
+station_id = 12
+station_type = 5
+mac = "6e:06:e0:03:00:12"
+
+[[stations]]
+name = "s3"
+ip = "192.168.98.13"
+station_id = 13
+station_type = 5
+mac = "6e:06:e0:03:00:13"
+
+[[stations]]
+name = "s4"
+ip = "192.168.98.14"
+station_id = 14
+station_type = 5
+mac = "6e:06:e0:03:00:14"
+
+[check]
+defaults = false
+expect = ["stations.running==stations.total", "s1.errors.total==0", "s2.errors.total==0",
+          "s3.errors.total==0", "s4.errors.total==0", "s1.cam.rx_per_s>=50"]
