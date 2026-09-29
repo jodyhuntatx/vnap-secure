@@ -1,0 +1,25 @@
+description = "no security: baseline that proves the link and CAM path work"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "none"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+
+[check]
+expect = ["rsu.cam.rx_per_s>=0.8", "obu.cam.rx_per_s>=0.8", "rsu.cam.unsecured>=1"]

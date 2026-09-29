@@ -28,7 +28,7 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 | `exec-to-vm.sh`, `run-build.sh`, `sync-vnap-dist.sh` | host-side helpers: ssh into the VM, build remotely and load the image on the host, copy `~/vanetza-nap` back |
 | `vnap-patches/` | patched Vanetza-NAP files (see [Patch set](#patch-set)) |
 | `vnap-origs/` | the corresponding upstream `release2-main` files |
-| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (status, events and checks of a running simulation) and the `vnap-msgcheck` message checker |
+| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks) and the `vnap-msgcheck` message checker |
 | `vnap-certs/certify/` | Root/AA/AT generated with Vanetza's `certify` (TS 103 097 V1.2.1, `certs-v2`) |
 | `vnap-certs/c-its-pki/` | Root/AA/EA/TLM/AT and butterfly ATs from C-ITS-PKI (currently the v3 set, `certs-v3`) |
 
@@ -123,6 +123,49 @@ Options:
 - `PSEUDO_*`: pseudonym event client settings for `c-its-pki-pseudo` (see
   [Pseudonym change events](#pseudonym-change-events)).
 
+### Option 3: `vnapctl` with scenario files
+
+`vnap-docker/vnapctl up` starts a scenario described in a TOML file under
+`vnap-docker/scenarios/`. The format is in `scenarios/README.md`; one file exists for each
+`run-r2-sim.sh` scenario except the expired `certify`. `vnapctl down` stops it again.
+
+```bash
+cd vnap-docker
+./vnapctl scenarios                                   # list scenario files
+./vnapctl up c-its-pki                                # validate, start, wait until the stations exchange messages
+./vnapctl check                                       # uses the scenario's [check] expectations
+./vnapctl down                                        # stop, remove the networks
+./vnapctl up c-its-pki-pseudo --set control.client.interval=10 --set defaults.security=certs-v2 \
+    --set certs_dir=/home/demo/pki-test-v2            # overrides, recorded in the container labels
+./vnapctl up c-its-pki --dry-run                      # validate and print the docker commands
+./vnapctl --instance 1 up c-its-pki-badroot           # a second, independent simulation
+```
+
+- **Validation:** `up` reports every problem at once before starting anything:
+  - unknown keys and invalid security modes;
+  - duplicate station names, IPs, IDs or MACs;
+  - addresses outside their subnet;
+  - missing certificate files;
+  - certificate combinations the entrypoint cannot use.
+- **Refusals:** `up` does not start when a simulation is already running on the network,
+  when a container name is in use, when a network exists with another subnet, or when
+  less than 0.5 GB of disk is free.
+- **Rollback:** if a step fails, `up` removes whatever it created.
+- **Readiness:** `up` returns when every station has published on its MQTT broker and
+  pseudonym stations have joined the control channel (default wait 30 s, `--wait`).
+  Health, such as the expected chain failures of a negative control, is reported by
+  `status` and `check`.
+- **Ownership:** containers are labelled with the scenario file, overrides, user, start
+  time and run ID. `down` refuses runs started by another user, and unlabelled runs,
+  unless given `--force`.
+- **Parallel instances:** `--instance N` runs a copy on networks `vanetzalan0-iN` /
+  `vnapctl0-iN` with subnets `10.N.98.0/24` / `10.N.99.0/24` and container names `<name>-iN`.
+  This lets a test run (for example by Claude) next to someone's simulation.
+  `status`, `events`, `check` and `down` take the same option.
+- **Secrets:** broker credentials are given as names of environment variables
+  (`control.auth`). They reach the containers through `docker -e NAME`, never through the
+  command line or labels.
+
 ### Container environment (`entrypoint.sh`)
 
 | Variable | Meaning |
@@ -159,7 +202,8 @@ from `EXEC_DIR` instead.
 `vnap-docker/vnapctl` merges these sources into one tool. It needs only `python3`, the
 docker CLI and the `eclipse-mosquitto:2` image.
 
-- **Read-only:** it never starts, stops or changes anything.
+- **Read-only:** `status`, `events` and `check` never start, stop or change anything
+  (`up`/`down`: see [Option 3](#option-3-vnapctl-with-scenario-files)).
 - **Bounded time:** every command finishes on its own; none waits for Ctrl-C.
 - **Output:** text by default, `--json` for scripts and agents.
 - **Discovery:** it finds stations on the `vanetzalan0` network, so docker-compose runs
@@ -206,6 +250,10 @@ expectations of the form `metric OP number|metric` (`>=`, `<=`, `==`, `!=`, `>`,
 - **Metric list:** `check --json` returns every metric.
 - **Missing counters** (e.g. no DENMs) count as 0. A misspelled name fails and lists the
   metrics that do exist.
+- **Scenario expectations:** when the simulation was started with `vnapctl up`, `check`
+  also evaluates the scenario's `[check] expect` list. With `[check] defaults = false`, as
+  in the negative controls, the defaults below are skipped (`--no-scenario` ignores the
+  scenario).
 - **Default expectations**, unless `--no-defaults`:
   - all stations running;
   - at least 2 GB free disk;
@@ -214,8 +262,9 @@ expectations of the form `metric OP number|metric` (`>=`, `<=`, `==`, `!=`, `>`,
   - with security enabled, a CAM success rate of 1;
   - pseudonym stations connected to their control channel.
 
-**Exit codes:** 0 ok/pass, 1 check failed, 2 usage error, 3 nothing running,
-4 `status` degraded.
+**Exit codes:** 0 ok/pass, 1 check failed, 2 usage error or invalid scenario, 3 nothing
+running, 4 `status` degraded or `up` not ready, 5 conflict (already running, name in use,
+owned by someone else).
 
 - **Run labels:** `run-r2-sim.sh` labels its containers with the scenario, the user and the
   start time; `status` shows them, so it is clear who started a running simulation.

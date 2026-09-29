@@ -1,0 +1,28 @@
+description = "certs-v2 with the certify root/AA and per-station ATs issued 2026-09-24 (valid to 2026-11-23)"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v2"
+aa_cert = "/vnap-certs/certify/aa_vnap.cert"
+root_cert = "/vnap-certs/certify/root_ca_vnap.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/certify/ticket_vnap_rsu_20260924.cert"
+at_key = "/vnap-certs/certify/ticket_vnap_rsu_20260924.key"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+at_cert = "/vnap-certs/certify/ticket_vnap_obu_20260924.cert"
+at_key = "/vnap-certs/certify/ticket_vnap_obu_20260924.key"

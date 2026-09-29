@@ -1,0 +1,28 @@
+description = "certs-v3 with the C-ITS-PKI set: RSU regular AT, OBU butterfly AT bke_at_0"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"          # --set defaults.security=certs-v2 --set certs_dir=... for a v2 set
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+at_cert = "/vnap-certs/c-its-pki/bke_at_0.cert"
+at_key = "/vnap-certs/c-its-pki/bke_at_0_sign.der"

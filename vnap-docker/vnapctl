@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""vnapctl -- inspect a running Vanetza-NAP RSU/OBU simulation (prototype).
+"""vnapctl -- run and inspect Vanetza-NAP RSU/OBU simulations (prototype).
+
+  vnapctl scenarios [--json]              list scenario files (scenarios/*.toml)
+  vnapctl up <scenario> [--set path=value ...] [--wait 30s] [--dry-run] [--json]
+                                          validate a scenario, start it, wait until socktap runs
+  vnapctl down [<scenario>] [--force] [--keep-networks] [--dry-run] [--json]
+                                          stop the simulation; refuses runs started by someone else
 
   vnapctl status [--json]                 what is running: stations, security, chain checks,
                                           pseudonym state, control channel, disk
@@ -8,8 +14,10 @@
   vnapctl check [--duration 15s] [--expect 'rsu.cam.success_rate>=0.99' ...] [--no-defaults] [--json]
                                           collect events, compute metrics, return a pass/fail verdict
 
-All commands are read-only and finish in bounded time. Exit codes: 0 ok/pass, 1 check failed,
-2 usage error, 3 no simulation running, 4 status degraded.
+status, events and check are read-only. Every command finishes in bounded time. Exit codes:
+0 ok/pass, 1 check failed, 2 usage error (incl. invalid scenario), 3 no simulation running,
+4 degraded / not ready, 5 conflict (already running, name in use, owned by someone else).
+--instance N runs or inspects a parallel copy on its own networks (10.N.x.0/24, names <name>-iN).
 
 Stations are found by membership of the simulation network (default vanetzalan0), so both the
 plain-docker harness (run-r2-sim.sh) and docker-compose runs are covered. Requires only python3,
@@ -17,6 +25,7 @@ the docker CLI and the eclipse-mosquitto:2 image (used for MQTT subscriptions).
 """
 
 import argparse
+import ipaddress
 import json
 import re
 import shutil
@@ -25,6 +34,7 @@ import sys
 import threading
 import os
 import time
+import tomllib
 from datetime import datetime, timezone
 
 MQTT_IMAGE = "eclipse-mosquitto:2"
@@ -248,7 +258,7 @@ def station_status(sim, info):
 
 def build_status(sim):
     labels = {}
-    for info in sim.stations:
+    for info in [c for c in (sim.broker, sim.client) if c] + sim.stations:
         labels.update({k: v for k, v in (info["Config"].get("Labels") or {}).items() if k.startswith("vnap.")})
     stations = [station_status(sim, i) for i in sim.stations]
     control = None
@@ -271,7 +281,7 @@ def build_status(sim):
             warnings.append(f"{st['name']} is {st['state']} (exit code {st['exit_code']})")
         for c in st["chain"]:
             if not c["ok"]:
-                warnings.append(f"{st['name']}: chain check {c.get('cert', '')} {c['result']}")
+                warnings.append(f"{st['name']}: chain check " + (f"{c['cert']} {c['result']}" if c.get("cert") else c["result"]))
         for e in st["errors"]:
             warnings.append(f"{st['name']}: {e}")
         p = st["pseudonym"]
@@ -292,6 +302,11 @@ def build_status(sim):
             "scenario": labels.get("vnap.scenario"),
             "started_by": labels.get("vnap.started_by"),
             "started_at": labels.get("vnap.started_at") or min((s["started_at"] for s in stations if s["started_at"]), default=None),
+            "managed_by": labels.get("vnap.managed_by", "run-r2-sim.sh" if labels.get("vnap.scenario") else None),
+            "scenario_file": labels.get("vnap.scenario_file"),
+            "run_id": labels.get("vnap.run_id"),
+            "instance": int(labels.get("vnap.instance", "0")),
+            "overrides": json.loads(labels.get("vnap.overrides", "[]")),
         },
         "networks": {n: (v.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet") for n, v in sim.networks.items()},
         "stations": stations,
@@ -308,7 +323,11 @@ def print_status(s):
         print("no simulation running (no stations on the simulation network)")
         return
     owner = f", started by {run['started_by']}" if run["started_by"] else ""
-    print(f"run: scenario {run['scenario'] or '(unlabelled)'}{owner}, since {run['started_at']}")
+    via = f" via {run['managed_by']}" if run["managed_by"] else ""
+    print(f"run: scenario {run['scenario'] or '(unlabelled)'}{owner}{via}, since {run['started_at']}"
+          + (f", instance {run['instance']}" if run["instance"] else ""))
+    if run["overrides"]:
+        print(f"overrides: {' '.join(run['overrides'])}")
     print("networks: " + ", ".join(f"{n} {sub}" for n, sub in s["networks"].items()))
     for st in s["stations"]:
         sec = st["security"]
@@ -320,7 +339,8 @@ def print_status(s):
         if st["chain"]:
             bad = [c for c in st["chain"] if not c["ok"]]
             print(f"  chain checks: {len(st['chain']) - len(bad)}/{len(st['chain'])} OK"
-                  + "".join(f"\n    FAIL {c.get('cert', '')}: {c['result']}" for c in bad))
+                  + "".join(f"\n    FAIL {c['cert']}: {c['result']}" if c.get("cert") else f"\n    WARNING {c['result']}"
+                            for c in bad))
         p = st["pseudonym"]
         if p:
             ctl = p["control"]
@@ -596,14 +616,531 @@ def evaluate(expr, metrics):
             "detail": f"{left} = {a:g}" + (f", {right} = {b:g}" if not re.fullmatch(r"[\d.]+", right) else "")}
 
 
+# ---------------------------------------------------------------- scenarios
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SCENARIO_DIR = os.path.join(HERE, "scenarios")
+CTL_IMAGE = "vnap-pseudo-ctl"
+SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
+STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
+                "aa_cert", "root_cert", "pseudonyms", "env"}
+CLIENT_MODES = {"periodic", "random", "once", "manual"}
+EXIT_CONFLICT = 5
+
+
+class ScenarioError(Exception):
+    pass
+
+
+def instance_networks(lan, ctl, instance):
+    return (f"{lan}-i{instance}", f"{ctl}-i{instance}") if instance else (lan, ctl)
+
+
+def remap_ip(addr, instance):
+    """Instance N moves 192.168.C.D (or any a.b.C.D) to 10.N.C.D, so instances never overlap."""
+    if not instance:
+        return addr
+    ip, _, prefix = addr.partition("/")
+    parts = ip.split(".")
+    return f"10.{instance}.{parts[2]}.{parts[3]}" + (f"/{prefix}" if prefix else "")
+
+
+def parse_value(text):
+    try:
+        return tomllib.loads(f"v = {text}")["v"]
+    except tomllib.TOMLDecodeError:
+        return text
+
+
+def apply_override(data, assignment):
+    """--set a.b.c=value; stations.<name>.<key> addresses a station by name."""
+    path, eq, raw = assignment.partition("=")
+    if not eq or not path:
+        raise ScenarioError(f"--set needs path=value, got '{assignment}'")
+    keys = path.strip().split(".")
+    node = data
+    i = 0
+    while i < len(keys) - 1:
+        key = keys[i]
+        if key == "stations" and isinstance(node.get("stations"), list):
+            name = keys[i + 1]
+            match = [s for s in node["stations"] if s.get("name") == name]
+            if not match:
+                raise ScenarioError(f"--set {path}: no station '{name}'")
+            node = match[0]
+            i += 2
+            continue
+        node = node.setdefault(key, {})
+        if not isinstance(node, dict):
+            raise ScenarioError(f"--set {path}: '{key}' is not a table")
+        i += 1
+    node[keys[-1]] = parse_value(raw.strip())
+
+
+def resolve_scenario_path(ref):
+    for candidate in (ref, os.path.join(SCENARIO_DIR, ref), os.path.join(SCENARIO_DIR, ref + ".toml")):
+        if os.path.isfile(candidate):
+            return os.path.realpath(candidate)
+    raise ScenarioError(f"scenario '{ref}' not found (vnapctl scenarios lists them)")
+
+
+def load_scenario(ref, sets=(), instance=0):
+    """Read, override, validate and resolve a scenario file into a flat description."""
+    path = resolve_scenario_path(ref)
+    with open(path, "rb") as f:
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ScenarioError(f"{path}: {e}")
+    for assignment in sets:
+        apply_override(data, assignment)
+
+    errors = []
+    base = os.path.dirname(path)
+    # default: the repository's vnap-certs/; an explicit certs_dir is relative to the scenario file
+    certs_dir = os.path.realpath(os.path.join(base, data["certs_dir"]) if "certs_dir" in data
+                                 else os.path.join(HERE, "..", "vnap-certs"))
+    entrypoint = data.get("entrypoint", "native")
+    if entrypoint not in ("native", "stock"):
+        errors.append("entrypoint must be 'native' (patched image) or 'stock' (unpatched, mounts r2-entrypoint.sh)")
+    net = data.get("network", {})
+    lan_name, ctl_name = instance_networks(net.get("name", "vanetzalan0"),
+                                           data.get("control", {}).get("network", "vnapctl0"), instance)
+    try:
+        lan_subnet = ipaddress.ip_network(remap_ip(net.get("subnet", "192.168.98.0/24"), instance))
+    except ValueError as e:
+        errors.append(f"network.subnet: {e}")
+        lan_subnet = None
+    suffix = f"-i{instance}" if instance else ""
+
+    def cert_path(value, where):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.startswith("/vnap-certs/"):
+            errors.append(f"{where}: '{value}' must be a path under /vnap-certs/ (the mounted certs_dir)")
+            return value
+        if not os.path.isfile(os.path.join(certs_dir, value[len("/vnap-certs/"):])):
+            errors.append(f"{where}: {value} not found in {certs_dir}")
+        return value
+
+    defaults = data.get("defaults", {})
+    stations = []
+    for i, raw in enumerate(data.get("stations", [])):
+        unknown = set(raw) - STATION_KEYS
+        where = f"stations[{raw.get('name', i)}]"
+        if unknown:
+            errors.append(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
+        missing = [k for k in ("name", "ip", "station_id", "station_type", "mac") if k not in raw]
+        if missing:
+            errors.append(f"{where}: missing {', '.join(missing)}")
+            continue
+        st = {k: raw.get(k, defaults.get(k)) for k in ("security", "aa_cert", "root_cert")}
+        st.update({"name": raw["name"] + suffix, "base_name": raw["name"], "ip": remap_ip(raw["ip"], instance),
+                   "station_id": int(raw["station_id"]), "station_type": int(raw["station_type"]),
+                   "mac": raw["mac"], "at_cert": raw.get("at_cert"), "at_key": raw.get("at_key"),
+                   "env": {**defaults.get("env", {}), **raw.get("env", {})}})
+        st["security"] = st["security"] or "none"
+        if st["security"] not in SECURITY_ENTITIES:
+            errors.append(f"{where}: security '{st['security']}' not one of {', '.join(sorted(SECURITY_ENTITIES))}")
+        if lan_subnet and ipaddress.ip_address(st["ip"]) not in lan_subnet:
+            errors.append(f"{where}: ip {st['ip']} not in {lan_subnet}")
+        if bool(st["at_cert"]) != bool(st["at_key"]):
+            errors.append(f"{where}: at_cert and at_key go together")
+        pseudo = raw.get("pseudonyms")
+        if pseudo:
+            if st["at_cert"]:
+                errors.append(f"{where}: at_cert and pseudonyms cannot be combined")
+            if entrypoint != "native":
+                errors.append(f"{where}: pseudonyms need entrypoint = 'native'")
+            count = int(pseudo.get("count", 0))
+            if count < 1 or "{i}" not in pseudo.get("cert", "") or "{i}" not in pseudo.get("key", ""):
+                errors.append(f"{where}: pseudonyms needs cert/key patterns with {{i}} and count >= 1")
+            else:
+                pool = [(cert_path(pseudo["cert"].format(i=n), where), cert_path(pseudo["key"].format(i=n), where))
+                        for n in range(count)]
+                st["pseudonyms"] = {"pool": pool, "min_interval_ms": int(pseudo.get("min_interval_ms", 1000))}
+        cert_path(st["at_cert"], where)
+        cert_path(st["at_key"], where)
+        cert_path(st["aa_cert"], where)
+        cert_path(st["root_cert"], where)
+        needs_chain = entrypoint == "native" and (st["at_cert"] or st.get("pseudonyms"))
+        if needs_chain and not (st["aa_cert"] and st["root_cert"]):
+            errors.append(f"{where}: the native entrypoint needs aa_cert and root_cert with certificates")
+        if (st["at_cert"] or st.get("pseudonyms")) and not st["security"].startswith("certs"):
+            errors.append(f"{where}: certificates given but security is '{st['security']}'")
+        stations.append(st)
+    if len(stations) < 1:
+        errors.append("no stations")
+    for key in ("name", "ip", "station_id", "mac"):
+        values = [s[key] for s in stations]
+        dupes = sorted({str(v) for v in values if values.count(v) > 1})
+        if dupes:
+            errors.append(f"duplicate station {key}: {', '.join(dupes)}")
+
+    control = None
+    ctl_raw = data.get("control")
+    if ctl_raw:
+        try:
+            ctl_subnet = ipaddress.ip_network(remap_ip(ctl_raw.get("subnet", "192.168.99.0/24"), instance))
+        except ValueError as e:
+            errors.append(f"control.subnet: {e}")
+            ctl_subnet = None
+        client = dict(ctl_raw.get("client", {}))
+        mode = client.get("mode", "periodic")
+        if mode not in CLIENT_MODES:
+            errors.append(f"control.client.mode '{mode}' not one of {', '.join(sorted(CLIENT_MODES))}")
+        auth = ctl_raw.get("auth")
+        control = {
+            "network": ctl_name, "subnet": str(ctl_subnet) if ctl_subnet else None,
+            "broker": {"name": "pseudo-broker" + suffix, "ip": remap_ip(ctl_raw.get("broker_ip", "192.168.99.2"), instance)},
+            "client": {"name": "pseudo-client" + suffix, "ip": remap_ip(ctl_raw.get("client_ip", "192.168.99.3"), instance),
+                       "mode": mode, "interval": client.get("interval", 30),
+                       "min_interval": client.get("min_interval", 10), "max_interval": client.get("max_interval", 60),
+                       "count": client.get("count", 0), "delay": client.get("delay", 5), "index": client.get("index"),
+                       "stations": client.get("stations") or [s["station_id"] for s in stations if s.get("pseudonyms")]},
+            "auth": auth,
+        }
+        if ctl_subnet:
+            for role in ("broker", "client"):
+                if ipaddress.ip_address(control[role]["ip"]) not in ctl_subnet:
+                    errors.append(f"control.{role}_ip {control[role]['ip']} not in {ctl_subnet}")
+        if auth and not (auth.get("username_env") and auth.get("password_env")):
+            errors.append("control.auth needs username_env and password_env (names of environment variables)")
+        if ctl_name == lan_name:
+            errors.append("control network must differ from the simulation network")
+    elif any(s.get("pseudonyms") for s in stations):
+        pass  # allowed: the pool stays at index 0 (vnapctl status warns)
+
+    check = data.get("check", {})
+    if errors:
+        raise ScenarioError(f"{path}:\n  " + "\n  ".join(errors))
+    return {
+        "name": data.get("name", os.path.splitext(os.path.basename(path))[0]),
+        "description": data.get("description", ""), "path": path, "instance": instance,
+        "image": data.get("image", "vnap:latest"), "entrypoint": entrypoint, "certs_dir": certs_dir,
+        "network": {"name": lan_name, "subnet": str(lan_subnet)}, "stations": stations, "control": control,
+        "check": {"defaults": check.get("defaults", True), "expect": list(check.get("expect", []))},
+        "overrides": list(sets),
+    }
+
+
+def list_scenarios():
+    out = []
+    for fname in sorted(os.listdir(SCENARIO_DIR)) if os.path.isdir(SCENARIO_DIR) else []:
+        if not fname.endswith(".toml"):
+            continue
+        ref = fname[:-5]
+        try:
+            sc = load_scenario(ref)
+            out.append({"name": ref, "description": sc["description"], "image": sc["image"],
+                        "stations": [f"{s['name']}:{s['security']}" + (f"+pool{len(s['pseudonyms']['pool'])}" if s.get("pseudonyms") else "")
+                                     for s in sc["stations"]],
+                        "control": bool(sc["control"]), "valid": True})
+        except ScenarioError as e:
+            out.append({"name": ref, "valid": False, "error": str(e)})
+    return out
+
+
+# ---------------------------------------------------------------- up / down
+
+class Runner:
+    """Runs (or, with dry_run, prints) docker commands; remembers what to roll back."""
+
+    def __init__(self, dry_run, secret_env):
+        self.dry_run = dry_run
+        self.env = {**os.environ, **secret_env}  # secrets reach docker via "-e NAME", never argv
+        self.created_containers, self.created_networks = [], []
+
+    def run(self, args, stdin_cmd=None):
+        if self.dry_run:
+            print(("  " + " ".join(stdin_cmd) + " | " if stdin_cmd else "  ") + "docker " + " ".join(
+                a if " " not in a else repr(a) for a in args))
+            return ""
+        debug("docker " + " ".join(args[:4]))
+        feeder = subprocess.Popen(stdin_cmd, stdout=subprocess.PIPE) if stdin_cmd else None
+        result = subprocess.run(["docker", *args], capture_output=True, text=True, env=self.env,
+                                stdin=feeder.stdout if feeder else None)
+        if feeder:
+            feeder.wait()
+        if result.returncode != 0:
+            raise RuntimeError(f"docker {' '.join(args[:3])}: {result.stderr.strip()}")
+        return result.stdout
+
+    def rollback(self):
+        if self.created_containers:
+            subprocess.run(["docker", "rm", "-f", *self.created_containers], capture_output=True)
+        for net in reversed(self.created_networks):
+            subprocess.run(["docker", "network", "rm", net], capture_output=True)
+
+
+def station_env(sc, st):
+    env = {"VANETZA_STATION_ID": st["station_id"], "VANETZA_STATION_TYPE": st["station_type"],
+           "VANETZA_MAC_ADDRESS": st["mac"], "VANETZA_INTERFACE": "br0",
+           "START_EMBEDDED_MOSQUITTO": "true", "SUPPORT_MAC_BLOCKING": "true",
+           "VANETZA_SECURITY": st["security"]}
+    native = sc["entrypoint"] == "native"
+    secret_names = []
+    if st.get("pseudonyms"):
+        env["SECURITY"] = "pseudonyms"
+        for n, (cert, key) in enumerate(st["pseudonyms"]["pool"]):
+            env[f"PSEUDO_CERT_{n}"], env[f"PSEUDO_KEY_{n}"] = cert, key
+        env["PSEUDO_MIN_INTERVAL"] = st["pseudonyms"]["min_interval_ms"]
+        if sc["control"]:
+            env["PSEUDO_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
+            if sc["control"]["auth"]:
+                secret_names = ["PSEUDO_CONTROL_USERNAME", "PSEUDO_CONTROL_PASSWORD"]
+    elif st["at_cert"]:
+        if native:
+            env["SECURITY"] = "certs"
+        env["AT_CERT"], env["AT_KEY"] = st["at_cert"], st["at_key"]
+    for key in ("aa_cert", "root_cert"):
+        if st[key] and (st["at_cert"] or st.get("pseudonyms")):
+            env[key.upper()] = st[key]
+    env.update(st["env"])
+    return env, secret_names
+
+
+def run_labels(sc, run_id, role):
+    labels = {"vnap.managed_by": "vnapctl", "vnap.scenario": sc["name"], "vnap.scenario_file": sc["path"],
+              "vnap.started_by": os.environ.get("USER", "unknown"),
+              "vnap.started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "vnap.run_id": run_id, "vnap.role": role, "vnap.instance": str(sc["instance"])}
+    if sc["overrides"]:
+        labels["vnap.overrides"] = json.dumps(sc["overrides"])
+    out = []
+    for k, v in labels.items():
+        out += ["--label", f"{k}={v}"]
+    return out
+
+
+def container_exists(name):
+    return bool(docker("ps", "-aq", "--filter", f"name=^/{re.escape(name)}$", check=False).strip())
+
+
+def network_subnet(name):
+    try:
+        info = json.loads(docker("network", "inspect", name))[0]
+    except (RuntimeError, IndexError, json.JSONDecodeError):
+        return None
+    return (info.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet")
+
+
+def scenario_up(sc, dry_run=False, wait=30.0):
+    """Start a scenario. Returns (ok, report dict)."""
+    lan, ctl = sc["network"]["name"], (sc["control"] or {}).get("network", "vnapctl0-unused")
+    sim = Simulation(lan, ctl)
+    if sim.running or sim.broker or sim.client:
+        s = build_status(sim)
+        who = s["run"]
+        raise ScenarioError(f"a simulation is already running on {lan}: scenario {who['scenario'] or '(unlabelled)'}"
+                            f", started by {who['started_by'] or 'unknown'} at {who['started_at']}. "
+                            f"Stop it with 'vnapctl down', or start another instance with --instance N.")
+    names = [s["name"] for s in sc["stations"]] + ([sc["control"]["broker"]["name"], sc["control"]["client"]["name"]]
+                                                     if sc["control"] else [])
+    taken = [n for n in names if container_exists(n)]
+    if taken:
+        raise ScenarioError(f"container name(s) already in use: {', '.join(taken)} (remove them or use --instance N)")
+    for name, subnet in ((lan, sc["network"]["subnet"]),) + (((ctl, sc["control"]["subnet"]),) if sc["control"] else ()):
+        existing = network_subnet(name)
+        if existing and existing != subnet:
+            raise ScenarioError(f"network {name} exists with subnet {existing}, scenario wants {subnet}")
+    free_gb = shutil.disk_usage("/").free / 1e9
+    if free_gb < 0.5:
+        raise ScenarioError(f"only {free_gb:.1f} GB free on /, refusing to start")
+    if not dry_run:
+        if subprocess.run(["docker", "image", "inspect", sc["image"]], capture_output=True).returncode != 0:
+            raise ScenarioError(f"image {sc['image']} not found (build it with docker-build.sh)")
+
+    secret_env = {}
+    if sc["control"] and sc["control"]["auth"]:
+        auth = sc["control"]["auth"]
+        user, password = os.environ.get(auth["username_env"]), os.environ.get(auth["password_env"])
+        if not (user and password) and not dry_run:
+            raise ScenarioError(f"control.auth: set the environment variables {auth['username_env']} and {auth['password_env']}")
+        secret_env = {"CONTROL_USERNAME": user or "", "CONTROL_PASSWORD": password or "",
+                      "PSEUDO_CONTROL_USERNAME": user or "", "PSEUDO_CONTROL_PASSWORD": password or ""}
+
+    run_id = f"{sc['name']}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    r = Runner(dry_run, secret_env)
+    if dry_run:
+        print(f"dry run: scenario {sc['name']} ({sc['path']}), run id {run_id}")
+    try:
+        for name, subnet in ((lan, sc["network"]["subnet"]),) + (((ctl, sc["control"]["subnet"]),) if sc["control"] else ()):
+            if not network_subnet(name):
+                r.run(["network", "create", name, "--subnet", subnet, "--label", "vnap.managed_by=vnapctl"])
+                r.created_networks.append(name)
+        c = sc["control"]
+        if c:
+            if subprocess.run(["docker", "image", "inspect", CTL_IMAGE], capture_output=True).returncode != 0:
+                # build context on stdin: snap docker cannot read /mnt/hgfs
+                r.run(["build", "-q", "-t", CTL_IMAGE, "-"], stdin_cmd=["tar", "-C", os.path.join(HERE, "pseudo-ctl"), "-c", "."])
+            auth_args = ["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []
+            r.run(["run", "-d", "--name", c["broker"]["name"], "--network", ctl, "--ip", c["broker"]["ip"],
+                   *run_labels(sc, run_id, "broker"), *auth_args, CTL_IMAGE, "broker"])
+            r.created_containers.append(c["broker"]["name"])
+        for st in sc["stations"]:
+            env, secret_names = station_env(sc, st)
+            args = ["create", "--name", st["name"], *run_labels(sc, run_id, "station"),
+                    "--volume", f"{sc['certs_dir']}:/vnap-certs:ro",
+                    "--network", lan, "--ip", st["ip"], "--cap-add", "NET_ADMIN"]
+            for k, v in env.items():
+                args += ["-e", f"{k}={v}"]
+            for k in secret_names:
+                args += ["-e", k]
+            if sc["entrypoint"] == "stock":
+                args += ["--volume", f"{os.path.join(HERE, 'r2-entrypoint.sh')}:/r2-entrypoint.sh:ro",
+                         "--entrypoint", "/bin/sh", sc["image"], "/r2-entrypoint.sh"]
+            else:
+                args += [sc["image"]]
+            r.run(args)
+            r.created_containers.append(st["name"])
+            if c and st.get("pseudonyms"):
+                host = st["ip"].split(".")[-1]
+                ctl_ip = str(ipaddress.ip_network(c["subnet"]).network_address + int(host))
+                r.run(["network", "connect", "--ip", ctl_ip, ctl, st["name"]])
+            r.run(["start", st["name"]])
+        if c:
+            cl = c["client"]
+            args = ["run", "-d", "--name", cl["name"], "--network", ctl, "--ip", cl["ip"],
+                    *run_labels(sc, run_id, "client"), *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
+                    "-e", f"CONTROL_BROKER={c['broker']['name']}", "-e", f"STATIONS={' '.join(str(s) for s in cl['stations'])}",
+                    "-e", f"MODE={cl['mode']}", "-e", f"INTERVAL={cl['interval']}", "-e", f"MIN_INTERVAL={cl['min_interval']}",
+                    "-e", f"MAX_INTERVAL={cl['max_interval']}", "-e", f"COUNT={cl['count']}", "-e", f"DELAY={cl['delay']}"]
+            if cl["index"] is not None:
+                args += ["-e", f"INDEX={cl['index']}"]
+            r.run(args + [CTL_IMAGE, "client"])
+            r.created_containers.append(cl["name"])
+    except (RuntimeError, ScenarioError) as e:
+        if not dry_run:
+            r.rollback()
+        raise ScenarioError(f"start failed, rolled back: {e}")
+    if dry_run:
+        return True, {"dry_run": True, "run_id": run_id}
+
+    pending = wait_ready(sc, lan, wait)
+    status = build_status(Simulation(lan, ctl))
+    # ready = containers running and exchanging messages; health (e.g. expected chain failures of a
+    # negative control) is reported by status/check, not by up
+    return not pending, {"run_id": run_id, "pending": pending, "status": status}
+
+
+def wait_ready(sc, lan, wait):
+    """Wait until every station's socktap publishes on its embedded broker (sent or received
+    message) and pseudonym stations have joined the control channel. socktap's stdout is
+    block-buffered, so its log is not a usable readiness signal; [PSEUDONYM] lines go to stderr."""
+    deadline = time.time() + wait
+    ready, lock = set(), threading.Lock()
+
+    def probe(st):
+        while time.time() < deadline:
+            remaining = max(1, int(deadline - time.time()))
+            result = subprocess.run(["docker", "run", "--rm", "--network", lan, MQTT_IMAGE, "mosquitto_sub",
+                                     "-h", st["ip"], "-t", "vanetza/own/#", "-t", "vanetza/out/#",
+                                     "-C", "1", "-W", str(remaining)], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                with lock:
+                    ready.add(st["name"])
+                return
+            time.sleep(1)  # broker not up yet (the entrypoint starts it after a delay)
+
+    threads = [threading.Thread(target=probe, args=(st,), daemon=True) for st in sc["stations"]] if wait > 0 else []
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(max(0, deadline - time.time()) + 3)
+
+    pending = {}
+    for st in sc["stations"]:
+        state = docker("inspect", "-f", "{{.State.Status}}", st["name"], check=False).strip()
+        if state != "running":
+            pending[st["name"]] = f"container {state}"
+        elif wait > 0 and st["name"] not in ready:
+            pending[st["name"]] = "no messages on its MQTT broker yet"
+        elif wait > 0 and st.get("pseudonyms") and sc["control"]:
+            # the control channel connects within a second of socktap start; allow a little more
+            for _ in range(5):
+                if "[PSEUDONYM] control channel connected" in docker("logs", st["name"], check=False):
+                    break
+                time.sleep(1)
+            else:
+                pending[st["name"]] = "control channel not connected"
+    return pending
+
+
+def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
+    """Remove the simulation on lan/ctl. Returns report dict; raises ScenarioError on refusal."""
+    sim = Simulation(lan, ctl)
+    containers = sim.stations + [c for c in (sim.broker, sim.client) if c]
+    # probes and helpers from this tool are not part of the run
+    names = [Simulation.name(c) for c in containers]
+    owners = {(c["Config"].get("Labels") or {}).get("vnap.started_by") for c in containers}
+    me = os.environ.get("USER", "unknown")
+    if containers and not force:
+        if None in owners:
+            raise ScenarioError(f"refusing to stop {', '.join(names)}: not started by vnapctl or run-r2-sim.sh with "
+                                f"labels, so the owner is unknown. Check 'vnapctl status' and use --force.")
+        others = owners - {me}
+        if others:
+            raise ScenarioError(f"refusing to stop {', '.join(names)}: started by {', '.join(sorted(others))}. Use --force.")
+    report = {"removed": names, "networks_removed": [], "networks_kept": []}
+    if dry_run:
+        print("dry run:")
+        if names:
+            print("  docker rm -f " + " ".join(names))
+    elif names:
+        docker("rm", "-f", *names)
+    if not keep_networks:
+        for net in (lan, ctl):
+            if net not in sim.networks:
+                continue
+            attached = [v.get("Name") for v in (json.loads(docker("network", "inspect", net, check=False) or "[{}]")[0]
+                                               .get("Containers") or {}).values()] if not dry_run else []
+            attached = [a for a in attached if a not in names]
+            if attached:
+                report["networks_kept"].append(f"{net} (still used by {', '.join(attached)})")
+            elif dry_run:
+                print(f"  docker network rm {net}")
+            else:
+                docker("network", "rm", net, check=False)
+                report["networks_removed"].append(net)
+    return report
+
+
 # ---------------------------------------------------------------- CLI
 
+def scenario_expectations(sim):
+    """[check] section of the scenario file the running simulation was started from (via labels)."""
+    labels = {}
+    for info in sim.stations:
+        labels.update(info["Config"].get("Labels") or {})
+    path = labels.get("vnap.scenario_file")
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        sc = load_scenario(path, json.loads(labels.get("vnap.overrides", "[]")), int(labels.get("vnap.instance", "0")))
+    except (ScenarioError, ValueError):
+        return None
+    expect = sc["check"]["expect"]
+    if sc["instance"]:
+        # scenario files name stations without the instance suffix
+        for st in sc["stations"]:
+            expect = [re.sub(rf"(?<![\w-]){re.escape(st['base_name'])}\.", f"{st['name']}.", e) for e in expect]
+    return {"scenario": sc["name"], "defaults": sc["check"]["defaults"], "expect": expect}
+
+
 def main():
-    ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0],
+    # common options are accepted before or after the subcommand
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--lan", default=argparse.SUPPRESS, help="simulation network (default vanetzalan0)")
+    common.add_argument("--ctl", default=argparse.SUPPRESS, help="pseudonym control network (default vnapctl0)")
+    common.add_argument("--instance", type=int, default=argparse.SUPPRESS,
+                        help="parallel instance N: networks <lan>-iN/<ctl>-iN, subnets 10.N.x.0/24, names <name>-iN")
+    ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0], parents=[common],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--lan", default="vanetzalan0", help="simulation network (default vanetzalan0)")
-    ap.add_argument("--ctl", default="vnapctl0", help="pseudonym control network (default vnapctl0)")
+    ap.set_defaults(lan="vanetzalan0", ctl="vnapctl0", instance=0)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    _add_parser = sub.add_parser
+    sub.add_parser = lambda *a, **k: _add_parser(*a, parents=[common], **k)
 
     p = sub.add_parser("status", help="show what is running")
     p.add_argument("--json", action="store_true")
@@ -621,15 +1158,98 @@ def main():
     p.add_argument("--duration", type=parse_duration, default=15.0, help="observation time (default 15s)")
     p.add_argument("--expect", action="append", default=[], metavar="EXPR",
                    help="e.g. 'rsu.cam.success_rate>=0.99', 'obu.pseudonym.changed>=1' (repeatable)")
-    p.add_argument("--no-defaults", action="store_true", help="evaluate only --expect expressions")
+    p.add_argument("--no-defaults", action="store_true", help="evaluate only --expect and scenario expectations")
+    p.add_argument("--no-scenario", action="store_true", help="ignore the [check] section of the running scenario")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("scenarios", help="list scenario files")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("up", help="start a scenario")
+    p.add_argument("scenario", help="scenario name (scenarios/<name>.toml) or path to a .toml file")
+    p.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="override, e.g. image=vnap:r2-p4, defaults.security=certs-v2, control.client.interval=10, "
+                        "stations.obu.root_cert=/vnap-certs/c-its-pki/tlm.cert (repeatable)")
+    p.add_argument("--wait", type=parse_duration, default=30.0, help="wait for readiness (default 30s, 0 = no wait)")
+    p.add_argument("--dry-run", action="store_true", help="validate and print the docker commands only")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("down", help="stop the simulation and remove its networks")
+    p.add_argument("scenario", nargs="?", help="scenario whose networks to use (default: --lan/--ctl)")
+    p.add_argument("--force", action="store_true", help="also stop runs started by someone else or unlabelled runs")
+    p.add_argument("--keep-networks", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true")
 
     args = ap.parse_args()
+    lan, ctl = instance_networks(args.lan, args.ctl, args.instance)
+
+    def fail(msg, code):
+        print(json.dumps({"error": msg}) if getattr(args, "json", False) else f"vnapctl: {msg}",
+              file=sys.stdout if getattr(args, "json", False) else sys.stderr)
+        return code
+
+    if args.cmd == "scenarios":
+        items = list_scenarios()
+        if args.json:
+            print(json.dumps(items, indent=2))
+        else:
+            for it in items:
+                if it["valid"]:
+                    ctl_text = " + control channel" if it["control"] else ""
+                    print(f"{it['name']:<24} {' '.join(it['stations'])}{ctl_text}\n{'':<24} {it['description']}")
+                else:
+                    print(f"{it['name']:<24} INVALID: {it['error']}")
+        return EXIT_OK
+
+    if args.cmd == "up":
+        try:
+            sc = load_scenario(args.scenario, args.set, args.instance)
+            ok, report = scenario_up(sc, args.dry_run, args.wait)
+        except ScenarioError as e:
+            code = EXIT_CONFLICT if "already" in str(e) or "in use" in str(e) else EXIT_USAGE
+            return fail(str(e), code)
+        if args.dry_run:
+            return EXIT_OK
+        if args.json:
+            print(json.dumps({"ok": ok, **report}, indent=2))
+        else:
+            print(f"started {sc['name']} (run {report['run_id']})" + ("" if ok else " -- NOT READY"))
+            for name, why in report["pending"].items():
+                print(f"  not ready: {name}: {why}")
+            print()
+            print_status(report["status"])
+        return EXIT_OK if ok else EXIT_DEGRADED
+
+    if args.cmd == "down":
+        d_lan, d_ctl = lan, ctl
+        if args.scenario:
+            try:
+                sc = load_scenario(args.scenario, (), args.instance)
+            except ScenarioError as e:
+                return fail(str(e), EXIT_USAGE)
+            d_lan = sc["network"]["name"]
+            d_ctl = sc["control"]["network"] if sc["control"] else ctl
+        try:
+            report = scenario_down(d_lan, d_ctl, args.force, args.dry_run, args.keep_networks)
+        except ScenarioError as e:
+            return fail(str(e), EXIT_CONFLICT)
+        if args.dry_run:
+            return EXIT_OK
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"removed: {', '.join(report['removed']) or 'nothing (no simulation running)'}")
+            if report["networks_removed"]:
+                print(f"networks removed: {', '.join(report['networks_removed'])}")
+            for n in report["networks_kept"]:
+                print(f"network kept: {n}")
+        return EXIT_OK if report["removed"] else EXIT_DOWN
+
     try:
-        sim = Simulation(args.lan, args.ctl)
+        sim = Simulation(lan, ctl)
     except (RuntimeError, FileNotFoundError) as e:
-        print(f"vnapctl: {e}", file=sys.stderr)
-        return EXIT_USAGE
+        return fail(str(e), EXIT_USAGE)
 
     if args.cmd == "status":
         s = build_status(sim)
@@ -637,15 +1257,12 @@ def main():
         return {"ok": EXIT_OK, "degraded": EXIT_DEGRADED, "down": EXIT_DOWN}[s["health"]]
 
     if not sim.running:
-        msg = f"no simulation running (no stations on {args.lan})"
-        print(json.dumps({"error": msg}) if args.json else msg, file=sys.stdout if args.json else sys.stderr)
-        return EXIT_DOWN
+        return fail(f"no simulation running (no stations on {lan})", EXIT_DOWN)
 
     if args.cmd == "events":
         kinds = set(args.kind.split(",")) if args.kind else None
         if kinds and kinds - set(EVENT_KINDS):
-            print(f"vnapctl: unknown kind(s) {', '.join(kinds - set(EVENT_KINDS))}", file=sys.stderr)
-            return EXIT_USAGE
+            return fail(f"unknown kind(s) {', '.join(kinds - set(EVENT_KINDS))}", EXIT_USAGE)
         stations = set(args.station.split(",")) if args.station else None
         duration = args.duration if args.duration is not None else (0 if args.since else 10.0)
         since = time.time() - args.since if args.since else None
@@ -659,19 +1276,22 @@ def main():
 
     if args.cmd == "check":
         status = build_status(sim)
+        scenario = None if args.no_scenario else scenario_expectations(sim)
         events, start, end = collect_events(sim, args.duration)
         # rates use the requested window: the wall time also covers container start-up and log reads
         metrics = compute_metrics(sim, status, events, args.duration)
-        exps = ([] if args.no_defaults else default_expectations(status)) + args.expect
+        use_defaults = not args.no_defaults and (scenario["defaults"] if scenario else True)
+        exps = (default_expectations(status) if use_defaults else []) + (scenario["expect"] if scenario else []) + args.expect
         results = [evaluate(e, metrics) for e in exps]
         verdict = "pass" if results and all(r["ok"] for r in results) else "fail"
         if args.json:
             print(json.dumps({"verdict": verdict, "window_s": args.duration, "elapsed_s": round(end - start, 1),
-                              "results": results,
+                              "scenario": scenario, "results": results,
                               "metrics": dict(sorted(metrics.items())), "warnings": status["warnings"]}, indent=2))
         else:
+            source = f", expectations from scenario {scenario['scenario']}" if scenario and scenario["expect"] else ""
             print(f"verdict: {verdict.upper()}  ({len(results)} expectation(s), {args.duration:g}s window, "
-                  f"{len(events)} event(s))")
+                  f"{len(events)} event(s){source})")
             for r in results:
                 print(f"  {'ok  ' if r['ok'] else 'FAIL'}  {r['expect']:<42} {r['detail']}")
             for w in status["warnings"]:

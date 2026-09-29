@@ -1,0 +1,27 @@
+description = "negative control: certs-v3 with self-generated certificates per station and no trusted root; every CAM must be rejected"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+
+[check]
+defaults = false
+expect = ["stations.running==stations.total", "rsu.cam.rx>=1", "obu.cam.rx>=1",
+          "rsu.cam.success_rate==0", "obu.cam.success_rate==0", "rsu.errors.total==0", "obu.errors.total==0"]

@@ -1,0 +1,34 @@
+description = "negative control: as c-its-pki, but the OBU trusts the TLM certificate instead of the root; the OBU must reject the RSU's CAMs"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+at_cert = "/vnap-certs/c-its-pki/bke_at_0.cert"
+at_key = "/vnap-certs/c-its-pki/bke_at_0_sign.der"
+root_cert = "/vnap-certs/c-its-pki/tlm.cert"
+
+[check]
+defaults = false
+expect = ["stations.running==stations.total", "rsu.cam.success_rate==1", "obu.cam.rx>=1",
+          "obu.cam.success_rate==0", "obu.chain.fail>=1", "rsu.chain.fail==0"]
