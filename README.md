@@ -452,6 +452,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT(s) |
 | Pseudonym pool | `vanetza/security/v{2,3}/pseudonym_certificate_provider.{hpp,cpp}` (new), `vanetza/security/CMakeLists.txt`, `tools/socktap/security.{hpp,cpp}`, `entrypoint.sh` | pre-provisioned pool of ATs (e.g. a butterfly batch); after each change the full new certificate is sent in the next message so receivers learn it immediately. Options `--pseudonym-certificate`, `--pseudonym-certificate-key` (repeatable, paired in order); logs `[PSEUDONYM]` |
 | Sign header policy mutex | `vanetza/security/v{2,3}/sign_header_policy.{hpp,cpp}` | socktap verifies received packets on several threads while signing on another; unsynchronized access to the policy's P2P request trackers aborted socktap (`PeerRequestTracker` assertion) under load. Reproduce with the `stress-naive-v3` scenario |
+| v3 certificate cache mutex | `vanetza/security/v3/certificate_cache.{hpp,cpp}` | the reception threads store certificates while other threads look them up; the unlocked hash tables raced (ThreadSanitizer: data races and a SEGV in lookup). Also keeps pointers instead of rehash-invalidated iterators in the short-digest index |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting
@@ -476,9 +477,9 @@ the vanetza-nap `jodyhuntatx` branch:
   - v2 puts `--certificate-chain` AAs into the cache without checking them against the
     trusted root.
   - The v2 verifier accepts only payload type `signed`.
-  - The v3 certificate cache (`v3/certificate_cache.cpp`) is written by the reception
-    threads and read elsewhere without a lock; unlike the sign header policy, it is not
-    fixed yet.
+  - The v2 certificate cache (`v2/certificate_cache.cpp`) is written by the reception
+    threads and read elsewhere without a lock; unlike the v3 cache and the sign header
+    policies, it is not fixed yet.
   - A pseudonym change replaces only the certificate and signing key. The MAC and
     GeoNetworking addresses stay the same, so consecutive pseudonyms remain linkable at
     lower layers.

@@ -403,8 +403,9 @@ class MqttProbe(threading.Thread):
 
     @staticmethod
     def kill_all(run_id):
-        """Stop this run's probe containers early (--count reached), without waiting for the daemon."""
-        subprocess.Popen(["sh", "-c", f"docker ps -q --filter label=vnapctl.probe={run_id} | xargs -r docker kill"],
+        """Remove this run's probe containers (running, or created but never started when the
+        daemon stalls), without waiting for the daemon."""
+        subprocess.Popen(["sh", "-c", f"docker ps -aq --filter label=vnapctl.probe={run_id} | xargs -r docker rm -f"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -471,8 +472,7 @@ def collect_events(sim, duration, since=None, count=None, kinds=None, stations=N
             done.wait(0.2)
         if any(p.is_alive() for p in probes):
             debug("stopping probes" + (" (--count reached)" if done.is_set() else " (deadline)"))
-            if done.is_set():
-                MqttProbe.kill_all(run_id)
+            MqttProbe.kill_all(run_id)
             for p in probes:
                 p.stop()
             for p in probes:
@@ -1283,6 +1283,11 @@ def main():
         use_defaults = not args.no_defaults and (scenario["defaults"] if scenario else True)
         exps = (default_expectations(status) if use_defaults else []) + (scenario["expect"] if scenario else []) + args.expect
         results = [evaluate(e, metrics) for e in exps]
+        if not any(e["kind"] in ("rx", "tx") for e in events):
+            # stations are running but no MQTT data arrived: the measurement failed, not
+            # necessarily the stations (e.g. the docker daemon stalled starting the probes)
+            status["warnings"].insert(0, "no messages collected from any station broker; the probes may not "
+                                         "have started (docker slow?), rerun before trusting this verdict")
         verdict = "pass" if results and all(r["ok"] for r in results) else "fail"
         if args.json:
             print(json.dumps({"verdict": verdict, "window_s": args.duration, "elapsed_s": round(end - start, 1),
