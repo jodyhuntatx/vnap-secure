@@ -21,6 +21,13 @@ public:
      */
     void post(std::function<void()>);
 
+    /**
+     * Lock guarding this trigger's runtime (and whatever is driven by it, e.g. a router).
+     * Worker threads hold it while using the router; the timer handlers on the io_context
+     * thread only try to take it and skip a round when a worker is busy.
+     */
+    std::recursive_mutex& mutex() { return schedule_mtx; }
+
 private:
     boost::posix_time::ptime now() const;
     void on_timeout(const boost::system::error_code&);

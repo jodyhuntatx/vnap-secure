@@ -325,6 +325,7 @@ int main(int argc, const char** argv)
             std::cout << "Enable application '" << app.first << "'...\n";
             context.enable(app.second.get());
         }
+        context.start(); // worker threads wait for routers and applications to be ready
 
         io_context.run();
     } catch (PositioningException& e) {

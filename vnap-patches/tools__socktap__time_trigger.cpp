@@ -46,7 +46,12 @@ void TimeTrigger::post(std::function<void()> fn)
 void TimeTrigger::on_timeout(const boost::system::error_code& ec)
 {
     if (asio::error::operation_aborted != ec) {
-        schedule();
+        // skip if a worker thread holds this trigger: it calls schedule() itself when done,
+        // and the 10 ms sync pulse retries otherwise (keeps the io_context thread unblocked)
+        std::unique_lock<std::recursive_mutex> lock(schedule_mtx, std::try_to_lock);
+        if (lock) {
+            schedule();
+        }
     }
 }
 
@@ -62,7 +67,12 @@ void TimeTrigger::schedule_sync()
 void TimeTrigger::on_sync_timeout(const boost::system::error_code& ec)
 {
     if (asio::error::operation_aborted != ec) {
-        schedule();       // advance runtime to wall clock, reschedule app event timer
+        {
+            std::unique_lock<std::recursive_mutex> lock(schedule_mtx, std::try_to_lock);
+            if (lock) {
+                schedule();   // advance runtime to wall clock, reschedule app event timer
+            }
+        }
         schedule_sync();  // arm next 10ms sync pulse
     }
 }
