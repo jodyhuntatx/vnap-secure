@@ -654,6 +654,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Runtime clock and ASN.1 descriptor races | `vanetza/common/manual_runtime.{hpp,cpp}`, `vanetza/asn1/asn1c_wrapper.hpp`, `vanetza/asn1/cam.hpp`, `tools/socktap/applications/cam_application.cpp` | reception threads read the runtime clocks while the main thread advances them (now atomic); `asn1c_wrapper_common::swap` wrote to the global type descriptors; `CompactR2DecodeGuard` swaps a global R2 CAM member descriptor, now under a process-wide recursive mutex that all CAM encode/decode/JSON paths take. ThreadSanitizer: 69 -> 38 reports, none of these left |
 | Router thread synchronization | `tools/socktap/{router_context,time_trigger,dcc_passthrough,raw_socket_link}.{hpp,cpp}`, `pubsub.cpp`, `main.cpp` | each reception router was used by its reception thread, by timers and position updates on the main thread, and by the PubSub transmission thread with the same index. Now each router is guarded by its trigger's lock (main-thread timers only try-lock), worker threads wait for `RouterContext::start()`, the thread-to-trigger map is locked and the link-layer callback is published safely. ThreadSanitizer: 38 -> 19 reports, none in routing |
 | PubSub, MQTT and DDS synchronization | `tools/socktap/{pubsub,dds,mqtt}.cpp`, `mqtt.hpp` | MQTT subscriptions were added on the main thread while the mosquitto loop thread iterated them; callback threads inserted into the topic priority map; several threads used one UDP output socket; DDS `operator[]` lookups inserted (and dereferenced) null publishers. Maps are now locked, lookups use `find()`, UDP sends are serialized; also fixes reading MQTT payloads as NUL-terminated strings. ThreadSanitizer: 19 -> 17 reports, none in socktap's PubSub/MQTT code |
+| RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting
@@ -678,10 +679,10 @@ the vanetza-nap `jodyhuntatx` branch:
   - v2 puts `--certificate-chain` AAs into the cache without checking them against the
     trusted root.
   - The v2 verifier accepts only payload type `signed`.
-  - ThreadSanitizer still reports races in the RSSI reader (`rssi_reader.cpp`, only with
-    RSSI enabled) and inside the Zenoh library's own threads. The Zenoh reports involve
-    uninstrumented Rust code whose synchronization ThreadSanitizer cannot see, so they are
-    most likely false positives.
+  - ThreadSanitizer still reports races inside the Zenoh library's own threads (14 in a
+    3-minute c-its-pki run). They involve uninstrumented Rust code whose synchronization
+    ThreadSanitizer cannot see, so they are most likely false positives. It reports none in
+    socktap or Vanetza code.
   - A pseudonym change replaces only the certificate and signing key. The MAC and
     GeoNetworking addresses stay the same, so consecutive pseudonyms remain linkable at
     lower layers.
