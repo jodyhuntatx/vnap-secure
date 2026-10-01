@@ -28,7 +28,7 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 | `exec-to-vm.sh`, `run-build.sh`, `sync-vnap-dist.sh` | host-side helpers: ssh into the VM, build remotely and load the image on the host, copy `~/vanetza-nap` back |
 | `vnap-patches/` | patched Vanetza-NAP files (see [Patch set](#patch-set)) |
 | `vnap-origs/` | the corresponding upstream `release2-main` files |
-| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks) and the `vnap-msgcheck` message checker |
+| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks), the passive `eavesdropper` and the `vnap-msgcheck` message checker |
 | `vnap-certs/certify/` | Root/AA/AT generated with Vanetza's `certify` (TS 103 097 V1.2.1, `certs-v2`) |
 | `vnap-certs/c-its-pki/` | Root/AA/EA/TLM/AT and butterfly ATs from C-ITS-PKI (currently the v3 set, `certs-v3`) |
 
@@ -127,7 +127,8 @@ Options:
 
 `vnap-docker/vnapctl up` starts a scenario described in a TOML file under
 `vnap-docker/scenarios/`. The format is in `scenarios/README.md`; one file exists for each
-`run-r2-sim.sh` scenario except the expired `certify`. `vnapctl down` stops it again.
+`run-r2-sim.sh` scenario except the expired `certify`, plus `stress-naive-v3` and
+`c-its-pki-tracking` (with the [eavesdropper](#eavesdropper-tracking-attacker)). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker
@@ -416,6 +417,73 @@ with a location, or to exhaust a small pool.
 - There is no TLS, and one account is shared by all participants.
 - Use TLS and per-client ACLs before anything outside the simulation.
 - socktap logs a warning when it connects without credentials.
+
+## Eavesdropper (tracking attacker)
+
+`vnap-docker/eavesdropper/` is a passive listener playing an untrusted party that wants to
+track vehicles. It joins only the message network (`vanetzalan0`) with a raw socket
+(`NET_RAW`) and sees nothing but the frames on the wire: no keys or trust store, no MQTT,
+no control channel. It knows the public ETSI/IEEE formats.
+
+**What it decodes from each frame**
+
+| Layer | Standard | Extracted |
+|---|---|---|
+| Ethernet | | source MAC |
+| GeoNetworking | EN 302 636-4-1 | GN address (station type, MAC-derived ID), source position, speed, heading |
+| Security header v2 | ETSI TS 103 097 V1.2.1 (own parser) | signer, generation time, ITS-AID |
+| Security header v3 | IEEE 1609.2 / TS 103 097 V1.3.1 (OER, `asn1tools`) | signer, generation time, PSID |
+| Signer certificate | same | HashedId8 digest, computed exactly as Vanetza does: SHA-256 over the canonical encoding. Also issuer (AA), validity, permissions; full certificates are sent about once a second |
+| BTP | EN 302 636-5-1 | port, message type |
+| Facilities | TS 103 900 (CAM R2) | `stationId` of any message; full CAM: `referencePosition`, speed, heading, vehicle size, station type |
+
+The ASN.1 modules come from Vanetza-NAP (`eavesdropper/asn1/`, with their source note).
+
+**Tracking**
+- **Shared identifiers:** messages are linked into tracks when they share a MAC, GN
+  address, `stationId` or certificate digest.
+- **Position continuity:** a message with a certificate never seen before, and no known
+  identifier, can continue a track that went silent shortly before (`--link-window`,
+  default 3 s) at the same place (`--link-distance`, default 50 m, plus speed × gap).
+  - The link is confirmed only if the old identity stays silent for 1.5 message
+    intervals, so two vehicles parked side by side are not merged.
+- **Logging:** every linked pseudonym change is logged with its evidence (`same mac`,
+  `same gn`, `same station`, or `position continuity`).
+
+**Output**
+
+| Where | Content |
+|---|---|
+| `docker logs -f eavesdropper` | new tracks, linked pseudonym changes, periodic summary |
+| `/logs/messages.jsonl` | every decoded frame |
+| `/logs/events.jsonl` | track and linkage events |
+| `/logs/tracks.json` | per track: identifiers, pseudonyms (first/last seen, certificate fields), last position, recent trail. Rewritten every 5 s |
+
+Copy the logs out with `docker cp eavesdropper:/logs ./eavesdropper-logs`.
+
+**Running it**
+
+```bash
+cd vnap-docker
+./vnapctl up c-its-pki-tracking        # c-its-pki-pseudo (changes every 10 s) + eavesdropper
+./vnapctl status                       # includes the eavesdropper's tracks and linked changes
+./vnapctl check --expect 'eavesdropper.linked_changes==0'   # a privacy goal (fails today)
+./eavesdropper/run.sh [network] [name] # attach to any running simulation instead
+python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offline (needs asn1tools)
+```
+
+- **In scenarios:** an `[eavesdropper]` section in a scenario file adds it; see
+  `scenarios/README.md`.
+- **Metrics:** `vnapctl check` exposes `eavesdropper.frames`, `.decode_errors`, `.tracks`,
+  `.pseudonyms` and `.linked_changes`.
+
+**What it shows today**
+- In c-its-pki-tracking it links every OBU pseudonym change through the unchanged MAC,
+  GN address and `stationId` (pseudonyms rotate only the certificate and key; see
+  [Pseudonym change events](#pseudonym-change-events)).
+- In an offline test where the OBU's MAC, GN address and `stationId` were rewritten at
+  every change, it still linked all of them by position continuity. Rotating identifiers
+  is not enough while the vehicle keeps sending its exact position.
 
 ## Certificates
 

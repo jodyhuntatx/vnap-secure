@@ -104,6 +104,7 @@ class Simulation:
         self.stations = []   # docker inspect dicts of V2X stations (have VANETZA_STATION_ID)
         self.broker = None   # control channel broker
         self.client = None   # control channel event client
+        self.observers = []  # passive listeners (eavesdropper) on the simulation network
         self.networks = {}
         members = {}
         for net in (lan, ctl):
@@ -119,8 +120,11 @@ class Simulation:
             env, name = env_of(info), Simulation.name(info)
             cmd = info["Config"].get("Cmd") or []
             # stations only count on the simulation network, control containers only on the control network
+            role = (info["Config"].get("Labels") or {}).get("vnap.role")
             if "VANETZA_STATION_ID" in env and name in members.get(lan, ()):
                 self.stations.append(info)
+            elif role == "eavesdropper" and name in members.get(lan, ()):
+                self.observers.append(info)
             elif name in members.get(ctl, ()) and "broker" in cmd:
                 self.broker = info
             elif name in members.get(ctl, ()) and "client" in cmd:
@@ -256,6 +260,27 @@ def station_status(sim, info):
     return st
 
 
+def observer_reports(sim):
+    """What each eavesdropper has worked out so far (its tracks.json, refreshed every 5 s)."""
+    reports = []
+    for info in sim.observers:
+        name = Simulation.name(info)
+        rep = {"name": name, "state": info["State"]["Status"], "ip": sim.ip(info, sim.lan)}
+        if rep["state"] == "running":
+            out = docker("exec", name, "python3", "-c",
+                         "import json; d=json.load(open('/logs/tracks.json')); t=d['tracks']; print(json.dumps("
+                         "{'counts': d.get('counts', {}), 'tracks': len(t), 'pseudonyms': sum(len(x['pseudonyms']) for x in t),"
+                         " 'linked_changes': sum(x['linked_pseudonym_changes'] for x in t),"
+                         " 'per_track': [[x['track'], x['station_types'], len(x['pseudonyms']), x['linked_pseudonym_changes']] for x in t]}))",
+                         check=False).strip()
+            try:
+                rep.update(json.loads(out))
+            except json.JSONDecodeError:
+                rep["note"] = "no report yet"
+        reports.append(rep)
+    return reports
+
+
 def build_status(sim):
     labels = {}
     for info in [c for c in (sim.broker, sim.client) if c] + sim.stations:
@@ -311,6 +336,7 @@ def build_status(sim):
         "networks": {n: (v.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet") for n, v in sim.networks.items()},
         "stations": stations,
         "control": control,
+        "observers": observer_reports(sim),
         "disk": {"free_gb": round(free_gb, 1), "low": free_gb < DISK_WARN_GB},
         "warnings": warnings,
     }
@@ -361,6 +387,17 @@ def print_status(s):
             cl = c["client"]
             every = f" every {cl['interval']}s" if cl["interval"] else ""
             print(f"control client: {cl['name']} {cl['state']} mode {cl['mode']}{every} stations [{cl['stations']}]")
+    for o in s.get("observers", []):
+        print()
+        if "tracks" in o:
+            counts = o.get("counts", {})
+            print(f"eavesdropper: {o['name']} {o['state']} {o['ip']}: {counts.get('frames', 0)} frames "
+                  f"({counts.get('errors', 0)} undecodable), {o['tracks']} track(s), {o['pseudonyms']} pseudonym(s), "
+                  f"{o['linked_changes']} linked pseudonym change(s)")
+            for track, types, pseudonyms, linked in o["per_track"]:
+                print(f"  {track} {'/'.join(types) or '?'}: {pseudonyms} pseudonym(s), {linked} linked change(s)")
+        else:
+            print(f"eavesdropper: {o['name']} {o['state']} {o['ip']} ({o.get('note', 'no report')})")
     print(f"\ndisk: {s['disk']['free_gb']} GB free on /")
     for w in s["warnings"]:
         print(f"WARNING: {w}")
@@ -565,6 +602,14 @@ def compute_metrics(sim, status, events, seconds):
     m["stations.running"] = sum(st["state"] == "running" for st in status["stations"])
     m["stations.total"] = len(names)
     m["disk.free_gb"] = status["disk"]["free_gb"]
+    for o in status.get("observers", [])[:1]:
+        if "tracks" in o:
+            counts = o.get("counts", {})
+            m["eavesdropper.frames"] = counts.get("frames", 0)
+            m["eavesdropper.decode_errors"] = counts.get("errors", 0)
+            m["eavesdropper.tracks"] = o["tracks"]
+            m["eavesdropper.pseudonyms"] = o["pseudonyms"]
+            m["eavesdropper.linked_changes"] = o["linked_changes"]
     return m
 
 
@@ -621,6 +666,7 @@ def evaluate(expr, metrics):
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCENARIO_DIR = os.path.join(HERE, "scenarios")
 CTL_IMAGE = "vnap-pseudo-ctl"
+EAVESDROPPER_IMAGE = "vnap-eavesdropper"
 SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
 STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
                 "aa_cert", "root_cert", "pseudonyms", "env"}
@@ -811,6 +857,21 @@ def load_scenario(ref, sets=(), instance=0):
     elif any(s.get("pseudonyms") for s in stations):
         pass  # allowed: the pool stays at index 0 (vnapctl status warns)
 
+    eavesdropper = None
+    eav_raw = data.get("eavesdropper")
+    if eav_raw and eav_raw.get("enabled", True):
+        default_ip = str(lan_subnet.network_address + 99) if lan_subnet else None
+        eavesdropper = {"name": eav_raw.get("name", "eavesdropper") + suffix,
+                        "ip": remap_ip(eav_raw["ip"], instance) if "ip" in eav_raw else default_ip,
+                        "verbose": bool(eav_raw.get("verbose", False)),
+                        "summary_interval": eav_raw.get("summary_interval", 30),
+                        "link_window": eav_raw.get("link_window", 3.0),
+                        "link_distance": eav_raw.get("link_distance", 50.0)}
+        if lan_subnet and eavesdropper["ip"] and ipaddress.ip_address(eavesdropper["ip"]) not in lan_subnet:
+            errors.append(f"eavesdropper ip {eavesdropper['ip']} not in {lan_subnet}")
+        if eavesdropper["ip"] in [s["ip"] for s in stations]:
+            errors.append(f"eavesdropper ip {eavesdropper['ip']} is used by a station")
+
     check = data.get("check", {})
     if errors:
         raise ScenarioError(f"{path}:\n  " + "\n  ".join(errors))
@@ -819,6 +880,7 @@ def load_scenario(ref, sets=(), instance=0):
         "description": data.get("description", ""), "path": path, "instance": instance,
         "image": data.get("image", "vnap:latest"), "entrypoint": entrypoint, "certs_dir": certs_dir,
         "network": {"name": lan_name, "subnet": str(lan_subnet)}, "stations": stations, "control": control,
+        "eavesdropper": eavesdropper,
         "check": {"defaults": check.get("defaults", True), "expect": list(check.get("expect", []))},
         "overrides": list(sets),
     }
@@ -835,7 +897,7 @@ def list_scenarios():
             out.append({"name": ref, "description": sc["description"], "image": sc["image"],
                         "stations": [f"{s['name']}:{s['security']}" + (f"+pool{len(s['pseudonyms']['pool'])}" if s.get("pseudonyms") else "")
                                      for s in sc["stations"]],
-                        "control": bool(sc["control"]), "valid": True})
+                        "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]), "valid": True})
         except ScenarioError as e:
             out.append({"name": ref, "valid": False, "error": str(e)})
     return out
@@ -936,7 +998,8 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                             f", started by {who['started_by'] or 'unknown'} at {who['started_at']}. "
                             f"Stop it with 'vnapctl down', or start another instance with --instance N.")
     names = [s["name"] for s in sc["stations"]] + ([sc["control"]["broker"]["name"], sc["control"]["client"]["name"]]
-                                                     if sc["control"] else [])
+                                                     if sc["control"] else []) \
+        + ([sc["eavesdropper"]["name"]] if sc["eavesdropper"] else [])
     taken = [n for n in names if container_exists(n)]
     if taken:
         raise ScenarioError(f"container name(s) already in use: {', '.join(taken)} (remove them or use --instance N)")
@@ -1010,6 +1073,17 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                 args += ["-e", f"INDEX={cl['index']}"]
             r.run(args + [CTL_IMAGE, "client"])
             r.created_containers.append(cl["name"])
+        ev = sc["eavesdropper"]
+        if ev:
+            if subprocess.run(["docker", "image", "inspect", EAVESDROPPER_IMAGE], capture_output=True).returncode != 0:
+                r.run(["build", "-q", "-t", EAVESDROPPER_IMAGE, "-"],
+                      stdin_cmd=["tar", "-C", os.path.join(HERE, "eavesdropper"), "--exclude=logs", "-c", "."])
+            # only the message network and raw frames: no control network, no keys, no MQTT
+            r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
+                   *run_labels(sc, run_id, "eavesdropper"),
+                   "-e", f"EAVESDROP_SUMMARY={ev['summary_interval']}", "-e", f"EAVESDROP_VERBOSE={'1' if ev['verbose'] else '0'}",
+                   EAVESDROPPER_IMAGE, "--link-window", str(ev["link_window"]), "--link-distance", str(ev["link_distance"])])
+            r.created_containers.append(ev["name"])
     except (RuntimeError, ScenarioError) as e:
         if not dry_run:
             r.rollback()
@@ -1070,7 +1144,7 @@ def wait_ready(sc, lan, wait):
 def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     """Remove the simulation on lan/ctl. Returns report dict; raises ScenarioError on refusal."""
     sim = Simulation(lan, ctl)
-    containers = sim.stations + [c for c in (sim.broker, sim.client) if c]
+    containers = sim.stations + [c for c in (sim.broker, sim.client) if c] + sim.observers
     # probes and helpers from this tool are not part of the run
     names = [Simulation.name(c) for c in containers]
     owners = {(c["Config"].get("Labels") or {}).get("vnap.started_by") for c in containers}
@@ -1196,7 +1270,7 @@ def main():
         else:
             for it in items:
                 if it["valid"]:
-                    ctl_text = " + control channel" if it["control"] else ""
+                    ctl_text = (" + control channel" if it["control"] else "") + (" + eavesdropper" if it.get("eavesdropper") else "")
                     print(f"{it['name']:<24} {' '.join(it['stations'])}{ctl_text}\n{'':<24} {it['description']}")
                 else:
                     print(f"{it['name']:<24} INVALID: {it['error']}")
@@ -1278,6 +1352,7 @@ def main():
         status = build_status(sim)
         scenario = None if args.no_scenario else scenario_expectations(sim)
         events, start, end = collect_events(sim, args.duration)
+        status["observers"] = observer_reports(sim)  # what the eavesdropper knows at the end of the window
         # rates use the requested window: the wall time also covers container start-up and log reads
         metrics = compute_metrics(sim, status, events, args.duration)
         use_defaults = not args.no_defaults and (scenario["defaults"] if scenario else True)

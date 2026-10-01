@@ -50,6 +50,13 @@ mode = "periodic"                 # periodic | random | once | manual
 interval = 30                     # periodic; random uses min_interval/max_interval; once uses delay/index
 stations = [2]                    # default: all stations with a pseudonym pool
 
+[eavesdropper]                    # optional passive tracking attacker on the message network
+ip = "192.168.98.99"              # default: host .99 of the network
+summary_interval = 30             # seconds between console summaries
+link_window = 3.0                 # position-continuity linking: max silence before a new pseudonym
+link_distance = 50.0              #   and max distance (m, plus speed x gap)
+verbose = false                   # log every frame to the console
+
 [check]                           # used by "vnapctl check" while this scenario runs
 defaults = true                   # include vnapctl's default expectations
 expect = ["rsu.cam.rx_per_s>=0.8"]
