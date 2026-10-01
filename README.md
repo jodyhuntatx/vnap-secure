@@ -35,6 +35,132 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 In `vnap-patches/` and `vnap-origs/`, each file is named after its path in vanetza-nap
 with `/` replaced by `__`, e.g. `tools__socktap__time_trigger.cpp`.
 
+## Getting started
+
+A walkthrough from a fresh VM to a running secured simulation, with pointers to the detailed
+sections below. The general Vanetza-NAP documentation (configuration, MQTT/JSON message
+formats, applications) is in `~/vanetza-nap/docs/` and at
+<https://wiki.nap.av.it.pt/groups/nap/tutorials/vanetza-nap/>; it does not cover security.
+
+**0. Prerequisites.** An Ubuntu VM with Docker, git and python3, and at least 10 GB of free
+disk for the first build ([Development setup](#development-setup) explains why a VM).
+
+```bash
+git clone -b release2-main https://github.com/nap-it/vanetza-nap.git ~/vanetza-nap
+git clone git@github.com:jodyhuntatx/vnap-secure.git ~/COIMBRA/vnap-secure
+```
+
+**1. Build the image.** This applies the patch set to `~/vanetza-nap` and builds
+`vnap:latest` (about 20 minutes the first time). See [Build](#build).
+
+```bash
+cd ~/COIMBRA/vnap-secure
+./docker-build.sh
+docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep pseudonym-control
+```
+
+**2. Choose a scenario.** All commands from here on run in `vnap-docker/`. Each scenario
+file (`scenarios/*.toml`) describes the stations, their certificates, an optional pseudonym
+control channel and an optional eavesdropper.
+
+```bash
+cd vnap-docker
+./vnapctl scenarios
+```
+
+| Scenario | Use it to |
+|---|---|
+| `none` | check the link and CAM path without security |
+| `c-its-pki` | run v3 security with certificates from C-ITS-PKI (RSU regular AT, OBU butterfly AT) |
+| `certify-fresh` | run v2 security with certificates from Vanetza's `certify` |
+| `c-its-pki-pseudo` | let the OBU change pseudonym on control-channel events |
+| `c-its-pki-tracking` | add a passive eavesdropper that tries to track the OBU |
+| `c-its-pki-badroot`, `naive-v3` | negative controls: messages must be rejected |
+| `stress-naive-v3` | stress test: 4 stations at 50 Hz |
+
+**3. Start it.** `--dry-run` shows the docker commands first. `up` waits until every station
+exchanges messages.
+
+```bash
+./vnapctl up c-its-pki --dry-run
+./vnapctl up c-its-pki
+```
+
+**4. Check that it works.** `status` shows the stations, their certificates and the chain
+checks. `check` observes for 15 s and gives a PASS/FAIL verdict: both stations exchange
+CAMs, every CAM verifies, and the certificate chains are valid.
+
+```bash
+./vnapctl status
+./vnapctl check
+```
+
+**5. Watch the traffic.**
+- **Events:** `./vnapctl events --duration 10s` merges the received and sent messages,
+  their verification results, and the pseudonym and certificate-chain log lines.
+- **Raw frames and MQTT:** see
+  [Monitor messages between stations](#monitor-messages-between-stations) for the decoded
+  messages over MQTT and for tcpdump/Wireshark captures.
+
+**6. Change pseudonyms.** Stop the run and start the pseudonym scenario. Its client sends a
+change event every 30 s; you can also send one by hand.
+
+```bash
+./vnapctl down
+./vnapctl up c-its-pki-pseudo
+docker exec pseudo-client change 2          # station 2 (the OBU): next pseudonym
+./vnapctl events --duration 10s --kind pseudonym,control
+```
+
+See [Pseudonym change events](#pseudonym-change-events) for the event format and modes.
+
+**7. Play the attacker.** The tracking scenario adds an eavesdropper that sees only the raw
+frames on the message network.
+
+```bash
+./vnapctl down
+./vnapctl up c-its-pki-tracking
+./vnapctl status                    # the eavesdropper's tracks and linked pseudonym changes
+docker logs -f eavesdropper
+```
+
+See [Eavesdropper](#eavesdropper-tracking-attacker).
+
+**8. Run a negative control.** In `c-its-pki-badroot` the OBU trusts the wrong root and must
+reject the RSU's CAMs. The scenario defines its own expectations, so `check` passes when
+the rejection happens.
+
+```bash
+./vnapctl down
+./vnapctl up c-its-pki-badroot
+./vnapctl check
+```
+
+**9. Tear down.** `down` removes the containers and networks. It refuses runs started by
+another user unless given `--force`.
+
+```bash
+./vnapctl down
+```
+
+**Next steps**
+- **Variations without editing files:** `--set`, e.g.
+  `./vnapctl up c-its-pki --set image=vnap:r2-p10 --set defaults.security=certs-v2 --set certs_dir=/home/demo/pki-test-v2`.
+- **A second, independent simulation:** `--instance N`, before or after the subcommand
+  (`./vnapctl up c-its-pki --instance 1`, then `./vnapctl status --instance 1`). It does not
+  touch the default run.
+- **Your own scenario:** copy a file in `scenarios/` and edit it. The format is in
+  `scenarios/README.md`.
+- **New certificates:** generate them with C-ITS-PKI `gen-vnap-certs.sh`, which writes to
+  `vnap-certs/c-its-pki/` (see [Certificates](#certificates)).
+- **Older harnesses:** `run-r2-sim.sh` and docker-compose remain available; see
+  [Run the simulation](#run-the-simulation).
+- **When something fails:**
+  - `./vnapctl status` shows the startup chain checks and errors;
+  - `docker logs rsu` / `docker logs obu` show socktap's own output;
+  - `VNAPCTL_DEBUG=1` prints `vnapctl`'s timings;
+  - see [Validation and troubleshooting](#validation-and-troubleshooting).
+
 ## Development setup
 
 Vanetza-NAP has file names that differ only by case, so it cannot be built on the default
@@ -55,9 +181,12 @@ MacBook:
   owned by another user. Use `git -c safe.directory='*' …`, or run
   `git config --global --add safe.directory <path>` once.
 - **Snap-confined Docker** in the VM can only read files under the real `$HOME`, and not
-  in dot-directories. That rules out volumes and build contexts on `/mnt/hgfs` (see
-  `EXEC_DIR` below and `vnap-docker/msgcheck/build-msgcheck.sh`, which stages its files
-  in `$HOME`).
+  in dot-directories.
+  - The Docker CLI cannot read build contexts or compose files on `/mnt/hgfs`. The
+    scripts send build contexts on stdin instead (`tar … | docker build -`), and
+    `vnap-docker/msgcheck/build-msgcheck.sh` stages its files in `$HOME`; see also
+    `EXEC_DIR` below.
+  - Bind mounts from `/mnt/hgfs` work: `vnapctl` mounts `vnap-certs/` from there.
 - **Disk:** a full image build needs about 10 GB of Docker build cache. Grow the VM disk,
   then run `1-extend-docker-fs.sh` or `growpart` + `pvresize` + `lvextend -r`.
 

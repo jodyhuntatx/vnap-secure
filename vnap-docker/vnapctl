@@ -1203,15 +1203,20 @@ def scenario_expectations(sim):
 
 
 def main():
-    # common options are accepted before or after the subcommand
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--lan", default=argparse.SUPPRESS, help="simulation network (default vanetzalan0)")
-    common.add_argument("--ctl", default=argparse.SUPPRESS, help="pseudonym control network (default vnapctl0)")
-    common.add_argument("--instance", type=int, default=argparse.SUPPRESS,
-                        help="parallel instance N: networks <lan>-iN/<ctl>-iN, subnets 10.N.x.0/24, names <name>-iN")
-    ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0], parents=[common],
+    # common options are accepted before or after the subcommand. They are parsed into
+    # separate destinations: a subparser's defaults would otherwise overwrite values given
+    # before the subcommand (and e.g. turn "--instance 2 down" into a down of instance 0)
+    def common_options(parser, prefix):
+        parser.add_argument("--lan", dest=prefix + "lan", default=None, help="simulation network (default vanetzalan0)")
+        parser.add_argument("--ctl", dest=prefix + "ctl", default=None, help="pseudonym control network (default vnapctl0)")
+        parser.add_argument("--instance", dest=prefix + "instance", type=int, default=None,
+                            help="parallel instance N: networks <lan>-iN/<ctl>-iN, subnets 10.N.x.0/24, names <name>-iN")
+
+    ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.set_defaults(lan="vanetzalan0", ctl="vnapctl0", instance=0)
+    common_options(ap, "top_")
+    common = argparse.ArgumentParser(add_help=False)
+    common_options(common, "sub_")
     sub = ap.add_subparsers(dest="cmd", required=True)
     _add_parser = sub.add_parser
     sub.add_parser = lambda *a, **k: _add_parser(*a, parents=[common], **k)
@@ -1256,6 +1261,11 @@ def main():
     p.add_argument("--json", action="store_true")
 
     args = ap.parse_args()
+    for name, default in (("lan", "vanetzalan0"), ("ctl", "vnapctl0"), ("instance", 0)):
+        top, sub_value = getattr(args, "top_" + name), getattr(args, "sub_" + name, None)
+        if top is not None and sub_value is not None and top != sub_value:
+            ap.error(f"--{name} given twice with different values ({top}, {sub_value})")
+        setattr(args, name, sub_value if sub_value is not None else top if top is not None else default)
     lan, ctl = instance_networks(args.lan, args.ctl, args.instance)
 
     def fail(msg, code):
