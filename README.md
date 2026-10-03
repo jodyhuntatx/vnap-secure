@@ -287,6 +287,8 @@ cd vnap-docker
   pseudonym stations have joined the control channel (default wait 30 s, `--wait`).
   Health, such as the expected chain failures of a negative control, is reported by
   `status` and `check`.
+- **Cleanup:** `down` also removes the containers' anonymous volumes (`docker rm -v`), as do
+  `end-r2-sim.sh` and `stop-vnap.sh`; bind mounts such as `vnap-certs/` are not touched.
 - **Ownership:** containers are labelled with the scenario file, overrides, user, start
   time and run ID. `down` refuses runs started by another user, and unlabelled runs,
   unless given `--force`.

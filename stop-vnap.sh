@@ -3,5 +3,5 @@
 
 source docker.env
 
-cd $EXEC_DIR && docker-compose down &> /dev/null
+cd $EXEC_DIR && docker-compose down -v &> /dev/null  # -v: anonymous volumes too (vnap-certs is a bind mount)
 docker network rm vanetzalan0 &> /dev/null

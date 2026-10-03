@@ -501,7 +501,7 @@ class MqttProbe(threading.Thread):
     def kill_all(run_id):
         """Remove this run's probe containers (running, or created but never started when the
         daemon stalls), without waiting for the daemon."""
-        subprocess.Popen(["sh", "-c", f"docker ps -aq --filter label=vnapctl.probe={run_id} | xargs -r docker rm -f"],
+        subprocess.Popen(["sh", "-c", f"docker ps -aq --filter label=vnapctl.probe={run_id} | xargs -r docker rm -f -v"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -1021,7 +1021,7 @@ class Runner:
 
     def rollback(self):
         if self.created_containers:
-            subprocess.run(["docker", "rm", "-f", *self.created_containers], capture_output=True)
+            subprocess.run(["docker", "rm", "-f", "-v", *self.created_containers], capture_output=True)
         for net in reversed(self.created_networks):
             subprocess.run(["docker", "network", "rm", net], capture_output=True)
 
@@ -1256,9 +1256,11 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     if dry_run:
         print("dry run:")
         if names:
-            print("  docker rm -f " + " ".join(names))
+            print("  docker rm -f -v " + " ".join(names))
     elif names:
-        docker("rm", "-f", *names)
+        # -v: also their anonymous volumes (mosquitto data/log, eavesdropper /logs), which
+        # otherwise accumulate; bind mounts such as vnap-certs are not affected
+        docker("rm", "-f", "-v", *names)
     if not keep_networks:
         for net in (lan, ctl):
             if net not in sim.networks:
