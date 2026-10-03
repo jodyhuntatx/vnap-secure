@@ -1,3 +1,4 @@
+#include "../id_change.hpp"
 #include "cam_application.hpp"
 #include <rapidjson/document.h>
 #include <vanetza/asn1/rj/jer_rj_encode.hpp>
@@ -373,7 +374,7 @@ void CamApplication::on_timer(Clock::time_point)
     Vanetza_ITS2_ItsPduHeader_t& header = message->header;
     header.protocolVersion = 2;
     header.messageId = Vanetza_ITS2_MessageId_cam;
-    header.stationId = config_s.station_id;
+    header.stationId = own_station_id(); // changes on an ID change (see id_change.hpp)
 
     const auto time_now = duration_cast<milliseconds>(runtime_.now().time_since_epoch());
     uint16_t gen_delta_time = time_now.count();

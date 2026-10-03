@@ -56,11 +56,13 @@ public:
     Result change_pseudonym(boost::optional<std::size_t> index) override;
     std::size_t current_pseudonym() const override { return m_index; }
     std::size_t pseudonym_pool_size() const override { return m_pool.size(); }
+    IdChangeService& id_changes() override { return m_id_changes; }
 
 private:
     const std::vector<Pseudonym> m_pool;
     std::atomic<std::size_t> m_index;
     SignHeaderPolicy* m_sign_header_policy = nullptr;
+    IdChangeService m_id_changes; // last member: destroyed (DEREG) first
 };
 
 } // namespace v3

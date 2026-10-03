@@ -109,6 +109,7 @@ run_station() {  # name ip station_id station_type mac sec-args...
     --network vanetzalan0 --ip $ip --cap-add NET_ADMIN \
     -e VANETZA_STATION_ID=$id -e VANETZA_STATION_TYPE=$type -e VANETZA_MAC_ADDRESS=$mac \
     -e VANETZA_INTERFACE=br0 -e START_EMBEDDED_MOSQUITTO=true -e SUPPORT_MAC_BLOCKING=true \
+    -e VANETZA_BRIDGE_IP=$ip \
     "$@" $IMAGE "${cmd[@]}" >/dev/null
   # stations with a pseudonym pool also join the control network (as eth1, before start)
   if [ "${PSEUDO_CTL:-0}" = 1 ] && [[ " $* " == *SECURITY=pseudonyms* ]]; then

@@ -1,4 +1,5 @@
 #pragma once
+#include <vanetza/security/id_change_service.hpp>
 #include <boost/optional/optional.hpp>
 #include <cstddef>
 #include <string>
@@ -37,6 +38,14 @@ public:
 
     virtual std::size_t current_pseudonym() const = 0;
     virtual std::size_t pseudonym_pool_size() const = 0;
+
+    /**
+     * ID change notification service (ETSI TS 102 723-8/-9): every pseudonym change runs its
+     * two-phase commit with the new certificate's HashedId8 as id, so subscribed layers change
+     * their identifiers together with the certificate. A change is refused while an ID-LOCK is
+     * held; IDCHANGE-TRIGGER changes to the next pseudonym.
+     */
+    virtual IdChangeService& id_changes() = 0;
 
     virtual ~PseudonymControl() = default;
 };

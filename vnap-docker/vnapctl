@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 
 MQTT_IMAGE = "eclipse-mosquitto:2"
 DISK_WARN_GB = 2.0
-EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "chain", "error")
+EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "idchange", "chain", "error")
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_DOWN, EXIT_DEGRADED = 0, 1, 2, 3, 4
 
@@ -115,7 +115,14 @@ class Simulation:
             out = docker("ps", "-a", "--filter", f"network={net}", "--format", "{{.Names}}", check=False)
             members[net] = {n for n in out.split() if n}
         names = set().union(*members.values()) if members else set()
-        infos = json.loads(docker("inspect", *sorted(names))) if names else []
+        # containers can vanish between listing and inspecting (e.g. short-lived MQTT probes):
+        # docker inspect then fails for those but still prints the others
+        out = docker("inspect", *sorted(names), check=False) if names else ""
+        try:
+            infos = json.loads(out) if out.strip() else []
+        except json.JSONDecodeError:
+            infos = []
+        infos = [i for i in infos if not any(k.startswith("vnapctl.probe") for k in (i["Config"].get("Labels") or {}))]
         for info in infos:
             env, name = env_of(info), Simulation.name(info)
             cmd = info["Config"].get("Cmd") or []
@@ -143,7 +150,15 @@ class Simulation:
         return ((info["NetworkSettings"]["Networks"] or {}).get(net) or {}).get("IPAddress", "")
 
     def station_by_id(self):
-        return {int(env_of(i)["VANETZA_STATION_ID"]): self.name(i) for i in self.stations}
+        """Station ID -> station name, including the IDs a station took on full ID changes
+        (its [IDCHANGE] facilities log lines are the trusted ground truth)."""
+        ids = {int(env_of(i)["VANETZA_STATION_ID"]): self.name(i) for i in self.stations}
+        for info in self.stations:
+            if "PSEUDO_CERT_0" in env_of(info):
+                for ev in log_events(self.name(info)):
+                    if ev["kind"] == "idchange" and ev["action"] == "facilities":
+                        ids[ev["new"]] = self.name(info)
+        return ids
 
     def control_auth(self):
         """Broker account for our own subscriptions (never printed)."""
@@ -157,6 +172,10 @@ class Simulation:
 
 # ---------------------------------------------------------------- log parsing
 
+RE_IDC_NET = re.compile(r"\[IDCHANGE\] network: GN address MID / MAC (\S+) -> (\S+) \(id (\w+)\)")
+RE_IDC_FAC = re.compile(r"\[IDCHANGE\] facilities: stationId (\d+) -> (\d+) \(id (\w+)\)")
+RE_IDC_LOCK = re.compile(r"\[IDCHANGE\] ID-LOCK for (\d+) s \(handle (\d+)\)")
+RE_IDC_UNLOCK = re.compile(r"\[IDCHANGE\] ID-UNLOCK handle (\d+)")
 RE_POOL_START = re.compile(r"\[PSEUDONYM\] (v\d) pool of (\d+) certificate\(s\).*starting at index (\d+) \(certificate=(\w+)\)")
 RE_CHANGED = re.compile(r"\[PSEUDONYM\] changed pool index (\d+) -> (\d+) \(of (\d+)\), certificate=(\w+)")
 RE_REJECTED = re.compile(r"\[PSEUDONYM\] (?:change to index (\d+) rejected|change event rejected): (.*)")
@@ -194,6 +213,18 @@ def log_events(station, since=None, until=None):
             ev = {"kind": "pseudonym", "action": "connected"}
         elif "[PSEUDONYM] control channel lost" in line or "[PSEUDONYM] control channel connection refused" in line:
             ev = {"kind": "pseudonym", "action": "disconnected", "text": line.split("] ", 1)[1]}
+        elif m := RE_IDC_NET.search(line):
+            ev = {"kind": "idchange", "action": "network", "old": m[1], "new": m[2], "id": m[3]}
+        elif m := RE_IDC_FAC.search(line):
+            ev = {"kind": "idchange", "action": "facilities", "old": int(m[1]), "new": int(m[2]), "id": m[3]}
+        elif m := RE_IDC_LOCK.search(line):
+            ev = {"kind": "idchange", "action": "lock", "duration_s": int(m[1]), "handle": int(m[2])}
+        elif m := RE_IDC_UNLOCK.search(line):
+            ev = {"kind": "idchange", "action": "unlock", "handle": int(m[1])}
+        elif "[IDCHANGE] subscribed:" in line:
+            ev = {"kind": "idchange", "action": "scope", "scope": "full"}
+        elif "[IDCHANGE] pseudonym changes replace only the certificate" in line:
+            ev = {"kind": "idchange", "action": "scope", "scope": "certificate"}
         elif "[PSEUDONYM] WARNING" in line:
             ev = {"kind": "pseudonym", "action": "warning", "text": line.split("WARNING: ", 1)[1]}
         elif m := RE_CHAIN.search(line):
@@ -240,6 +271,7 @@ def station_status(sim, info):
     st["chain"] = [{k: e[k] for k in ("role", "cert", "result", "ok") if k in e} for e in events if e["kind"] == "chain"]
     st["errors"] = [e["text"] for e in events if e["kind"] == "error"]
     ps = [e for e in events if e["kind"] == "pseudonym"]
+    idc = [e for e in events if e["kind"] == "idchange"]
     if pool or ps:
         current = next((e for e in reversed(ps) if e["action"] in ("changed", "start")), None)
         conn = next((e for e in reversed(ps) if e["action"] in ("connected", "disconnected")), None)
@@ -256,6 +288,16 @@ def station_status(sim, info):
                 "auth": bool(env.get("PSEUDO_CONTROL_USERNAME")),
                 "connected": bool(conn and conn["action"] == "connected"),
             } if env.get("PSEUDO_CONTROL_BROKER") else None,
+        }
+        scope = next((e["scope"] for e in reversed(idc) if e["action"] == "scope"), None)
+        net = next((e for e in reversed(idc) if e["action"] == "network"), None)
+        fac = next((e for e in reversed(idc) if e["action"] == "facilities"), None)
+        st["pseudonym"]["id_change"] = {
+            "scope": scope or "certificate (image without ID change notification)",
+            "mac": net["new"] if net else st["mac"],
+            "station_id": fac["new"] if fac else st["station_id"],
+            "full_changes": sum(e["action"] == "facilities" for e in idc),
+            "locks": sum(e["action"] == "lock" for e in idc),
         }
     return st
 
@@ -375,6 +417,10 @@ def print_status(s):
                         if ctl else "no control channel")
             print(f"  pseudonym: index {p['index']}/{p['pool_size']} cert {p['certificate']}, "
                   f"{p['changes']} change(s), {p['rejected']} rejected, last {p['last_change'] or '-'}; {ctl_text}")
+            idc = p.get("id_change")
+            if idc:
+                print(f"  identity: stationId {idc['station_id']}, MAC {idc['mac']}; ID change scope {idc['scope']}, "
+                      f"{idc['full_changes']} full change(s), {idc['locks']} ID lock(s)")
         for e in st["errors"]:
             print(f"  ERROR {e}")
     if s["control"]:
@@ -520,6 +566,11 @@ def collect_events(sim, duration, since=None, count=None, kinds=None, stations=N
         for ev in log_events(Simulation.name(info), since=log_since):
             if keep(ev):
                 events.append(ev)
+    # station IDs may have changed during the window (full ID change): name senders afterwards
+    final_ids = sim.station_by_id()
+    for ev in events:
+        if ev["kind"] == "rx" and ev.get("from_id") in final_ids:
+            ev["from"] = final_ids[ev["from_id"]]
     events.sort(key=lambda e: e["t"])
     if count:
         events = events[:count]
@@ -548,6 +599,16 @@ def describe(ev):
         if a == "rejected":
             return f"pseudonym change rejected: {ev['error']}"
         return f"pseudonym {a}" + (f": {ev['text']}" if "text" in ev else "")
+    if k == "idchange":
+        a = ev["action"]
+        if a in ("network", "facilities"):
+            what = "GN address/MAC" if a == "network" else "stationId"
+            return f"ID change ({a}): {what} {ev['old']} -> {ev['new']} (id {ev['id']})"
+        if a == "lock":
+            return f"ID-LOCK {ev['duration_s']} s (handle {ev['handle']})"
+        if a == "unlock":
+            return f"ID-UNLOCK handle {ev['handle']}"
+        return f"ID change scope: {ev.get('scope')}"
     if k == "chain":
         return f"chain {ev['role']} {ev.get('cert', '')}: {ev['result']}"
     if k == "error":
@@ -581,6 +642,8 @@ def compute_metrics(sim, status, events, seconds):
             inc(f"{s}.{ev['type']}.tx")
         elif ev["kind"] == "pseudonym" and ev["action"] in ("changed", "rejected"):
             inc(f"{s}.pseudonym.{ev['action']}")
+        elif ev["kind"] == "idchange" and ev["action"] in ("network", "facilities", "lock", "unlock"):
+            inc(f"{s}.idchange.{ev['action']}")
         elif ev["kind"] == "control":
             inc(f"control.{ev['direction']}")
             if ev.get("result"):
@@ -648,7 +711,8 @@ def evaluate(expr, metrics):
         if token in metrics:
             return metrics[token], None
         # counters that never occurred are 0; rates and states must exist
-        if re.search(r"\.(rx|tx|success|unsecured|failed(\.\w+)?|rx_from\.[\w\-]+|changed|rejected|errors|event|status)$", token):
+        if re.search(r"\.(rx|tx|success|unsecured|failed(\.\w+)?|rx_from\.[\w\-]+|changed|rejected|errors|event|status"
+                     r"|idchange\.(network|facilities|lock|unlock))$", token):
             return 0, None
         near = sorted(k for k in metrics if k.split(".")[0] == token.split(".")[0])[:8]
         return None, f"no metric {token}" + (f" (have: {', '.join(near)})" if near else "")
@@ -804,7 +868,11 @@ def load_scenario(ref, sets=(), instance=0):
             else:
                 pool = [(cert_path(pseudo["cert"].format(i=n), where), cert_path(pseudo["key"].format(i=n), where))
                         for n in range(count)]
-                st["pseudonyms"] = {"pool": pool, "min_interval_ms": int(pseudo.get("min_interval_ms", 1000))}
+                id_change = pseudo.get("id_change", "full")
+                if id_change not in ("full", "certificate"):
+                    errors.append(f"{where}: pseudonyms.id_change must be 'full' or 'certificate'")
+                st["pseudonyms"] = {"pool": pool, "min_interval_ms": int(pseudo.get("min_interval_ms", 1000)),
+                                    "id_change": id_change}
         cert_path(st["at_cert"], where)
         cert_path(st["at_key"], where)
         cert_path(st["aa_cert"], where)
@@ -939,6 +1007,8 @@ def station_env(sc, st):
     env = {"VANETZA_STATION_ID": st["station_id"], "VANETZA_STATION_TYPE": st["station_type"],
            "VANETZA_MAC_ADDRESS": st["mac"], "VANETZA_INTERFACE": "br0",
            "START_EMBEDDED_MOSQUITTO": "true", "SUPPORT_MAC_BLOCKING": "true",
+           # bridge the interface with the V2X address, whatever docker names it (control network)
+           "VANETZA_BRIDGE_IP": st["ip"],
            "VANETZA_SECURITY": st["security"]}
     native = sc["entrypoint"] == "native"
     secret_names = []
@@ -947,6 +1017,7 @@ def station_env(sc, st):
         for n, (cert, key) in enumerate(st["pseudonyms"]["pool"]):
             env[f"PSEUDO_CERT_{n}"], env[f"PSEUDO_KEY_{n}"] = cert, key
         env["PSEUDO_MIN_INTERVAL"] = st["pseudonyms"]["min_interval_ms"]
+        env["PSEUDO_ID_CHANGE"] = st["pseudonyms"]["id_change"]
         if sc["control"]:
             env["PSEUDO_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
             if sc["control"]["auth"]:

@@ -15,6 +15,7 @@
 #include "link_layer.hpp"
 #include "positioning.hpp"
 #include "router_context.hpp"
+#include "id_change.hpp"
 #include "pseudonym_channel.hpp"
 #include "security.hpp"
 #include "time_trigger.hpp"
@@ -205,6 +206,39 @@ int main(int argc, const char** argv)
 
         RouterContext context(mib, trigger, *positioning, security.get(), config_s.ignore_own_messages, config_s.ignore_rsu_messages, num_threads, io_context);
         context.set_link_layer(link_layer.get());
+
+        // ID change notification (ETSI TS 102 723-8/-9): with a pseudonym pool, the network
+        // and transport layer (GN address, MAC) and the facilities layer (CAM stationId)
+        // change their identifiers together with the authorization ticket
+        set_own_station_id(config_s.station_id);
+        std::unique_ptr<IdChangeSubscription> facilities_id_change;
+        if (auto* control = pseudonym_control(security.get())) {
+            const std::string scope = vm["pseudonym-id-change"].as<std::string>();
+            if (scope == "full") {
+                context.subscribe_id_changes(control->id_changes());
+                auto pending = std::make_shared<std::uint32_t>(0);
+                facilities_id_change.reset(new IdChangeSubscription(control->id_changes(),
+                    [pending](security::IdChangeService::Command command, const security::IdChangeService::Id& id,
+                              const ByteBuffer&) {
+                        using Command = security::IdChangeService::Command;
+                        if (command == Command::Prepare) {
+                            *pending = derive_station_id(id);
+                        } else if (command == Command::Commit) {
+                            std::cerr << "[IDCHANGE] facilities: stationId " << own_station_id() << " -> " << *pending
+                                      << " (id " << to_hex(id) << ")" << std::endl;
+                            set_own_station_id(*pending);
+                        }
+                        return true;
+                    }, "facilities layer"));
+                std::cerr << "[IDCHANGE] subscribed: network and transport layer, facilities layer "
+                          << "(GN address, MAC and stationId change with the pseudonym)" << std::endl;
+            } else if (scope == "certificate") {
+                std::cerr << "[IDCHANGE] pseudonym changes replace only the certificate "
+                          << "(--pseudonym-id-change certificate)" << std::endl;
+            } else {
+                throw std::runtime_error("--pseudonym-id-change must be 'full' or 'certificate'");
+            }
+        }
         context.require_position_fix(vm.count("require-gnss-fix") > 0);
 
         std::mutex prom_mtx; 

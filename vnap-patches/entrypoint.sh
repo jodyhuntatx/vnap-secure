@@ -22,17 +22,29 @@ else
     echo "No global board config file found. Skipping config update process"
 fi
 
-IP_ADDR=$(ip -f inet addr show eth0 | awk '/inet / {print $2}')
-GW_ADDR=$(ip r | awk '/default / {print $3}')
+# V2X link interface: eth0 by default. A container attached to several networks (e.g. a
+# separate control network) cannot rely on docker naming the V2X network eth0, so
+# VANETZA_BRIDGE_IP selects the interface carrying that address (vnap-secure).
+LINK_IF=eth0
+if [ -n "$VANETZA_BRIDGE_IP" ]; then
+    LINK_IF=$(ip -o -4 addr show | awk -v want="$VANETZA_BRIDGE_IP" '{ split($4, a, "/"); if (a[1] == want) { print $2; exit } }')
+    if [ -z "$LINK_IF" ]; then
+        echo "No interface has address $VANETZA_BRIDGE_IP (VANETZA_BRIDGE_IP)."
+        exit 1
+    fi
+fi
+IP_ADDR=$(ip -f inet addr show $LINK_IF | awk '/inet / {print $2}')
+# only the default route via the link interface is lost when its address moves to the bridge
+GW_ADDR=$(ip r | awk -v d="$LINK_IF" '/^default / && $5 == d {print $3}')
 BR_ID=br0
 
 if [ -n "$SUPPORT_MAC_BLOCKING" ] && [ $SUPPORT_MAC_BLOCKING = true ] ; then
     brctl addbr $BR_ID
     ip a a $IP_ADDR dev $BR_ID
-    ip a d  $IP_ADDR dev eth0
-    brctl addif $BR_ID eth0
+    ip a d  $IP_ADDR dev $LINK_IF
+    brctl addif $BR_ID $LINK_IF
     ip link set $BR_ID up
-    ip r a default via $GW_ADDR
+    [ -n "$GW_ADDR" ] && ip r a default via $GW_ADDR
 fi
 
 printf '#!/bin/sh\nebtables -A INPUT -s $1 -j DROP;' > /bin/block
@@ -53,7 +65,9 @@ fi
 #                 (consecutive pairs from index 0), changed on events from the control channel:
 #                 PSEUDO_CONTROL_BROKER (MQTT broker host, required for changes), PSEUDO_CONTROL_PORT
 #                 (1883), PSEUDO_CONTROL_TOPIC (default vnap/pseudonym/<station id>),
-#                 PSEUDO_CONTROL_USERNAME/PSEUDO_CONTROL_PASSWORD, PSEUDO_MIN_INTERVAL (ms, 1000)
+#                 PSEUDO_CONTROL_USERNAME/PSEUDO_CONTROL_PASSWORD, PSEUDO_MIN_INTERVAL (ms, 1000),
+#                 PSEUDO_ID_CHANGE (full: GN address, MAC and stationId change with the certificate
+#                 via the ETSI ID change notification; certificate: only the certificate; default full)
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
@@ -101,6 +115,7 @@ if [ -n "$SECURITY" ]; then
             else
                 echo "PSEUDO_CONTROL_BROKER is not set: the pseudonym will not change."
             fi
+            set -- "$@" --pseudonym-id-change "${PSEUDO_ID_CHANGE:-full}"
             echo "Running with $VANETZA_SECURITY, pseudonym pool of $i certificate(s)..."
             set -x
             /usr/local/bin/socktap \

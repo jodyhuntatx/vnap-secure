@@ -42,6 +42,7 @@ add_executable(socktap
     ${APPLICATIONS_SRC}
     dcc_passthrough.cpp
     ethernet_device.cpp
+    id_change.hpp id_change.cpp
     link_layer.cpp
     main.cpp
     multi_link.cpp

@@ -39,6 +39,9 @@ PseudonymCertificateProvider::PseudonymCertificateProvider(std::vector<Pseudonym
 
     std::cerr << "[PSEUDONYM] v3 pool of " << m_pool.size() << " certificate(s), changed on events only, "
               << "starting at index 0 (certificate=" << to_hex(m_pool[0].certificate) << ")\n";
+
+    // IDCHANGE-TRIGGER from any layer: change to the next pseudonym (unless ID-locked)
+    m_id_changes.set_trigger_handler([this]() { change_pseudonym(boost::none); });
 }
 
 const Certificate& PseudonymCertificateProvider::own_certificate()
@@ -62,8 +65,12 @@ PseudonymControl::Result PseudonymCertificateProvider::change_pseudonym(boost::o
     } else if (next == result.previous) {
         result.error = "pseudonym already in use";
     } else {
-        m_index = next;
-        result.changed = true;
+        // ID change notification (TS 102 723-8/-9 clause 6.3): PREPARE all subscribed layers,
+        // switch the authorization ticket, then COMMIT -- or ABORT and keep the old one
+        const IdChangeService::Id id = *m_pool[next].certificate.calculate_digest();
+        auto outcome = m_id_changes.change(id, [&]() { m_index = next; return true; });
+        result.changed = outcome.committed;
+        result.error = outcome.error;
     }
     result.current = m_index;
     result.certificate = to_hex(m_pool[result.current].certificate);

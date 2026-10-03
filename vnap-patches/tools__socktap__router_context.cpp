@@ -170,6 +170,10 @@ void RouterContext::set_link_layer(LinkLayer* link_layer)
         routers[num_threads]->set_address(mib_.itsGnLocalGnAddr);
         routers[num_threads]->set_transport_handler(geonet::UpperProtocol::BTP_B, &dispatcher_);
         routers[num_threads]->set_security_entity(security_entity_);
+        {
+            std::lock_guard<std::mutex> lock(own_mac_mutex_);
+            own_mac_ = mib_.itsGnLocalGnAddr.mid();
+        }
 
         update_position_vector();
         dccp->get_trigger().schedule();
@@ -191,7 +195,7 @@ void RouterContext::set_link_layer(LinkLayer* link_layer)
 
 void RouterContext::indicate(CohesivePacket&& packet, const EthernetHeader& hdr)
 {
-    if ((!ignore_own_messages || hdr.source != mib_.itsGnLocalGnAddr.mid()) && hdr.type == access::ethertype::GeoNetworking) {
+    if ((!ignore_own_messages || hdr.source != own_mac()) && hdr.type == access::ethertype::GeoNetworking) {
         auto sharedHdr = std::make_shared<const EthernetHeader>(hdr);
         queued_reception qr{std::make_unique<CohesivePacket>(std::move(packet)), sharedHdr};
         reception_tq->push(std::make_unique<queued_reception>(std::move(qr)));
@@ -213,6 +217,59 @@ void packet_reception_thread(int i) {
         routers[i]->indicate(std::move(up), qr->hdr->source, qr->hdr->destination);
         trigger.schedule(); // schedule packet forwarding
     }
+}
+
+vanetza::MacAddress RouterContext::own_mac()
+{
+    std::lock_guard<std::mutex> lock(own_mac_mutex_);
+    return own_mac_;
+}
+
+void RouterContext::subscribe_id_changes(vanetza::security::IdChangeService& service)
+{
+    id_change_subscription_.reset(new IdChangeSubscription(service,
+        [this](vanetza::security::IdChangeService::Command command, const vanetza::security::IdChangeService::Id& id,
+               const vanetza::ByteBuffer&) { return on_id_change(command, id); },
+        "network and transport layer"));
+}
+
+bool RouterContext::on_id_change(vanetza::security::IdChangeService::Command command,
+    const vanetza::security::IdChangeService::Id& id)
+{
+    using Command = vanetza::security::IdChangeService::Command;
+    switch (command) {
+        case Command::Prepare:
+            // TS 102 723-8 clause 6.3.1.3: no messages with old identifiers between PREPARE and
+            // COMMIT. Holding every router's lock stops reception, forwarding, beacons and
+            // PubSub sends until COMMIT or ABORT (the security entity always sends one of them).
+            for (int i = 0; i < num_threads + 1; ++i) {
+                id_change_locks_.emplace_back(get_router_mutex(i));
+            }
+            id_change_mac_ = derive_mac_address(id);
+            return true;
+        case Command::Commit: {
+            vanetza::MacAddress previous;
+            for (int i = 0; i < num_threads + 1; ++i) {
+                geonet::Address address = routers[i]->get_local_position_vector().gn_addr;
+                previous = address.mid();
+                address.mid(id_change_mac_);
+                routers[i]->set_address(address);
+            }
+            {
+                std::lock_guard<std::mutex> lock(own_mac_mutex_);
+                own_mac_ = id_change_mac_;
+            }
+            std::cerr << "[IDCHANGE] network: GN address MID / MAC " << previous << " -> " << id_change_mac_
+                      << " (id " << to_hex(id) << ")" << std::endl;
+            id_change_locks_.clear();
+            return true;
+        }
+        case Command::Abort:
+        case Command::Dereg:
+            id_change_locks_.clear();
+            return true;
+    }
+    return true;
 }
 
 void RouterContext::start()

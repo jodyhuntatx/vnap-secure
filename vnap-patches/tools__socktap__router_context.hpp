@@ -11,6 +11,8 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <vector>
+#include "id_change.hpp"
 
 class Application;
 class TimeTrigger;
@@ -53,6 +55,14 @@ public:
      */
     void start();
 
+    /**
+     * Subscribe the network and transport layer to ID change events (ETSI TS 102 723-8 SN-SAP):
+     * on PREPARE all routers are locked, so nothing is sent with the old identifiers until COMMIT
+     * or ABORT; on COMMIT every router gets a GN address with a new MAC (also the link-layer
+     * source address of its frames) derived from the event's id.
+     */
+    void subscribe_id_changes(vanetza::security::IdChangeService&);
+
     DccPassthrough& get_dccp();
     
     void log_packet_drop(vanetza::geonet::Router::PacketDropReason);
@@ -63,6 +73,8 @@ private:
     void indicate(vanetza::CohesivePacket&& packet, const vanetza::EthernetHeader& hdr);
     // void log_packet_drop(vanetza::geonet::Router::PacketDropReason);
     void update_position_vector();
+    bool on_id_change(vanetza::security::IdChangeService::Command, const vanetza::security::IdChangeService::Id&);
+    vanetza::MacAddress own_mac();
     void update_packet_flow(const vanetza::geonet::LongPositionVector&);
 
     vanetza::geonet::MIB mib_;
@@ -77,6 +89,13 @@ private:
     bool ignore_own_messages = true;
     bool ignore_rsu_messages = false;
     int num_threads = 1;
+    // own MAC for filtering own frames; changes on ID change COMMIT, read by the link thread
+    std::mutex own_mac_mutex_;
+    vanetza::MacAddress own_mac_;
+    // ID change in progress: router locks held from PREPARE to COMMIT/ABORT, new MAC
+    std::vector<std::unique_lock<std::recursive_mutex>> id_change_locks_;
+    vanetza::MacAddress id_change_mac_;
+    std::unique_ptr<IdChangeSubscription> id_change_subscription_;
 };
 
 #endif /* ROUTER_CONTEXT_HPP_KIPUYBY2 */

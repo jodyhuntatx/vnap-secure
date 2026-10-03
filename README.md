@@ -309,6 +309,8 @@ cd vnap-docker
 | `PSEUDO_CONTROL_TOPIC` | control topic prefix (default `vnap/pseudonym/<station id>`) |
 | `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | control broker account (the password is read from the environment, not passed on the command line) |
 | `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
+| `PSEUDO_ID_CHANGE` | `full` (default): a pseudonym change also changes the GN address, MAC and CAM `stationId` through the ETSI ID change notification; `certificate`: only the certificate |
+| `VANETZA_BRIDGE_IP` | the station's V2X address; the entrypoint bridges the interface that carries it (default `eth0`). Needed when the container is on several networks, because docker does not guarantee which one becomes `eth0`; `vnapctl` and `run-r2-sim.sh` set it |
 
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
 are.
@@ -501,12 +503,18 @@ V2X messages:
 - **Event** (JSON, all members optional):
   `{"event_id": "c1-7", "index": 3, "reason": "periodic"}`. Without `index`, the next
   pseudonym of the pool is used (wrapping around).
+- **Other actions** (`"action"`, default `change`), mapping to the ETSI ID management
+  services described below:
+  - `{"action": "lock", "duration": 30}`: ID-LOCK; answers with a `lock_handle`.
+  - `{"action": "unlock", "lock_handle": 1}`: ID-UNLOCK.
+  - `{"action": "trigger"}`: IDCHANGE-TRIGGER (change to the next pseudonym).
 - **Answer:** `{"event_id": "c1-7", "result": "changed", "previous": 2, "index": 3,
   "pool_size": 8, "certificate": "<HashedId8>"}`, or `"result": "rejected"` with an `error`.
 - **Rejected:**
   - an empty payload or malformed JSON (`{}` is a valid event);
   - an index outside the pool, or the index already in use;
   - events closer together than `PSEUDO_MIN_INTERVAL`;
+  - changes while an ID-LOCK is held (`"error": "ID locked (ID-LOCK)"`);
   - retained messages replayed by the broker when socktap (re)subscribes, so a stale event
     has no effect.
 - **Thread safety:** the MQTT thread only queues the event. The change runs on socktap's
@@ -515,6 +523,41 @@ V2X messages:
 - **After a change:** the next signed message carries the full new certificate, so
   receivers learn it at once.
 
+**ID change notification (ETSI TS 102 723-8 / -9).** With `PSEUDO_ID_CHANGE=full`, the
+default, a pseudonym change is a synchronized change of all of the station's identifiers,
+following the two-phase commit of clause 6.3:
+
+1. **Subscribers:** the network and transport layer (GeoNetworking routers) and the
+   facilities layer (CAM application) subscribe to the security entity's ID change service
+   (`vanetza/security/id_change_service`).
+2. **PREPARE** goes to all subscribers with the 8-octet id of the new authorization ticket
+   (its HashedId8). The network layer locks every router, so nothing is sent with the old
+   identifiers until the change completes.
+3. **The security entity switches** to the new authorization ticket and key.
+4. **COMMIT:**
+   - every router gets a new GN address, whose MID is also the source MAC of its frames;
+   - the CAM application uses a new `stationId`;
+   - both are derived from the id with SHA-256 under separate labels, so they share no
+     bytes with each other or with the certificate.
+
+   If a subscriber refuses PREPARE, everyone prepared gets **ABORT** and nothing changes.
+
+| Service | Clause | Here |
+|---|---|---|
+| IDCHANGE-SUBSCRIBE / -UNSUBSCRIBE | 5.2.5, 5.2.7 | `IdChangeService::subscribe()`; socktap's subscriptions unsubscribe on destruction |
+| IDCHANGE-EVENT (PREPARE, COMMIT, ABORT, DEREG) | 5.2.6, 6.3.1 | hook functions; DEREG when the security entity is destroyed |
+| IDCHANGE-TRIGGER | 5.2.8 | `trigger()`: the security entity changes to the next pseudonym; control action `trigger` |
+| ID-LOCK / ID-UNLOCK | 5.2.9, 5.2.10 | `lock(seconds 0..255)` / `unlock(handle)`; changes are refused while locked; control actions `lock` / `unlock` |
+
+- **Logging:** each change is logged as `[IDCHANGE] network: GN address MID / MAC <old> ->
+  <new>` and `[IDCHANGE] facilities: stationId <old> -> <new>`, plus ID-LOCK and ID-UNLOCK
+  lines. `vnapctl` uses them to keep naming a station whose IDs change (`status` shows its
+  current identity, `events --kind idchange` the changes).
+- **Certificate-only changes:** `PSEUDO_ID_CHANGE=certificate` (scenario key
+  `pseudonyms.id_change = "certificate"`) restores the old behaviour.
+- **Not changed:** the configured station ID and MAC remain the station's identity on its
+  local MQTT interface (e.g. `receiverID`). Messages injected on `vanetza/in/*` carry
+  whatever `stationId` their payload has.
 **Client container** (`vnap-docker/pseudo-ctl/`, image `vnap-pseudo-ctl`, built on demand by
 `run-r2-sim.sh`). The same image runs the broker (`broker`) and the event client (`client`):
 
@@ -525,6 +568,9 @@ PSEUDO_MODE=random PSEUDO_RANDOM_MIN=5 PSEUDO_RANDOM_MAX=20 NATIVE=1 ./run-r2-si
 PSEUDO_MODE=manual NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest
 docker exec pseudo-client change 2          # station 2: next pseudonym
 docker exec pseudo-client change 2 5        # station 2: pool index 5
+docker exec pseudo-client ctl lock 2 20     # station 2: ID-LOCK for 20 s (prints the handle in the answer)
+docker exec pseudo-client ctl unlock 2 1    # ID-UNLOCK handle 1
+docker exec pseudo-client ctl trigger 2     # IDCHANGE-TRIGGER
 docker logs -f pseudo-client                # events sent and the stations' answers
 docker logs obu 2>&1 | grep PSEUDONYM       # the OBU's side
 ```
@@ -607,12 +653,13 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
   `.pseudonyms` and `.linked_changes`.
 
 **What it shows today**
-- In c-its-pki-tracking it links every OBU pseudonym change through the unchanged MAC,
-  GN address and `stationId` (pseudonyms rotate only the certificate and key; see
-  [Pseudonym change events](#pseudonym-change-events)).
-- In an offline test where the OBU's MAC, GN address and `stationId` were rewritten at
-  every change, it still linked all of them by position continuity. Rotating identifiers
-  is not enough while the vehicle keeps sending its exact position.
+- **Full ID change (default):** in c-its-pki-tracking every OBU pseudonym change also
+  changes its MAC, GN address and `stationId`, so the eavesdropper sees a new vehicle each
+  time. It still links all of them by position continuity: the simulated OBU never moves,
+  and a vehicle that keeps sending its exact position is easy to follow. Unlinkability
+  needs more than synchronized identifiers, e.g. silent periods or changes in mix zones.
+- **Certificate-only changes:** with `pseudonyms.id_change = "certificate"` it links every
+  change through the unchanged MAC, GN address and `stationId`.
 
 ## Certificates
 
@@ -640,7 +687,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Patch | Files | Why |
 |---|---|---|
 | Debian snapshot mirror | `Dockerfile` | bullseye reached end of life on 2026-08-31; `deb.debian.org` pool files return 404, so the image no longer built |
-| `certify` + `SECURITY=certs` mode | `Dockerfile`, `entrypoint.sh` | ship the `certify` tool; start socktap with certificate, AA chain and trusted root from environment variables |
+| `certify` + `SECURITY=certs` mode | `Dockerfile`, `entrypoint.sh` | ship the `certify` tool; start socktap with certificate, AA chain and trusted root from environment variables. The entrypoint also bridges the interface carrying `VANETZA_BRIDGE_IP` instead of assuming `eth0`, so stations on a second (control) network keep their V2X traffic on the right one |
 | Clock sync | `tools/socktap/time_trigger.{hpp,cpp}` | the runtime clock lagged wall time, so CAMs were rejected as `Invalid_Timestamp`; also fixes a concurrent `schedule()` assertion crash |
 | PRNG mutex | `vanetza/security/backend_cryptopp.{hpp,cpp}` | the shared CryptoPP random pool was used from several threads (v3 verification, key-check asserts) |
 | Optional Assurance_Level | `vanetza/security/v2/default_certificate_validator.cpp` | accept older v2 certificates without the attribute (TS 103 097 V1.2.1 requires it; current C-ITS-PKI and `certify` output include it) |
@@ -655,6 +702,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Router thread synchronization | `tools/socktap/{router_context,time_trigger,dcc_passthrough,raw_socket_link}.{hpp,cpp}`, `pubsub.cpp`, `main.cpp` | each reception router was used by its reception thread, by timers and position updates on the main thread, and by the PubSub transmission thread with the same index. Now each router is guarded by its trigger's lock (main-thread timers only try-lock), worker threads wait for `RouterContext::start()`, the thread-to-trigger map is locked and the link-layer callback is published safely. ThreadSanitizer: 38 -> 19 reports, none in routing |
 | PubSub, MQTT and DDS synchronization | `tools/socktap/{pubsub,dds,mqtt}.cpp`, `mqtt.hpp` | MQTT subscriptions were added on the main thread while the mosquitto loop thread iterated them; callback threads inserted into the topic priority map; several threads used one UDP output socket; DDS `operator[]` lookups inserted (and dereferenced) null publishers. Maps are now locked, lookups use `find()`, UDP sends are serialized; also fixes reading MQTT payloads as NUL-terminated strings. ThreadSanitizer: 19 -> 17 reports, none in socktap's PubSub/MQTT code |
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
+| ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting
@@ -683,9 +731,9 @@ the vanetza-nap `jodyhuntatx` branch:
     3-minute c-its-pki run). They involve uninstrumented Rust code whose synchronization
     ThreadSanitizer cannot see, so they are most likely false positives. It reports none in
     socktap or Vanetza code.
-  - A pseudonym change replaces only the certificate and signing key. The MAC and
-    GeoNetworking addresses stay the same, so consecutive pseudonyms remain linkable at
-    lower layers.
+  - A pseudonym change (with the default full ID change) changes the certificate, GN
+    address, MAC and CAM `stationId` together, but not the vehicle's broadcast position;
+    see [Eavesdropper](#eavesdropper-tracking-attacker).
 
 ## History
 

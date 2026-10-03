@@ -36,7 +36,8 @@ at_key = "/vnap-certs/c-its-pki/at.der"
 name = "obu"
 # ...
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert",   # ... or a pseudonym pool
-               key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000 }
+               key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000,
+               id_change = "full" }      # "full" (ETSI ID change: GN address, MAC, stationId too) or "certificate"
 
 [control]                         # optional pseudonym control channel
 network = "vnapctl0"

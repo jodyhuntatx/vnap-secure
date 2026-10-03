@@ -102,6 +102,49 @@ void PseudonymChannel::handle_event(const std::string& payload)
         reason = event["reason"].GetString();
     }
 
+    std::string action = "change";
+    if (event.HasMember("action")) {
+        if (!event["action"].IsString()) {
+            return reject("action must be a string");
+        }
+        action = event["action"].GetString();
+    }
+    auto& ids = m_control.id_changes();
+
+    if (action == "lock") {
+        // ID-LOCK (TS 102 723-8/-9 clause 5.2.9), e.g. on behalf of a safety application
+        unsigned duration = 30;
+        if (event.HasMember("duration")) {
+            if (!event["duration"].IsUint() || event["duration"].GetUint() > 255) {
+                return reject("duration must be 0..255 seconds");
+            }
+            duration = event["duration"].GetUint();
+        }
+        const auto handle = ids.lock(duration);
+        std::cerr << "[IDCHANGE] ID-LOCK for " << duration << " s (handle " << handle << ")"
+                  << (reason.empty() ? "" : " (" + reason + ")") << "\n";
+        status.Key("result"); status.String("locked");
+        status.Key("lock_handle"); status.Uint64(handle);
+        status.Key("locked_for_s"); status.Double(ids.locked_for());
+        status.EndObject();
+        return publish_status(buffer.GetString());
+    }
+    if (action == "unlock") {
+        // ID-UNLOCK (clause 5.2.10)
+        if (!event.HasMember("lock_handle") || !event["lock_handle"].IsUint64()) {
+            return reject("unlock needs lock_handle");
+        }
+        ids.unlock(event["lock_handle"].GetUint64());
+        std::cerr << "[IDCHANGE] ID-UNLOCK handle " << event["lock_handle"].GetUint64() << "\n";
+        status.Key("result"); status.String("unlocked");
+        status.Key("locked_for_s"); status.Double(ids.locked_for());
+        status.EndObject();
+        return publish_status(buffer.GetString());
+    }
+    if (action != "change" && action != "trigger") {
+        return reject("unknown action '" + action + "' (change, trigger, lock, unlock)");
+    }
+
     boost::optional<std::size_t> index;
     if (event.HasMember("index")) {
         if (!event["index"].IsUint64()) {
@@ -115,8 +158,20 @@ void PseudonymChannel::handle_event(const std::string& payload)
         return reject("rate limited (minimum interval " + std::to_string(m_options.min_interval.count()) + " ms)");
     }
 
-    std::cerr << "[PSEUDONYM] change event" << (reason.empty() ? "" : " (" + reason + ")") << "\n";
-    PseudonymControl::Result result = m_control.change_pseudonym(index);
+    std::cerr << "[PSEUDONYM] " << action << " event" << (reason.empty() ? "" : " (" + reason + ")") << "\n";
+    PseudonymControl::Result result;
+    if (action == "trigger") {
+        // IDCHANGE-TRIGGER (clause 5.2.8): the security entity decides; report what happened
+        result.previous = m_control.current_pseudonym();
+        ids.trigger();
+        result.current = m_control.current_pseudonym();
+        result.changed = result.current != result.previous;
+        if (!result.changed) {
+            result.error = ids.locked() ? "ID locked (ID-LOCK)" : "no ID change";
+        }
+    } else {
+        result = m_control.change_pseudonym(index);
+    }
     if (result.changed) {
         m_last_change = now;
         m_changed_once = true;
@@ -129,7 +184,12 @@ void PseudonymChannel::handle_event(const std::string& payload)
     status.Key("previous"); status.Uint64(result.previous);
     status.Key("index"); status.Uint64(result.current);
     status.Key("pool_size"); status.Uint64(m_control.pseudonym_pool_size());
-    status.Key("certificate"); status.String(result.certificate.c_str());
+    if (!result.certificate.empty()) {
+        status.Key("certificate"); status.String(result.certificate.c_str());
+    }
+    if (ids.locked()) {
+        status.Key("locked_for_s"); status.Double(ids.locked_for());
+    }
     status.EndObject();
     publish_status(buffer.GetString());
 }
@@ -152,6 +212,10 @@ void add_pseudonym_channel_options(po::options_description& options)
         ("pseudonym-control-username", po::value<std::string>(), "Username for --pseudonym-control-broker.")
         ("pseudonym-control-password", po::value<std::string>(),
             "Password for --pseudonym-control-broker (default: environment variable PSEUDO_CONTROL_PASSWORD).")
+        ("pseudonym-id-change", po::value<std::string>()->default_value("full"),
+            "What a pseudonym change changes: 'full' runs the ETSI TS 102 723-8/-9 ID change "
+            "notification so GN address, MAC and CAM stationId change with the certificate; "
+            "'certificate' changes only the authorization ticket and key.")
         ("pseudonym-min-interval", po::value<int>()->default_value(1000),
             "Minimum milliseconds between two pseudonym changes; events arriving earlier are rejected.")
     ;
