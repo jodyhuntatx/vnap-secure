@@ -50,10 +50,19 @@ TimeTrigger &DccPassthrough::get_trigger() {
 }
 
 TimeTrigger &DccPassthrough::get_trigger(std::thread::id id) {
-    std::lock_guard<std::mutex> lock(triggers_mutex_);
-    auto& trigger = triggers_[id];
-    if (!trigger) {
-        trigger = new TimeTrigger(io_context_);
+    {
+        std::lock_guard<std::mutex> lock(triggers_mutex_);
+        auto found = triggers_.find(id);
+        if (found != triggers_.end()) {
+            return *found->second; // triggers are never removed, the reference stays valid
+        }
     }
-    return *trigger; // triggers are never removed, the reference stays valid
+    // Create the trigger without the map lock: its constructor takes the trigger's own lock,
+    // while threads holding a trigger's lock call get_trigger(), which would invert the order.
+    // Each thread creates its own trigger (or the main thread does, before the thread starts),
+    // so two creations for one id cannot race; the loser would be leaked, never destroyed,
+    // because its timers already refer to it.
+    TimeTrigger* created = new TimeTrigger(io_context_);
+    std::lock_guard<std::mutex> lock(triggers_mutex_);
+    return *triggers_.emplace(id, created).first->second;
 }

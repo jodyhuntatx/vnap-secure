@@ -16,10 +16,11 @@
 #                   Manual event: docker exec pseudo-client change 2 [index]
 
 SCENARIO=${1:-none}
-IMAGE=${2:-vnap:r2-stock}
-# NATIVE=1 uses the image's own (patched) /entrypoint.sh with SECURITY=certs instead of
-# mounting r2-entrypoint.sh -- only for images built with the vnap-patches entrypoint
-NATIVE=${NATIVE:-0}
+IMAGE=${2:-vnap:latest}
+# NATIVE=1 (default) uses the image's own patched /entrypoint.sh (SECURITY=certs/pseudonyms).
+# NATIVE=0 mounts r2-entrypoint.sh instead -- only for an unpatched release2-main image
+# (e.g. one built with ./docker-build.sh origs and tagged vnap:r2-stock)
+NATIVE=${NATIVE:-1}
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 # CERTS_DIR can be overridden to test other cert sets (mounted at /vnap-certs)
