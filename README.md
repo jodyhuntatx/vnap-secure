@@ -257,8 +257,9 @@ Options:
 
 `vnap-docker/vnapctl up` starts a scenario described in a TOML file under
 `vnap-docker/scenarios/`. The format is in `scenarios/README.md`; one file exists for each
-`run-r2-sim.sh` scenario except the expired `certify`, plus `stress-naive-v3` and
-`c-its-pki-tracking` (with the [eavesdropper](#eavesdropper-tracking-attacker)). `vnapctl down` stops it again.
+`run-r2-sim.sh` scenario except the expired `certify`, plus `stress-naive-v3`,
+`c-its-pki-tracking` (with the [eavesdropper](#eavesdropper-tracking-attacker)) and
+`c-its-pki-tracking-silent` (the same with a 3–13 s silent period after each ID change). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker
@@ -311,6 +312,7 @@ cd vnap-docker
 | `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | control broker account (the password is read from the environment, not passed on the command line) |
 | `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
 | `PSEUDO_ID_CHANGE` | `full` (default): a pseudonym change also changes the GN address, MAC and CAM `stationId` through the ETSI ID change notification; `certificate`: only the certificate |
+| `PSEUDO_SILENT_MIN_MS` / `PSEUDO_SILENT_MAX_MS` | random radio silence after each full ID change, in ms (default 0 = off); see [Pseudonym change events](#pseudonym-change-events) |
 | `VANETZA_BRIDGE_IP` | the station's V2X address; the entrypoint bridges the interface that carries it (default `eth0`). Needed when the container is on several networks, because docker does not guarantee which one becomes `eth0`; `vnapctl` and `run-r2-sim.sh` set it |
 
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
@@ -554,6 +556,16 @@ following the two-phase commit of clause 6.3:
   <new>` and `[IDCHANGE] facilities: stationId <old> -> <new>`, plus ID-LOCK and ID-UNLOCK
   lines. `vnapctl` uses them to keep naming a station whose IDs change (`status` shows its
   current identity, `events --kind idchange` the changes).
+- **Silent period:** with `PSEUDO_SILENT_MIN_MS`/`PSEUDO_SILENT_MAX_MS` (scenario keys
+  `pseudonyms.silent_min_ms`/`silent_max_ms`), the station sends nothing for a random time
+  in that range after each full ID change. This is the silent period strategy of ETSI
+  TR 103 415 clause 4.1.4; clause 4.2.1 reports the SAE J2735 values of 3 to 13 s.
+  - **How:** the network layer starts it on COMMIT, and `DccPassthrough` drops all
+    outgoing frames (CAMs, beacons, injected messages) until it ends. Reception continues.
+  - **Logging:** `[IDCHANGE] silent period <n> ms` at the start, and `silent period over,
+    <n> frame(s) suppressed` at the end.
+  - **The cost** (TR 103 415): while silent, the vehicle is missing from its neighbours'
+    view, and it reappears suddenly afterwards.
 - **Certificate-only changes:** `PSEUDO_ID_CHANGE=certificate` (scenario key
   `pseudonyms.id_change = "certificate"`) restores the old behaviour.
 - **Not changed:** the configured station ID and MAC remain the station's identity on its
@@ -659,6 +671,16 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
   time. It still links all of them by position continuity: the simulated OBU never moves,
   and a vehicle that keeps sending its exact position is easy to follow. Unlinkability
   needs more than synchronized identifiers, e.g. silent periods or changes in mix zones.
+- **Full ID change with a silent period** (`c-its-pki-tracking-silent`, 3–13 s):
+  - **Default eavesdropper:** in a 2.5-minute run with 10 changes it linked none. It saw
+    the one OBU as 8 separate vehicles, because each silence exceeded its 3 s link window.
+  - **Patient eavesdropper:** one with `--link-window 15`, attached to the same run, linked
+    every change again (gaps of 5–12 s). With a single stationary vehicle and nobody else
+    around, waiting out the silence is enough.
+  - **What this means:** a silent period protects only where other vehicles could be the
+    one that reappears, i.e. in dense traffic or mix zones (TR 103 415 clauses 4.1.4–4.1.6).
+  - **The cost:** the vehicle is invisible while silent; the RSU received 7 instead of 10
+    OBU CAMs in a 10 s window.
 - **Certificate-only changes:** with `pseudonyms.id_change = "certificate"` it links every
   change through the unchanged MAC, GN address and `stationId`.
 
@@ -703,7 +725,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Router thread synchronization | `tools/socktap/{router_context,time_trigger,dcc_passthrough,raw_socket_link}.{hpp,cpp}`, `pubsub.cpp`, `main.cpp` | each reception router was used by its reception thread, by timers and position updates on the main thread, and by the PubSub transmission thread with the same index. Now each router is guarded by its trigger's lock (main-thread timers only try-lock), worker threads wait for `RouterContext::start()`, the thread-to-trigger map is locked (new triggers are created outside that lock, avoiding a lock-order inversion) and the link-layer callback is published safely. ThreadSanitizer: 38 -> 19 reports, none in routing |
 | PubSub, MQTT and DDS synchronization | `tools/socktap/{pubsub,dds,mqtt}.cpp`, `mqtt.hpp` | MQTT subscriptions were added on the main thread while the mosquitto loop thread iterated them; callback threads inserted into the topic priority map; several threads used one UDP output socket; DDS `operator[]` lookups inserted (and dereferenced) null publishers. Maps are now locked, lookups use `find()`, UDP sends are serialized; also fixes reading MQTT payloads as NUL-terminated strings. ThreadSanitizer: 19 -> 17 reports, none in socktap's PubSub/MQTT code |
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
-| ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour) |
+| ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour). Optional random silent period after each change (`--pseudonym-silent-min/-max`, TR 103 415 4.1.4; `tools/socktap/dcc_passthrough.{hpp,cpp}`) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting

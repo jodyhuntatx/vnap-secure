@@ -1,0 +1,46 @@
+description = "c-its-pki-tracking with a random 3-13 s silent period after each full ID change (ETSI TR 103 415 4.1.4, SAE J2735 values)"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+broker_ip = "192.168.99.2"
+client_ip = "192.168.99.3"
+
+[control.client]
+mode = "periodic"
+interval = 20        # leaves the OBU on air for at least 7 s between silent periods
+
+[eavesdropper]
+# untrusted party: raw frames on vanetzalan0 only (no keys, no MQTT, no control network)
+summary_interval = 30
+
+[check]
+# the eavesdropper works; with silent periods longer than its 3 s link window it should no
+# longer link the OBU's pseudonym changes (eavesdropper.linked_changes stays 0)
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=2"]

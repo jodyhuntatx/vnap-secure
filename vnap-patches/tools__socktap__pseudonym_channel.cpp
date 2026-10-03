@@ -216,6 +216,11 @@ void add_pseudonym_channel_options(po::options_description& options)
             "What a pseudonym change changes: 'full' runs the ETSI TS 102 723-8/-9 ID change "
             "notification so GN address, MAC and CAM stationId change with the certificate; "
             "'certificate' changes only the authorization ticket and key.")
+        ("pseudonym-silent-min", po::value<int>()->default_value(0),
+            "Minimum milliseconds of radio silence after a full ID change (ETSI TR 103 415 4.1.4).")
+        ("pseudonym-silent-max", po::value<int>()->default_value(0),
+            "Maximum milliseconds of radio silence after a full ID change; the silent period is drawn "
+            "uniformly from [min, max]; 0 disables it.")
         ("pseudonym-min-interval", po::value<int>()->default_value(1000),
             "Minimum milliseconds between two pseudonym changes; events arriving earlier are rejected.")
     ;

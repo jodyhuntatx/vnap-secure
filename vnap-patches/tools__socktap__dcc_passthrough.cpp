@@ -24,6 +24,21 @@ void DccPassthrough::request(const dcc::DataRequest& request, std::unique_ptr<Ch
         return;
     }
 
+    const std::int64_t silent_until = silent_until_ns_.load();
+    if (silent_until != 0) {
+        const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now < silent_until) {
+            ++silenced_frames_;
+            return; // silent period: nothing goes on air
+        }
+        std::int64_t expected = silent_until;
+        if (silent_until_ns_.compare_exchange_strong(expected, 0)) {
+            std::cerr << "[IDCHANGE] silent period over, " << silenced_frames_.exchange(0)
+                      << " frame(s) suppressed" << std::endl;
+        }
+    }
+
     get_trigger().schedule();
 
     access::DataRequest acc_req;
@@ -37,6 +52,13 @@ void DccPassthrough::request(const dcc::DataRequest& request, std::unique_ptr<Ch
 void DccPassthrough::allow_packet_flow(bool allow)
 {
     allow_packet_flow_ = allow;
+}
+
+void DccPassthrough::silence_for(std::chrono::milliseconds duration)
+{
+    silenced_frames_ = 0;
+    silent_until_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        (std::chrono::steady_clock::now() + duration).time_since_epoch()).count();
 }
 
 bool DccPassthrough::allow_packet_flow()

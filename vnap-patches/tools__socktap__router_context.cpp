@@ -17,6 +17,7 @@
 #include <deque>
 #include <algorithm>
 #include <future>
+#include <random>
 
 using namespace vanetza;
 using namespace std::chrono;
@@ -225,6 +226,12 @@ vanetza::MacAddress RouterContext::own_mac()
     return own_mac_;
 }
 
+void RouterContext::set_id_change_silence(std::chrono::milliseconds min, std::chrono::milliseconds max)
+{
+    silence_min_ = min;
+    silence_max_ = std::max(min, max);
+}
+
 void RouterContext::subscribe_id_changes(vanetza::security::IdChangeService& service)
 {
     id_change_subscription_.reset(new IdChangeSubscription(service,
@@ -261,6 +268,15 @@ bool RouterContext::on_id_change(vanetza::security::IdChangeService::Command com
             }
             std::cerr << "[IDCHANGE] network: GN address MID / MAC " << previous << " -> " << id_change_mac_
                       << " (id " << to_hex(id) << ")" << std::endl;
+            if (silence_max_.count() > 0 && dccp) {
+                // random silent period: the new identity does not appear right where the old one
+                // stopped (TR 103 415 4.1.4); started before the routers are released
+                static std::mt19937 random_gen { std::random_device {}() };
+                std::uniform_int_distribution<long> dist(silence_min_.count(), silence_max_.count());
+                const std::chrono::milliseconds silence { dist(random_gen) };
+                dccp->silence_for(silence);
+                std::cerr << "[IDCHANGE] silent period " << silence.count() << " ms" << std::endl;
+            }
             id_change_locks_.clear();
             return true;
         }

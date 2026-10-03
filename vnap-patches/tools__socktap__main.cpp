@@ -215,6 +215,16 @@ int main(int argc, const char** argv)
         if (auto* control = pseudonym_control(security.get())) {
             const std::string scope = vm["pseudonym-id-change"].as<std::string>();
             if (scope == "full") {
+                const int silent_min = vm["pseudonym-silent-min"].as<int>();
+                const int silent_max = vm["pseudonym-silent-max"].as<int>();
+                if (silent_min < 0 || silent_max < 0) {
+                    throw std::runtime_error("--pseudonym-silent-min/-max must not be negative");
+                }
+                context.set_id_change_silence(std::chrono::milliseconds(silent_min), std::chrono::milliseconds(silent_max));
+                if (silent_max > 0) {
+                    std::cerr << "[IDCHANGE] silent period after each ID change: " << silent_min << " to "
+                              << std::max(silent_min, silent_max) << " ms" << std::endl;
+                }
                 context.subscribe_id_changes(control->id_changes());
                 auto pending = std::make_shared<std::uint32_t>(0);
                 facilities_id_change.reset(new IdChangeSubscription(control->id_changes(),

@@ -10,6 +10,7 @@
 #include <array>
 #include <list>
 #include <memory>
+#include <chrono>
 #include <mutex>
 #include <vector>
 #include "id_change.hpp"
@@ -63,6 +64,12 @@ public:
      */
     void subscribe_id_changes(vanetza::security::IdChangeService&);
 
+    /**
+     * Random silent period after every ID change COMMIT (ETSI TR 103 415 clause 4.1.4): no
+     * frames are sent for a duration drawn uniformly from [min, max] milliseconds; 0/0 = off.
+     */
+    void set_id_change_silence(std::chrono::milliseconds min, std::chrono::milliseconds max);
+
     DccPassthrough& get_dccp();
     
     void log_packet_drop(vanetza::geonet::Router::PacketDropReason);
@@ -96,6 +103,8 @@ private:
     std::vector<std::unique_lock<std::recursive_mutex>> id_change_locks_;
     vanetza::MacAddress id_change_mac_;
     std::unique_ptr<IdChangeSubscription> id_change_subscription_;
+    std::chrono::milliseconds silence_min_ { 0 };
+    std::chrono::milliseconds silence_max_ { 0 };
 };
 
 #endif /* ROUTER_CONTEXT_HPP_KIPUYBY2 */

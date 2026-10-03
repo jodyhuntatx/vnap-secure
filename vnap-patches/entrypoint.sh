@@ -67,7 +67,9 @@ fi
 #                 (1883), PSEUDO_CONTROL_TOPIC (default vnap/pseudonym/<station id>),
 #                 PSEUDO_CONTROL_USERNAME/PSEUDO_CONTROL_PASSWORD, PSEUDO_MIN_INTERVAL (ms, 1000),
 #                 PSEUDO_ID_CHANGE (full: GN address, MAC and stationId change with the certificate
-#                 via the ETSI ID change notification; certificate: only the certificate; default full)
+#                 via the ETSI ID change notification; certificate: only the certificate; default full),
+#                 PSEUDO_SILENT_MIN_MS/PSEUDO_SILENT_MAX_MS (random radio silence after each full ID
+#                 change, ETSI TR 103 415 4.1.4; default 0 = off)
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
@@ -115,7 +117,8 @@ if [ -n "$SECURITY" ]; then
             else
                 echo "PSEUDO_CONTROL_BROKER is not set: the pseudonym will not change."
             fi
-            set -- "$@" --pseudonym-id-change "${PSEUDO_ID_CHANGE:-full}"
+            set -- "$@" --pseudonym-id-change "${PSEUDO_ID_CHANGE:-full}" \
+                --pseudonym-silent-min "${PSEUDO_SILENT_MIN_MS:-0}" --pseudonym-silent-max "${PSEUDO_SILENT_MAX_MS:-0}"
             echo "Running with $VANETZA_SECURITY, pseudonym pool of $i certificate(s)..."
             set -x
             /usr/local/bin/socktap \

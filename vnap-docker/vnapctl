@@ -175,6 +175,8 @@ class Simulation:
 RE_IDC_NET = re.compile(r"\[IDCHANGE\] network: GN address MID / MAC (\S+) -> (\S+) \(id (\w+)\)")
 RE_IDC_FAC = re.compile(r"\[IDCHANGE\] facilities: stationId (\d+) -> (\d+) \(id (\w+)\)")
 RE_IDC_LOCK = re.compile(r"\[IDCHANGE\] ID-LOCK for (\d+) s \(handle (\d+)\)")
+RE_IDC_SILENT = re.compile(r"\[IDCHANGE\] silent period (\d+) ms")
+RE_IDC_SILENT_END = re.compile(r"\[IDCHANGE\] silent period over, (\d+) frame")
 RE_IDC_UNLOCK = re.compile(r"\[IDCHANGE\] ID-UNLOCK handle (\d+)")
 RE_POOL_START = re.compile(r"\[PSEUDONYM\] (v\d) pool of (\d+) certificate\(s\).*starting at index (\d+) \(certificate=(\w+)\)")
 RE_CHANGED = re.compile(r"\[PSEUDONYM\] changed pool index (\d+) -> (\d+) \(of (\d+)\), certificate=(\w+)")
@@ -219,6 +221,10 @@ def log_events(station, since=None, until=None):
             ev = {"kind": "idchange", "action": "facilities", "old": int(m[1]), "new": int(m[2]), "id": m[3]}
         elif m := RE_IDC_LOCK.search(line):
             ev = {"kind": "idchange", "action": "lock", "duration_s": int(m[1]), "handle": int(m[2])}
+        elif m := RE_IDC_SILENT.search(line):
+            ev = {"kind": "idchange", "action": "silent", "duration_ms": int(m[1])}
+        elif m := RE_IDC_SILENT_END.search(line):
+            ev = {"kind": "idchange", "action": "silent_end", "suppressed": int(m[1])}
         elif m := RE_IDC_UNLOCK.search(line):
             ev = {"kind": "idchange", "action": "unlock", "handle": int(m[1])}
         elif "[IDCHANGE] subscribed:" in line:
@@ -298,7 +304,12 @@ def station_status(sim, info):
             "station_id": fac["new"] if fac else st["station_id"],
             "full_changes": sum(e["action"] == "facilities" for e in idc),
             "locks": sum(e["action"] == "lock" for e in idc),
+            "silent_periods": sum(e["action"] == "silent" for e in idc),
+            "silent_until": None,
         }
+        last_silent = next((e for e in reversed(idc) if e["action"] == "silent"), None)
+        if last_silent and last_silent["t"] + last_silent["duration_ms"] / 1000.0 > time.time():
+            st["pseudonym"]["id_change"]["silent_until"] = clock(last_silent["t"] + last_silent["duration_ms"] / 1000.0)
     return st
 
 
@@ -419,8 +430,10 @@ def print_status(s):
                   f"{p['changes']} change(s), {p['rejected']} rejected, last {p['last_change'] or '-'}; {ctl_text}")
             idc = p.get("id_change")
             if idc:
+                silent = f", silent until {idc['silent_until']}" if idc.get("silent_until") else ""
                 print(f"  identity: stationId {idc['station_id']}, MAC {idc['mac']}; ID change scope {idc['scope']}, "
-                      f"{idc['full_changes']} full change(s), {idc['locks']} ID lock(s)")
+                      f"{idc['full_changes']} full change(s), {idc.get('silent_periods', 0)} silent period(s), "
+                      f"{idc['locks']} ID lock(s){silent}")
         for e in st["errors"]:
             print(f"  ERROR {e}")
     if s["control"]:
@@ -608,6 +621,10 @@ def describe(ev):
             return f"ID-LOCK {ev['duration_s']} s (handle {ev['handle']})"
         if a == "unlock":
             return f"ID-UNLOCK handle {ev['handle']}"
+        if a == "silent":
+            return f"silent period {ev['duration_ms']} ms (no frames sent)"
+        if a == "silent_end":
+            return f"silent period over, {ev['suppressed']} frame(s) suppressed"
         return f"ID change scope: {ev.get('scope')}"
     if k == "chain":
         return f"chain {ev['role']} {ev.get('cert', '')}: {ev['result']}"
@@ -642,7 +659,7 @@ def compute_metrics(sim, status, events, seconds):
             inc(f"{s}.{ev['type']}.tx")
         elif ev["kind"] == "pseudonym" and ev["action"] in ("changed", "rejected"):
             inc(f"{s}.pseudonym.{ev['action']}")
-        elif ev["kind"] == "idchange" and ev["action"] in ("network", "facilities", "lock", "unlock"):
+        elif ev["kind"] == "idchange" and ev["action"] in ("network", "facilities", "lock", "unlock", "silent"):
             inc(f"{s}.idchange.{ev['action']}")
         elif ev["kind"] == "control":
             inc(f"control.{ev['direction']}")
@@ -712,7 +729,7 @@ def evaluate(expr, metrics):
             return metrics[token], None
         # counters that never occurred are 0; rates and states must exist
         if re.search(r"\.(rx|tx|success|unsecured|failed(\.\w+)?|rx_from\.[\w\-]+|changed|rejected|errors|event|status"
-                     r"|idchange\.(network|facilities|lock|unlock))$", token):
+                     r"|idchange\.(network|facilities|lock|unlock|silent))$", token):
             return 0, None
         near = sorted(k for k in metrics if k.split(".")[0] == token.split(".")[0])[:8]
         return None, f"no metric {token}" + (f" (have: {', '.join(near)})" if near else "")
@@ -871,8 +888,14 @@ def load_scenario(ref, sets=(), instance=0):
                 id_change = pseudo.get("id_change", "full")
                 if id_change not in ("full", "certificate"):
                     errors.append(f"{where}: pseudonyms.id_change must be 'full' or 'certificate'")
+                silent_min = int(pseudo.get("silent_min_ms", 0))
+                silent_max = int(pseudo.get("silent_max_ms", silent_min))
+                if silent_min < 0 or silent_max < silent_min:
+                    errors.append(f"{where}: pseudonyms.silent_min_ms/silent_max_ms must satisfy 0 <= min <= max")
+                if silent_max and id_change != "full":
+                    errors.append(f"{where}: a silent period needs pseudonyms.id_change = 'full'")
                 st["pseudonyms"] = {"pool": pool, "min_interval_ms": int(pseudo.get("min_interval_ms", 1000)),
-                                    "id_change": id_change}
+                                    "id_change": id_change, "silent_min_ms": silent_min, "silent_max_ms": silent_max}
         cert_path(st["at_cert"], where)
         cert_path(st["at_key"], where)
         cert_path(st["aa_cert"], where)
@@ -1018,6 +1041,8 @@ def station_env(sc, st):
             env[f"PSEUDO_CERT_{n}"], env[f"PSEUDO_KEY_{n}"] = cert, key
         env["PSEUDO_MIN_INTERVAL"] = st["pseudonyms"]["min_interval_ms"]
         env["PSEUDO_ID_CHANGE"] = st["pseudonyms"]["id_change"]
+        env["PSEUDO_SILENT_MIN_MS"] = st["pseudonyms"]["silent_min_ms"]
+        env["PSEUDO_SILENT_MAX_MS"] = st["pseudonyms"]["silent_max_ms"]
         if sc["control"]:
             env["PSEUDO_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
             if sc["control"]["auth"]:

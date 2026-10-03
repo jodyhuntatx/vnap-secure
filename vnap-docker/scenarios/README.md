@@ -35,9 +35,10 @@ at_key = "/vnap-certs/c-its-pki/at.der"
 [[stations]]
 name = "obu"
 # ...
-pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert",   # ... or a pseudonym pool
-               key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000,
-               id_change = "full" }      # "full" (ETSI ID change: GN address, MAC, stationId too) or "certificate"
+# ... or a pseudonym pool (TOML inline tables must stay on one line):
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000, id_change = "full", silent_min_ms = 0, silent_max_ms = 0 }
+#   id_change: "full" (ETSI ID change: GN address, MAC, stationId change too) or "certificate"
+#   silent_min_ms/silent_max_ms: random radio silence after each full ID change (0 = off)
 
 [control]                         # optional pseudonym control channel
 network = "vnapctl0"
