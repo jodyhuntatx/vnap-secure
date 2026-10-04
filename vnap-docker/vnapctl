@@ -104,6 +104,7 @@ class Simulation:
         self.stations = []   # docker inspect dicts of V2X stations (have VANETZA_STATION_ID)
         self.broker = None   # control channel broker
         self.client = None   # control channel event client
+        self.mobility = None  # mobility client (position updates on the control channel)
         self.observers = []  # passive listeners (eavesdropper) on the simulation network
         self.networks = {}
         members = {}
@@ -130,6 +131,8 @@ class Simulation:
             role = (info["Config"].get("Labels") or {}).get("vnap.role")
             if "VANETZA_STATION_ID" in env and name in members.get(lan, ()):
                 self.stations.append(info)
+            elif role == "mobility" and name in members.get(ctl, ()):
+                self.mobility = info
             elif role == "eavesdropper" and name in members.get(lan, ()):
                 self.observers.append(info)
             elif name in members.get(ctl, ()) and "broker" in cmd:
@@ -336,11 +339,11 @@ def observer_reports(sim):
 
 def build_status(sim):
     labels = {}
-    for info in [c for c in (sim.broker, sim.client) if c] + sim.stations:
+    for info in [c for c in (sim.broker, sim.client, sim.mobility) if c] + sim.stations:
         labels.update({k: v for k, v in (info["Config"].get("Labels") or {}).items() if k.startswith("vnap.")})
     stations = [station_status(sim, i) for i in sim.stations]
     control = None
-    if sim.broker or sim.client:
+    if sim.broker or sim.client or sim.mobility:
         control = {}
         if sim.broker:
             env = env_of(sim.broker)
@@ -351,6 +354,16 @@ def build_status(sim):
             control["client"] = {"name": Simulation.name(sim.client), "state": sim.client["State"]["Status"],
                                  "mode": env.get("MODE", "periodic"), "stations": env.get("STATIONS", "2"),
                                  "interval": env.get("INTERVAL") if env.get("MODE", "periodic") == "periodic" else None}
+        if sim.mobility:
+            try:
+                vehicles = json.loads(env_of(sim.mobility).get("MOBILITY_CONFIG", "{}")).get("vehicles", [])
+            except json.JSONDecodeError:
+                vehicles = []
+            control["mobility"] = {"name": Simulation.name(sim.mobility), "state": sim.mobility["State"]["Status"],
+                                   "ip": sim.ip(sim.mobility, sim.ctl),
+                                   "vehicles": [{"station_id": v.get("station_id"), "waypoints": len(v.get("route", [])),
+                                                 "speed_kmh": v.get("speed_kmh"), "loop": v.get("loop", False)}
+                                                for v in vehicles]}
     free_gb = shutil.disk_usage("/").free / 1e9
 
     warnings = []
@@ -446,6 +459,11 @@ def print_status(s):
             cl = c["client"]
             every = f" every {cl['interval']}s" if cl["interval"] else ""
             print(f"control client: {cl['name']} {cl['state']} mode {cl['mode']}{every} stations [{cl['stations']}]")
+        if "mobility" in c:
+            mo = c["mobility"]
+            print(f"mobility client: {mo['name']} {mo['state']} {mo['ip']}: " + ", ".join(
+                f"station {v['station_id']} {v['waypoints']} waypoints {v['speed_kmh']} km/h{' loop' if v['loop'] else ''}"
+                for v in mo["vehicles"]))
     for o in s.get("observers", []):
         print()
         if "tracks" in o:
@@ -748,9 +766,10 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 SCENARIO_DIR = os.path.join(HERE, "scenarios")
 CTL_IMAGE = "vnap-pseudo-ctl"
 EAVESDROPPER_IMAGE = "vnap-eavesdropper"
+MOBILITY_IMAGE = "vnap-mobility"
 SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
 STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
-                "aa_cert", "root_cert", "pseudonyms", "env"}
+                "aa_cert", "root_cert", "pseudonyms", "mobility", "env"}
 CLIENT_MODES = {"periodic", "random", "once", "manual"}
 EXIT_CONFLICT = 5
 
@@ -883,8 +902,11 @@ def load_scenario(ref, sets=(), instance=0):
             if count < 1 or "{i}" not in pseudo.get("cert", "") or "{i}" not in pseudo.get("key", ""):
                 errors.append(f"{where}: pseudonyms needs cert/key patterns with {{i}} and count >= 1")
             else:
+                first = int(pseudo.get("first", 0))  # pool offset: stations can share one numbered set
+                if first < 0:
+                    errors.append(f"{where}: pseudonyms.first must be >= 0")
                 pool = [(cert_path(pseudo["cert"].format(i=n), where), cert_path(pseudo["key"].format(i=n), where))
-                        for n in range(count)]
+                        for n in range(first, first + count)]
                 id_change = pseudo.get("id_change", "full")
                 if id_change not in ("full", "certificate"):
                     errors.append(f"{where}: pseudonyms.id_change must be 'full' or 'certificate'")
@@ -896,6 +918,11 @@ def load_scenario(ref, sets=(), instance=0):
                     errors.append(f"{where}: a silent period needs pseudonyms.id_change = 'full'")
                 st["pseudonyms"] = {"pool": pool, "min_interval_ms": int(pseudo.get("min_interval_ms", 1000)),
                                     "id_change": id_change, "silent_min_ms": silent_min, "silent_max_ms": silent_max}
+        mob = raw.get("mobility")
+        if mob is not None:
+            st["mobility"] = check_mobility(mob, where, errors)
+            if entrypoint != "native":
+                errors.append(f"{where}: mobility needs entrypoint = 'native'")
         cert_path(st["at_cert"], where)
         cert_path(st["at_key"], where)
         cert_path(st["aa_cert"], where)
@@ -945,6 +972,16 @@ def load_scenario(ref, sets=(), instance=0):
             errors.append("control.auth needs username_env and password_env (names of environment variables)")
         if ctl_name == lan_name:
             errors.append("control network must differ from the simulation network")
+        if any(s.get("mobility") for s in stations):
+            control["mobility"] = {"name": "mobility" + suffix,
+                                   "ip": remap_ip(ctl_raw.get("mobility_ip", "192.168.99.4"), instance),
+                                   "rate_hz": float(ctl_raw.get("mobility_rate_hz", 5))}
+            if ctl_subnet and ipaddress.ip_address(control["mobility"]["ip"]) not in ctl_subnet:
+                errors.append(f"control.mobility_ip {control['mobility']['ip']} not in {ctl_subnet}")
+            if not 0 < control["mobility"]["rate_hz"] <= 50:
+                errors.append("control.mobility_rate_hz must be in (0, 50]")
+    elif any(s.get("mobility") for s in stations):
+        errors.append("stations with mobility need a [control] section (positions travel on the control channel)")
     elif any(s.get("pseudonyms") for s in stations):
         pass  # allowed: the pool stays at index 0 (vnapctl status warns)
 
@@ -977,6 +1014,33 @@ def load_scenario(ref, sets=(), instance=0):
     }
 
 
+def check_mobility(mob, where, errors):
+    """Validate a station's mobility table; returns the normalized description."""
+    if not isinstance(mob, dict):
+        errors.append(f"{where}: mobility must be a table {{ route = [[lat, lon], ...], speed_kmh = ... }}")
+        return None
+    unknown = set(mob) - {"route", "speed_kmh", "start_s", "loop"}
+    if unknown:
+        errors.append(f"{where}: unknown mobility key(s) {', '.join(sorted(unknown))}")
+    route = mob.get("route")
+    ok = isinstance(route, list) and len(route) >= 2 and all(
+        isinstance(p, list) and len(p) == 2 and all(isinstance(c, (int, float)) for c in p)
+        and -90 <= p[0] <= 90 and -180 <= p[1] <= 180 for p in route)
+    if not ok:
+        errors.append(f"{where}: mobility.route needs at least two [lat, lon] waypoints (degrees)")
+        return None
+    if all(p == route[0] for p in route):
+        errors.append(f"{where}: mobility.route has zero length")
+    speed = mob.get("speed_kmh", 50)
+    if not isinstance(speed, (int, float)) or not 0 < speed <= 589.7:
+        errors.append(f"{where}: mobility.speed_kmh must be in (0, 589.7] (CAM speed range)")
+    start = mob.get("start_s", 0)
+    if not isinstance(start, (int, float)) or start < 0:
+        errors.append(f"{where}: mobility.start_s must be >= 0")
+    return {"route": [[float(c) for c in p] for p in route], "speed_kmh": speed, "start_s": start,
+            "loop": bool(mob.get("loop", False))}
+
+
 def list_scenarios():
     out = []
     for fname in sorted(os.listdir(SCENARIO_DIR)) if os.path.isdir(SCENARIO_DIR) else []:
@@ -988,7 +1052,8 @@ def list_scenarios():
             out.append({"name": ref, "description": sc["description"], "image": sc["image"],
                         "stations": [f"{s['name']}:{s['security']}" + (f"+pool{len(s['pseudonyms']['pool'])}" if s.get("pseudonyms") else "")
                                      for s in sc["stations"]],
-                        "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]), "valid": True})
+                        "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]),
+                        "mobility": any(s.get("mobility") for s in sc["stations"]), "valid": True})
         except ScenarioError as e:
             out.append({"name": ref, "valid": False, "error": str(e)})
     return out
@@ -1051,6 +1116,13 @@ def station_env(sc, st):
         if native:
             env["SECURITY"] = "certs"
         env["AT_CERT"], env["AT_KEY"] = st["at_cert"], st["at_key"]
+    if st.get("mobility") and sc["control"]:
+        # start at the first waypoint; the mobility client takes over from there
+        env["VANETZA_LATITUDE"], env["VANETZA_LONGITUDE"] = st["mobility"]["route"][0]
+        env["VANETZA_USE_HARDCODED_GPS"] = "true"
+        env["POSITION_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
+        if sc["control"]["auth"]:
+            secret_names += ["POSITION_CONTROL_USERNAME", "POSITION_CONTROL_PASSWORD"]
     for key in ("aa_cert", "root_cert"):
         if st[key] and (st["at_cert"] or st.get("pseudonyms")):
             env[key.upper()] = st[key]
@@ -1087,7 +1159,7 @@ def scenario_up(sc, dry_run=False, wait=30.0):
     """Start a scenario. Returns (ok, report dict)."""
     lan, ctl = sc["network"]["name"], (sc["control"] or {}).get("network", "vnapctl0-unused")
     sim = Simulation(lan, ctl)
-    if sim.running or sim.broker or sim.client:
+    if sim.running or sim.broker or sim.client or sim.mobility:
         s = build_status(sim)
         who = s["run"]
         raise ScenarioError(f"a simulation is already running on {lan}: scenario {who['scenario'] or '(unlabelled)'}"
@@ -1095,7 +1167,8 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                             f"Stop it with 'vnapctl down', or start another instance with --instance N.")
     names = [s["name"] for s in sc["stations"]] + ([sc["control"]["broker"]["name"], sc["control"]["client"]["name"]]
                                                      if sc["control"] else []) \
-        + ([sc["eavesdropper"]["name"]] if sc["eavesdropper"] else [])
+        + ([sc["eavesdropper"]["name"]] if sc["eavesdropper"] else []) \
+        + ([sc["control"]["mobility"]["name"]] if sc["control"] and sc["control"].get("mobility") else [])
     taken = [n for n in names if container_exists(n)]
     if taken:
         raise ScenarioError(f"container name(s) already in use: {', '.join(taken)} (remove them or use --instance N)")
@@ -1117,7 +1190,8 @@ def scenario_up(sc, dry_run=False, wait=30.0):
         if not (user and password) and not dry_run:
             raise ScenarioError(f"control.auth: set the environment variables {auth['username_env']} and {auth['password_env']}")
         secret_env = {"CONTROL_USERNAME": user or "", "CONTROL_PASSWORD": password or "",
-                      "PSEUDO_CONTROL_USERNAME": user or "", "PSEUDO_CONTROL_PASSWORD": password or ""}
+                      "PSEUDO_CONTROL_USERNAME": user or "", "PSEUDO_CONTROL_PASSWORD": password or "",
+                      "POSITION_CONTROL_USERNAME": user or "", "POSITION_CONTROL_PASSWORD": password or ""}
 
     run_id = f"{sc['name']}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     r = Runner(dry_run, secret_env)
@@ -1153,7 +1227,7 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                 args += [sc["image"]]
             r.run(args)
             r.created_containers.append(st["name"])
-            if c and st.get("pseudonyms"):
+            if c and (st.get("pseudonyms") or st.get("mobility")):
                 host = st["ip"].split(".")[-1]
                 ctl_ip = str(ipaddress.ip_network(c["subnet"]).network_address + int(host))
                 r.run(["network", "connect", "--ip", ctl_ip, ctl, st["name"]])
@@ -1169,6 +1243,18 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                 args += ["-e", f"INDEX={cl['index']}"]
             r.run(args + [CTL_IMAGE, "client"])
             r.created_containers.append(cl["name"])
+        if c and c.get("mobility"):
+            mo = c["mobility"]
+            if subprocess.run(["docker", "image", "inspect", MOBILITY_IMAGE], capture_output=True).returncode != 0:
+                r.run(["build", "-q", "-t", MOBILITY_IMAGE, "-"], stdin_cmd=["tar", "-C", os.path.join(HERE, "mobility"), "-c", "."])
+            config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
+                      "vehicles": [{"station_id": st["station_id"], **st["mobility"]}
+                                   for st in sc["stations"] if st.get("mobility")]}
+            r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"],
+                   *run_labels(sc, run_id, "mobility"),
+                   *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
+                   "-e", "MOBILITY_CONFIG=" + json.dumps(config, separators=(",", ":")), MOBILITY_IMAGE])
+            r.created_containers.append(mo["name"])
         ev = sc["eavesdropper"]
         if ev:
             if subprocess.run(["docker", "image", "inspect", EAVESDROPPER_IMAGE], capture_output=True).returncode != 0:
@@ -1234,13 +1320,20 @@ def wait_ready(sc, lan, wait):
                 time.sleep(1)
             else:
                 pending[st["name"]] = "control channel not connected"
+        if wait > 0 and st.get("mobility") and sc["control"] and st["name"] not in pending:
+            for _ in range(5):
+                if "[MOBILITY] first position update" in docker("logs", st["name"], check=False):
+                    break
+                time.sleep(1)
+            else:
+                pending[st["name"]] = "no position update from the mobility client"
     return pending
 
 
 def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     """Remove the simulation on lan/ctl. Returns report dict; raises ScenarioError on refusal."""
     sim = Simulation(lan, ctl)
-    containers = sim.stations + [c for c in (sim.broker, sim.client) if c] + sim.observers
+    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility) if c] + sim.observers
     # probes and helpers from this tool are not part of the run
     names = [Simulation.name(c) for c in containers]
     owners = {(c["Config"].get("Labels") or {}).get("vnap.started_by") for c in containers}

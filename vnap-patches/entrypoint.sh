@@ -73,6 +73,17 @@ fi
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
+# Mobility (vnap-secure): POSITION_CONTROL_BROKER (MQTT broker), POSITION_CONTROL_PORT (1883),
+# POSITION_CONTROL_TOPIC (default vnap/position/<station id>), POSITION_CONTROL_USERNAME and
+# POSITION_CONTROL_PASSWORD (read by socktap from the environment) move the station at runtime.
+# These options start the positional parameters, which every mode below passes to socktap.
+set --
+if [ -n "$POSITION_CONTROL_BROKER" ]; then
+    set -- --position-control-broker "$POSITION_CONTROL_BROKER" --position-control-port "${POSITION_CONTROL_PORT:-1883}"
+    [ -n "$POSITION_CONTROL_TOPIC" ] && set -- "$@" --position-control-topic "$POSITION_CONTROL_TOPIC"
+    [ -n "$POSITION_CONTROL_USERNAME" ] && set -- "$@" --position-control-username "$POSITION_CONTROL_USERNAME"
+fi
+
 if [ -n "$SECURITY" ]; then
     case $SECURITY in
         certs)
@@ -81,6 +92,7 @@ if [ -n "$SECURITY" ]; then
             set -x
             /usr/local/bin/socktap \
                 --config /config.ini \
+                "$@" \
                 --certificate $AT_CERT \
                 --certificate-key $AT_KEY \
                 --certificate-chain $AA_CERT \
@@ -90,7 +102,7 @@ if [ -n "$SECURITY" ]; then
         pseudonyms)
             export VANETZA_SECURITY=${VANETZA_SECURITY:-certs-v2}
             # POSIX sh (dash): collect PSEUDO_CERT_<i>/PSEUDO_KEY_<i> pairs into the positional parameters
-            set --
+            # (appended to the mobility options set above)
             i=0
             while true; do
                 eval "cert=\${PSEUDO_CERT_$i:-}"
@@ -136,5 +148,5 @@ if [ -n "$SECURITY" ]; then
     esac
 else
     echo "Running with security from config.ini/VANETZA_SECURITY."
-    /usr/local/bin/socktap -c /config.ini
+    /usr/local/bin/socktap -c /config.ini "$@"
 fi

@@ -172,6 +172,8 @@ load_v2_certificates(const std::string& cert_path, const std::string& cert_key_p
     return std::make_unique<security::v2::StaticCertificateProvider>(authorization_ticket, authorization_ticket_key.private_key, chain);
 }
 
+// [V2-CHAIN]/[V3-CHAIN] lines are written with a single insertion each: other threads (e.g. the
+// position channel) log to std::cerr concurrently, and vnapctl parses these lines.
 const char* chain_result(const security::CertificateValidity& validity)
 {
     if (validity) {
@@ -215,12 +217,12 @@ void setup_v3_trust(const po::variables_map& vm, SecurityContextV3& context, con
     const auto now = context.runtime.now();
     for (auto& path : chain_paths) {
         auto cert = security::v3::load_certificate_from_file(path);
-        std::cerr << "[V3-CHAIN] chain certificate " << path << ": " << chain_result(verifier.verify_ca(*cert, now)) << "\n";
+        std::cerr << (std::string("[V3-CHAIN] chain certificate ") + path + ": " + chain_result(verifier.verify_ca(*cert, now)) + "\n");
     }
     for (auto& at_path : at_paths) {
         auto at = security::v3::load_certificate_from_file(at_path);
-        std::cerr << "[V3-CHAIN] own authorization ticket " << at_path << ": "
-            << chain_result(verifier.verify(*at, &context.cert_provider->cache(), now)) << "\n";
+        std::cerr << (std::string("[V3-CHAIN] own authorization ticket ") + at_path + ": "
+            + chain_result(verifier.verify(*at, &context.cert_provider->cache(), now)) + "\n");
     }
 }
 
@@ -333,13 +335,13 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
                 }
                 for (auto& chain_path : chain_paths) {
                     auto chain_cert = security::v2::load_certificate_from_file(chain_path);
-                    std::cerr << "[V2-CHAIN] chain certificate " << chain_path << ": "
-                        << chain_result(context->cert_validator.check_certificate(chain_cert)) << "\n";
+                    std::cerr << (std::string("[V2-CHAIN] chain certificate ") + chain_path + ": "
+                        + chain_result(context->cert_validator.check_certificate(chain_cert)) + "\n");
                 }
                 for (auto& at_path : cert_paths) {
-                    std::cerr << "[V2-CHAIN] own authorization ticket " << at_path << ": "
-                        << chain_result(context->cert_validator.check_certificate(
-                               security::v2::load_certificate_from_file(at_path))) << "\n";
+                    std::cerr << (std::string("[V2-CHAIN] own authorization ticket ") + at_path + ": "
+                        + chain_result(context->cert_validator.check_certificate(
+                               security::v2::load_certificate_from_file(at_path))) + "\n");
                 }
                 context->build_entity();
                 security = std::move(context);
@@ -370,11 +372,11 @@ create_security_entity(const po::variables_map& vm, Runtime& runtime, PositionPr
                 // log the configured chain once at startup (same checks as for received certificates)
                 for (auto& chain_path : chain_paths) {
                     auto chain_cert = security::v2::load_certificate_from_file(chain_path);
-                    std::cerr << "[V2-CHAIN] chain certificate " << chain_path << ": "
-                        << chain_result(context->cert_validator.check_certificate(chain_cert)) << "\n";
+                    std::cerr << (std::string("[V2-CHAIN] chain certificate ") + chain_path + ": "
+                        + chain_result(context->cert_validator.check_certificate(chain_cert)) + "\n");
                 }
-                std::cerr << "[V2-CHAIN] own authorization ticket " << cert_path << ": "
-                    << chain_result(context->cert_validator.check_certificate(context->cert_provider->own_certificate())) << "\n";
+                std::cerr << (std::string("[V2-CHAIN] own authorization ticket ") + cert_path + ": "
+                    + chain_result(context->cert_validator.check_certificate(context->cert_provider->own_certificate())) + "\n");
                 context->build_entity();
                 security = std::move(context);
             }

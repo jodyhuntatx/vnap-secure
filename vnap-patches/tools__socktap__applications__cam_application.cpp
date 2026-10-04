@@ -1,3 +1,4 @@
+#include <cmath>
 #include "../id_change.hpp"
 #include "cam_application.hpp"
 #include <rapidjson/document.h>
@@ -11,6 +12,7 @@
 #include <boost/units/cmath.hpp>
 #include <boost/units/systems/si/prefixes.hpp>
 #include <boost/asio.hpp>
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -30,6 +32,21 @@ boost::asio::io_service cam_io_service_;
 ip::udp::socket cam_udp_socket(cam_io_service_);
 ip::udp::endpoint cam_remote_endpoint;
 boost::system::error_code cam_err;
+
+namespace
+{
+
+// CAM confidence (1..125 in the field's unit) from a confidence already scaled to that unit
+long to_cam_confidence(double scaled, long out_of_range, long unavailable)
+{
+    if (!std::isfinite(scaled) || scaled <= 0.0) {
+        return unavailable;
+    }
+    const long value = std::max(1L, std::lround(scaled));
+    return value <= 125 ? value : out_of_range;
+}
+
+} // namespace
 
 CamApplication::CamApplication(PositionProvider& positioning, Runtime& rt, PubSub* pubsub_, config_t config_s_, metrics_t metrics_s_, geonet::Router* timer_router_, int priority_, std::mutex& prom_mtx_) :
     PubSub_application(priority_),
@@ -396,26 +413,44 @@ void CamApplication::on_timer(Clock::time_point)
     const double millis_now = (double) duration_cast<microseconds>(system_clock::now().time_since_epoch()).count() / 1000000.0;
 
     if (time_speed == 0) time_speed = millis_now;
-    if (last_speed != LLONG_MIN && (speed != last_speed || millis_now - time_speed >= 1)) {
-        acceleration = static_cast<long>((speed - last_speed) * 10);
+    // AccelerationValue is in 0.1 m/s^2; speed is in 0.01 m/s and millis_now in seconds
+    const double speed_dt = millis_now - time_speed;
+    if (last_speed != LLONG_MIN && speed != Vanetza_ITS2_SpeedValue_unavailable &&
+        last_speed != Vanetza_ITS2_SpeedValue_unavailable && speed_dt > 0.0 &&
+        (speed != last_speed || speed_dt >= 1)) {
+        acceleration = std::lround((speed - last_speed) / 10.0 / speed_dt);
         if (acceleration < -160 || acceleration > 160) acceleration = Vanetza_ITS2_AccelerationValue_unavailable;
         time_speed = millis_now;
+    } else if (last_speed != LLONG_MIN && speed == last_speed) {
+        acceleration = 0;
     }
     last_speed = speed;
 
     // Heading handling
+    // HeadingValue is in 0.1 degree; the position fix's course is in degrees
     long heading = Vanetza_ITS2_HeadingValue_unavailable;
-    if (position.course.value().value() >= 0 && position.course.value().value() <= 3600) {
-        heading = static_cast<long>(position.course.value().value());
+    const double course_deg = position.course.value().value();
+    if (course_deg >= 0 && course_deg < 360) {
+        heading = std::lround(course_deg * 10) % 3600;
     }
 
     // Yaw rate calculation
     long yaw_rate = Vanetza_ITS2_YawRateValue_unavailable;
     if (time_heading == 0) time_heading = millis_now;
-    if (last_heading != LLONG_MIN && (heading != last_heading || millis_now - time_heading >= 1)) {
-        yaw_rate = static_cast<long>((heading - last_heading) * 100);
+    // YawRateValue is in 0.01 degree/s, positive to the left (counter-clockwise), while the heading
+    // grows clockwise: minus the heading change (0.1 degree, shorter way round) per second
+    const double heading_dt = millis_now - time_heading;
+    if (last_heading != LLONG_MIN && heading != Vanetza_ITS2_HeadingValue_unavailable &&
+        last_heading != Vanetza_ITS2_HeadingValue_unavailable && heading_dt > 0.0 &&
+        (heading != last_heading || heading_dt >= 1)) {
+        long delta = heading - last_heading;
+        if (delta > 1800) delta -= 3600;
+        if (delta < -1800) delta += 3600;
+        yaw_rate = -std::lround(delta * 10.0 / heading_dt);
         if (yaw_rate < -32766 || yaw_rate > 32766) yaw_rate = Vanetza_ITS2_YawRateValue_unavailable;
         time_heading = millis_now;
+    } else if (last_heading != LLONG_MIN && heading == last_heading) {
+        yaw_rate = 0;
     }
     last_heading = heading;
 
@@ -474,16 +509,15 @@ void CamApplication::on_timer(Clock::time_point)
         Vanetza_ITS2_BasicVehicleContainerHighFrequency_t& bvc = cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency;
 
         bvc.heading.headingValue = heading;
-        bvc.heading.headingConfidence = Vanetza_ITS2_HeadingConfidence_unavailable;
-        if (position.course.confidence().value() > 0 && position.course.confidence().value() <= 125) {
-            bvc.heading.headingConfidence = static_cast<long>(position.course.confidence().value());
-        }
+        // confidences in the CAM's units (vnap-secure): HeadingConfidence 0.1 degree, SpeedConfidence
+        // 0.01 m/s, 1..125, 126 = out of range (upstream copied degrees and m/s unscaled, so e.g. a
+        // speed confidence of 0.1 m/s became the invalid value 0 and the CAM could not be encoded)
+        bvc.heading.headingConfidence = to_cam_confidence(position.course.confidence().value() * 10.0,
+            Vanetza_ITS2_HeadingConfidence_outOfRange, Vanetza_ITS2_HeadingConfidence_unavailable);
 
         bvc.speed.speedValue = speed;
-        bvc.speed.speedConfidence = Vanetza_ITS2_SpeedConfidence_unavailable;
-        if (position.speed.confidence().value() > 0 && position.speed.confidence().value() <= 125) {
-            bvc.speed.speedConfidence = static_cast<long>(position.speed.confidence().value());
-        }
+        bvc.speed.speedConfidence = to_cam_confidence(position.speed.confidence().value() * 100.0,
+            Vanetza_ITS2_SpeedConfidence_outOfRange, Vanetza_ITS2_SpeedConfidence_unavailable);
 
         bvc.driveDirection = Vanetza_ITS2_DriveDirection_forward;
         bvc.longitudinalAcceleration.value = acceleration;

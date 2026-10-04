@@ -16,6 +16,7 @@
 #include "positioning.hpp"
 #include "router_context.hpp"
 #include "id_change.hpp"
+#include "mobility.hpp"
 #include "pseudonym_channel.hpp"
 #include "security.hpp"
 #include "time_trigger.hpp"
@@ -47,6 +48,7 @@ int main(int argc, const char** argv)
     add_positioning_options(options);
     add_security_options(options);
     add_pseudonym_channel_options(options);
+    add_position_channel_options(options);
     add_link_layer_options(options);
 
 
@@ -168,6 +170,8 @@ int main(int argc, const char** argv)
             std::cerr << "Requested positioning method is not available\n";
             return 1;
         }
+        // position updates on the control channel move the station (vnap-secure mobility)
+        auto position_channel = create_position_channel(vm, positioning.get(), trigger.runtime(), config_s.station_id);
 
         auto security = create_security_entity(vm, trigger.runtime(), *positioning, config_s);
         if (security) {

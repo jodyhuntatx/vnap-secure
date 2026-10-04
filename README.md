@@ -28,7 +28,7 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 | `exec-to-vm.sh`, `run-build.sh`, `sync-vnap-dist.sh` | host-side helpers: ssh into the VM, build remotely and load the image on the host, copy `~/vanetza-nap` back |
 | `vnap-patches/` | patched Vanetza-NAP files (see [Patch set](#patch-set)) |
 | `vnap-origs/` | the corresponding upstream `release2-main` files |
-| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks), the passive `eavesdropper` and the `vnap-msgcheck` message checker |
+| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks), the pseudonym control channel (`pseudo-ctl/`), the `mobility` client that moves vehicles, the passive `eavesdropper` and the `vnap-msgcheck` message checker |
 | `vnap-certs/certify/` | Root/AA/AT generated with Vanetza's `certify` (TS 103 097 V1.2.1, `certs-v2`) |
 | `vnap-certs/c-its-pki/` | Root/AA/EA/TLM/AT and butterfly ATs from C-ITS-PKI (currently the v3 set, `certs-v3`) |
 
@@ -259,7 +259,9 @@ Options:
 `vnap-docker/scenarios/`. The format is in `scenarios/README.md`; one file exists for each
 `run-r2-sim.sh` scenario except the expired `certify`, plus `stress-naive-v3`,
 `c-its-pki-tracking` (with the [eavesdropper](#eavesdropper-tracking-attacker)) and
-`c-its-pki-tracking-silent` (the same with a 3–13 s silent period after each ID change). `vnapctl down` stops it again.
+`c-its-pki-tracking-silent` (the same with a 3–13 s silent period after each ID change) and
+`c-its-pki-traffic` (two [moving](#vehicle-movement) OBUs and an RSU) and `c-its-pki-convoy`
+(three OBUs driving together, watched by an eavesdropper with a 15 s link window). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker
@@ -283,8 +285,9 @@ cd vnap-docker
   when a container name is in use, when a network exists with another subnet, or when
   less than 0.5 GB of disk is free.
 - **Rollback:** if a step fails, `up` removes whatever it created.
-- **Readiness:** `up` returns when every station has published on its MQTT broker and
-  pseudonym stations have joined the control channel (default wait 30 s, `--wait`).
+- **Readiness:** `up` returns when every station has published on its MQTT broker,
+  pseudonym stations have joined the control channel and moving stations have received
+  their first position (default wait 30 s, `--wait`).
   Health, such as the expected chain failures of a negative control, is reported by
   `status` and `check`.
 - **Cleanup:** `down` also removes the containers' anonymous volumes (`docker rm -v`), as do
@@ -315,6 +318,11 @@ cd vnap-docker
 | `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
 | `PSEUDO_ID_CHANGE` | `full` (default): a pseudonym change also changes the GN address, MAC and CAM `stationId` through the ETSI ID change notification; `certificate`: only the certificate |
 | `PSEUDO_SILENT_MIN_MS` / `PSEUDO_SILENT_MAX_MS` | random radio silence after each full ID change, in ms (default 0 = off); see [Pseudonym change events](#pseudonym-change-events) |
+| `POSITION_CONTROL_BROKER` | MQTT broker of the position control channel: the station's position follows updates on its position topic ([Vehicle movement](#vehicle-movement)); needs the static position provider (`VANETZA_USE_HARDCODED_GPS=true`, the default), not gpsd |
+| `POSITION_CONTROL_PORT` | position broker port (1883) |
+| `POSITION_CONTROL_TOPIC` | position topic (default `vnap/position/<station id>`) |
+| `POSITION_CONTROL_USERNAME` / `POSITION_CONTROL_PASSWORD` | position broker account (the password is read from the environment) |
+| `VANETZA_LATITUDE` / `VANETZA_LONGITUDE` | position at startup (config.ini default 40 / -8); with a position channel, until the first update |
 | `VANETZA_BRIDGE_IP` | the station's V2X address; the entrypoint bridges the interface that carries it (default `eth0`). Needed when the container is on several networks, because docker does not guarantee which one becomes `eth0`; `vnapctl` and `run-r2-sim.sh` set it |
 
 Private keys must be PKCS#8 DER (or PEM for v3). Keys from `certify` and C-ITS-PKI already
@@ -608,6 +616,70 @@ with a location, or to exhaust a small pool.
 - Use TLS and per-client ACLs before anything outside the simulation.
 - socktap logs a warning when it connects without credentials.
 
+## Vehicle movement
+
+Upstream socktap has a fixed position (`config.ini` or `VANETZA_LATITUDE`/`VANETZA_LONGITUDE`)
+or reads one from gpsd. With `--position-control-broker` (`POSITION_CONTROL_BROKER`) the
+position becomes controllable at runtime:
+
+- **Station side:** socktap subscribes to `vnap/position/<station id>` on the control broker,
+  on its own MQTT connection. Each update replaces the position fix that feeds the CAM
+  (reference position, heading, speed, acceleration, yaw rate) and the GeoNetworking
+  position vector of every packet. Updates go to the configured station ID, so a station
+  keeps its topic across [ID changes](#pseudonym-change-events).
+- **Payload:** a JSON object `{"lat": 40.0001, "lon": -8.0, "speed": 13.9, "heading": 90}`.
+  - `lat`/`lon` in degrees are required.
+  - `speed` in m/s (0–163.82), `heading` in degrees clockwise from north, `alt` in m are optional.
+  - Invalid updates are rejected and logged (`[MOBILITY] position update rejected: …`, the first 5).
+- **Mobility client** (`vnap-docker/mobility/`, image `vnap-mobility`): drives vehicles along
+  routes. Each vehicle waits at its first waypoint until `start_s`, then drives the polyline
+  at constant speed, publishing at `rate_hz` (default 5) with the retain flag, so a station
+  that reconnects gets its current position at once. With `loop` it drives back to the first
+  waypoint and starts over; without, it stops at the last one. It logs every vehicle's
+  position every 10 s (`docker logs mobility`).
+- **Scenarios:** a station's `mobility` key gives its route; `vnapctl` then connects the
+  station to the control network, starts it at the first waypoint and starts the mobility
+  client. The scenario needs a `[control]` section. See `vnap-docker/scenarios/README.md`
+  and `c-its-pki-traffic`.
+- **Access:** whoever can publish on a position topic moves that station. The topics share
+  the control broker, and its account (`control.auth`), with the pseudonym channel; the
+  mobility client and moving stations use the same credentials.
+
+```toml
+[[stations]]
+name = "obu1"
+# ...
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 0, loop = true }
+```
+
+Move a station by hand (any MQTT client on the control network):
+
+```bash
+docker run --rm --network vnapctl0 eclipse-mosquitto:2 mosquitto_pub -h pseudo-broker \
+    -t vnap/position/2 -m '{"lat": 40.0005, "lon": -8.0, "speed": 10, "heading": 0}'
+```
+
+Watch the positions in the CAMs the RSU receives:
+
+```bash
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 mosquitto_sub -h 192.168.98.10 -t vanetza/out/cam \
+  | jq -c '.fields.cam.camParameters | [.basicContainer.referencePosition.latitude,
+           .basicContainer.referencePosition.longitude,
+           .highFrequencyContainer.basicVehicleContainerHighFrequency.heading.headingValue,
+           .highFrequencyContainer.basicVehicleContainerHighFrequency.speed.speedValue]'
+```
+
+**CAM kinematics fixes.** Upstream filled these fields from a static position only, and
+several were wrong in units once the vehicle moves:
+- **Heading:** copied degrees into a field in 0.1°.
+- **Speed and heading confidence:** copied m/s and degrees into fields in 0.01 m/s and 0.1°.
+  A confidence of 0.1 m/s became the invalid value 0, and the OBU could not encode its CAMs
+  (`Can't determine size for unaligned PER encoding of type CAM because of SpeedConfidence`).
+- **Longitudinal acceleration and yaw rate:** wrong scale. The yaw rate also had the wrong
+  sign: ETSI counts it positive to the left, while the heading grows clockwise.
+
+The JSON on `vanetza/out/cam` shows the decoded physical values (m/s, degrees).
+
 ## Eavesdropper (tracking attacker)
 
 `vnap-docker/eavesdropper/` is a passive listener playing an untrusted party that wants to
@@ -683,6 +755,25 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
     one that reappears, i.e. in dense traffic or mix zones (TR 103 415 clauses 4.1.4–4.1.6).
   - **The cost:** the vehicle is invisible while silent; the RSU received 7 instead of 10
     OBU CAMs in a 10 s window.
+- **Moving vehicles** (`c-its-pki-traffic`: two OBUs on crossing roads at 40 and 50 km/h,
+  full ID change and 3–13 s silent periods):
+  - **Default eavesdropper:** linked none of the changes; every new identity looked like a
+    new vehicle (8 vehicles plus the RSU in the first run).
+  - **Patient eavesdropper (`--link-window 15`):** linked every change of both vehicles
+    (3 of 3 each) without mixing them up. It predicts where a silent vehicle reappears from
+    its last speed and the length of the gap, and two vehicles on different roads are easy
+    to tell apart. Movement alone is no protection; it would take vehicles that could
+    plausibly have swapped places during the silence (a mix zone).
+- **Vehicles driving together** (`c-its-pki-convoy`: three OBUs about 28 m apart at
+  50 km/h, synchronized full ID changes, 3–13 s silent periods, 15 s link window):
+  - **First round of changes:** of its 4 links, 3 joined two different cars. While the cars
+    are silent they can swap places, so continuing a track by position mostly picks the wrong
+    car; two identities were not linked at all. The convoy acts as a moving mix zone.
+  - **Caveat:** the pools (3/3/2 of the 8 butterfly ATs) repeat after 2–3 changes, and a
+    reused certificate brings back its MAC, GN address and `stationId`. After that the
+    eavesdropper recognizes identities it has already seen. An attacker that analyses which
+    identities come and go together could probably regroup them; a clean longer run needs
+    larger pools.
 - **Certificate-only changes:** with `pseudonyms.id_change = "certificate"` it links every
   change through the unchanged MAC, GN address and `stationId`.
 
@@ -718,7 +809,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | Optional Assurance_Level | `vanetza/security/v2/default_certificate_validator.cpp` | accept older v2 certificates without the attribute (TS 103 097 V1.2.1 requires it; current C-ITS-PKI and `certify` output include it) |
 | v3 DER keys | `vanetza/security/v3/persistence.cpp` | load PKCS#8 DER keys; readable errors instead of `terminate … char const*` |
 | v3 full-chain verification | `vanetza/security/v3/certificate_chain.{hpp,cpp}` (new), `straight_verify_service.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/security.cpp` | upstream v3 accepted any AT regardless of issuer; now AT → AA → trusted root is verified (IEEE 1609.2 signing input), and `--trusted-certificate` works for v3 |
-| Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT(s) |
+| Startup diagnostics | `tools/socktap/security.cpp` | log `[V3-CHAIN]` / `[V2-CHAIN]` results for the configured AA and own AT(s), one write per line (other threads log concurrently) |
 | Pseudonym pool | `vanetza/security/v{2,3}/pseudonym_certificate_provider.{hpp,cpp}` (new), `vanetza/security/CMakeLists.txt`, `tools/socktap/security.{hpp,cpp}`, `entrypoint.sh` | pre-provisioned pool of ATs (e.g. a butterfly batch); after each change the full new certificate is sent in the next message so receivers learn it immediately. Options `--pseudonym-certificate`, `--pseudonym-certificate-key` (repeatable, paired in order); logs `[PSEUDONYM]` |
 | Sign header policy mutex | `vanetza/security/v{2,3}/sign_header_policy.{hpp,cpp}` | socktap verifies received packets on several threads while signing on another; unsynchronized access to the policy's P2P request trackers aborted socktap (`PeerRequestTracker` assertion) under load. Reproduce with the `stress-naive-v3` scenario |
 | v3 certificate cache mutex | `vanetza/security/v3/certificate_cache.{hpp,cpp}` | the reception threads store certificates while other threads look them up; the unlocked hash tables raced (ThreadSanitizer: data races and a SEGV in lookup). Also keeps pointers instead of rehash-invalidated iterators in the short-digest index |
@@ -728,6 +819,8 @@ the vanetza-nap `jodyhuntatx` branch:
 | PubSub, MQTT and DDS synchronization | `tools/socktap/{pubsub,dds,mqtt}.cpp`, `mqtt.hpp` | MQTT subscriptions were added on the main thread while the mosquitto loop thread iterated them; callback threads inserted into the topic priority map; several threads used one UDP output socket; DDS `operator[]` lookups inserted (and dereferenced) null publishers. Maps are now locked, lookups use `find()`, UDP sends are serialized; also fixes reading MQTT payloads as NUL-terminated strings. ThreadSanitizer: 19 -> 17 reports, none in socktap's PubSub/MQTT code |
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
 | ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour). Optional random silent period after each change (`--pseudonym-silent-min/-max`, TR 103 415 4.1.4; `tools/socktap/dcc_passthrough.{hpp,cpp}`) |
+| Position control channel (mobility) | `tools/socktap/mobility.{hpp,cpp}` (new), `positioning.cpp`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the station's position follows updates on an MQTT topic ([Vehicle movement](#vehicle-movement)). Options `--position-control-broker`, `-port`, `-topic`, `-username`, `-password`. The static position provider is replaced by a thread-safe controllable one |
+| CAM kinematics | `tools/socktap/applications/cam_application.cpp` | heading, speed/heading confidence, longitudinal acceleration and yaw rate in the CAM's units (and yaw rate sign); see [Vehicle movement](#vehicle-movement) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
 ## Validation and troubleshooting

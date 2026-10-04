@@ -1,0 +1,75 @@
+description = "three OBUs driving together (about 28 m apart at 50 km/h) with synchronized full ID changes and 3-13 s silent periods, watched by a patient eavesdropper (15 s link window)"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+
+# The convoy: one route about 260 m either side of the RSU, driven back and forth at
+# 50 km/h (13.9 m/s). Starting 2 s apart puts the cars about 28 m apart.
+# The 8 butterfly ATs are split 3/3/2 between them (pseudonyms.first). Pools that small are
+# reused after 2-3 changes (40-60 s at interval 20), and a reused certificate brings back the
+# same MAC, GN address and stationId: from then on the eavesdropper recognizes identities it
+# has seen instead of linking new ones. The first round of changes is the informative part.
+[[stations]]
+name = "obu1"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 3, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 4, loop = true }
+
+[[stations]]
+name = "obu2"
+ip = "192.168.98.30"
+station_id = 3
+station_type = 5
+mac = "6e:06:e0:03:00:03"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 3, count = 3, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 6, loop = true }
+
+[[stations]]
+name = "obu3"
+ip = "192.168.98.40"
+station_id = 4
+station_type = 5
+mac = "6e:06:e0:03:00:04"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 6, count = 2, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 8, loop = true }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+broker_ip = "192.168.99.2"
+client_ip = "192.168.99.3"
+mobility_ip = "192.168.99.4"
+mobility_rate_hz = 5
+
+[control.client]
+# one periodic loop per OBU, all started together: the convoy changes identities at about
+# the same time, and each car then stays silent for its own random 3-13 s
+mode = "periodic"
+interval = 20
+
+[eavesdropper]
+# patient attacker: continues a track up to 15 s after it went silent
+link_window = 15.0
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=4"]

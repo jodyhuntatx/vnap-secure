@@ -39,12 +39,21 @@ name = "obu"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", count = 8, min_interval_ms = 1000, id_change = "full", silent_min_ms = 0, silent_max_ms = 0 }
 #   id_change: "full" (ETSI ID change: GN address, MAC, stationId change too) or "certificate"
 #   silent_min_ms/silent_max_ms: random radio silence after each full ID change (0 = off)
+#   first: index of the first file ({i} = first .. first+count-1, default 0), so stations can
+#          split one numbered set, e.g. first = 0, count = 4 and first = 4, count = 4
+# optional movement (needs [control]); the station starts at the first waypoint:
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 0, loop = true }
+#   route: two or more [lat, lon] waypoints in degrees, driven at constant speed_kmh
+#   start_s: seconds to wait at the first waypoint; loop: drive back to the first waypoint and
+#   repeat (otherwise stop at the last one)
 
-[control]                         # optional pseudonym control channel
+[control]                         # optional control channel (pseudonym events, positions)
 network = "vnapctl0"
 subnet = "192.168.99.0/24"
 broker_ip = "192.168.99.2"
 client_ip = "192.168.99.3"
+mobility_ip = "192.168.99.4"      # mobility client, started when a station has mobility
+mobility_rate_hz = 5              # position updates per second and vehicle
 auth = { username_env = "CTL_USER", password_env = "CTL_PASS" }   # optional; names of env vars, never values
 
 [control.client]

@@ -1,0 +1,58 @@
+description = "two moving OBUs (east-west and north-south loops through an RSU) with pseudonym pools, full ID change and 3-13 s silent periods"
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+
+# about 260 m either side of the RSU, back and forth at 50 km/h (one lap ~37 s)
+[[stations]]
+name = "obu1"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 4, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, loop = true }
+
+# about 280 m either side of the RSU, back and forth at 40 km/h, starting 5 s later
+[[stations]]
+name = "obu2"
+ip = "192.168.98.30"
+station_id = 3
+station_type = 5
+mac = "6e:06:e0:03:00:03"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 4, count = 4, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+mobility = { route = [[39.9975, -8.0], [40.0025, -8.0]], speed_kmh = 40, start_s = 5, loop = true }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+broker_ip = "192.168.99.2"
+client_ip = "192.168.99.3"
+mobility_ip = "192.168.99.4"
+mobility_rate_hz = 5
+
+[control.client]
+mode = "periodic"
+interval = 20
+
+[eavesdropper]
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=3"]
