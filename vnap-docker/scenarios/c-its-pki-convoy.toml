@@ -21,17 +21,17 @@ env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
 
 # The convoy: one route about 260 m either side of the RSU, driven back and forth at
 # 50 km/h (13.9 m/s). Starting 2 s apart puts the cars about 28 m apart.
-# The 8 butterfly ATs are split 3/3/2 between them (pseudonyms.first). Pools that small are
-# reused after 2-3 changes (40-60 s at interval 20), and a reused certificate brings back the
-# same MAC, GN address and stationId: from then on the eavesdropper recognizes identities it
-# has seen instead of linking new ones. The first round of changes is the informative part.
+# 24 butterfly ATs (C-ITS-PKI gen-vnap-certs.sh), 8 per car (pseudonyms.first). A pool is
+# reused after 8 changes (about 160 s at interval 20), and a reused certificate brings back
+# the same MAC, GN address and stationId, which the eavesdropper recognizes: runs up to
+# ~150 s measure linking alone.
 [[stations]]
 name = "obu1"
 ip = "192.168.98.20"
 station_id = 2
 station_type = 5
 mac = "6e:06:e0:03:00:02"
-pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 3, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 8, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
 mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 4, loop = true }
 
 [[stations]]
@@ -40,7 +40,7 @@ ip = "192.168.98.30"
 station_id = 3
 station_type = 5
 mac = "6e:06:e0:03:00:03"
-pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 3, count = 3, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 8, count = 8, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
 mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 6, loop = true }
 
 [[stations]]
@@ -49,7 +49,7 @@ ip = "192.168.98.40"
 station_id = 4
 station_type = 5
 mac = "6e:06:e0:03:00:04"
-pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 6, count = 2, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 16, count = 8, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
 mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 8, loop = true }
 
 [control]

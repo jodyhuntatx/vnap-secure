@@ -765,6 +765,202 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
     to tell apart. Movement alone is no protection; it would take vehicles that could
     plausibly have swapped places during the silence (a mix zone).
 - **Vehicles driving together** (`c-its-pki-convoy`: three OBUs about 28 m apart at
+  50 km/h, synchronized full ID changes, 3–13 s silent periods, 15 s link window, 8
+  butterfly ATs per car):
+  - **Result:** of 16 links, 11 joined two different cars. The first three (first 40 s)
+    were right; after that the cars swap places while silent and the eavesdropper mostly
+    picks the wrong one. Its tracks end up mixing two or three cars. The convoy acts as a
+    moving mix zone, at the cost of each car being silent about 40 % of the time.
+  - **Details and next scenarios:** `TestSummaries/convoy-test-2026-10-04.docx`.
+- **Certificate-only changes:** `PSEUDO_ID_CHANGE=certificate` (scenario key
+  `pseudonyms.id_change = "certificate"`) restores the old behaviour.
+- **Not changed:** the configured station ID and MAC remain the station's identity on its
+  local MQTT interface (e.g. `receiverID`). Messages injected on `vanetza/in/*` carry
+  whatever `stationId` their payload has.
+**Client container** (`vnap-docker/pseudo-ctl/`, image `vnap-pseudo-ctl`, built on demand by
+`run-r2-sim.sh`). The same image runs the broker (`broker`) and the event client (`client`):
+
+```bash
+cd vnap-docker
+NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest       # periodic events every 30 s
+PSEUDO_MODE=random PSEUDO_RANDOM_MIN=5 PSEUDO_RANDOM_MAX=20 NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest
+PSEUDO_MODE=manual NATIVE=1 ./run-r2-sim.sh c-its-pki-pseudo vnap:latest
+docker exec pseudo-client change 2          # station 2: next pseudonym
+docker exec pseudo-client change 2 5        # station 2: pool index 5
+docker exec pseudo-client ctl lock 2 20     # station 2: ID-LOCK for 20 s (prints the handle in the answer)
+docker exec pseudo-client ctl unlock 2 1    # ID-UNLOCK handle 1
+docker exec pseudo-client ctl trigger 2     # IDCHANGE-TRIGGER
+docker logs -f pseudo-client                # events sent and the stations' answers
+docker logs obu 2>&1 | grep PSEUDONYM       # the OBU's side
+```
+
+| `run-r2-sim.sh` variable | Client setting |
+|---|---|
+| `PSEUDO_MODE` | `periodic` (default), `random`, `once` (one event after 5 s; `PSEUDO_INDEX` picks the index) or `manual` |
+| `PSEUDO_INTERVAL` | seconds between events in `periodic` mode (30) |
+| `PSEUDO_RANDOM_MIN` / `PSEUDO_RANDOM_MAX` | interval range in `random` mode (10 / 60 s) |
+| `PSEUDO_COUNT` | stop after this many events (0 = no limit) |
+| `PSEUDO_MIN_CHANGE_MS` | the OBU's `PSEUDO_MIN_INTERVAL` (1000) |
+| `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | require this account on the broker; used by the OBU and the client |
+
+**Security of the channel.** Whoever can publish on `<prefix>/change` controls when the
+station changes pseudonym. That is useful to an attacker who wants to correlate a change
+with a location, or to exhaust a small pool.
+- The simulation limits access by network: only the OBU and the client are on `vnapctl0`.
+  It also offers broker authentication.
+- There is no TLS, and one account is shared by all participants.
+- Use TLS and per-client ACLs before anything outside the simulation.
+- socktap logs a warning when it connects without credentials.
+
+## Vehicle movement
+
+Upstream socktap has a fixed position (`config.ini` or `VANETZA_LATITUDE`/`VANETZA_LONGITUDE`)
+or reads one from gpsd. With `--position-control-broker` (`POSITION_CONTROL_BROKER`) the
+position becomes controllable at runtime:
+
+- **Station side:** socktap subscribes to `vnap/position/<station id>` on the control broker,
+  on its own MQTT connection. Each update replaces the position fix that feeds the CAM
+  (reference position, heading, speed, acceleration, yaw rate) and the GeoNetworking
+  position vector of every packet. Updates go to the configured station ID, so a station
+  keeps its topic across [ID changes](#pseudonym-change-events).
+- **Payload:** a JSON object `{"lat": 40.0001, "lon": -8.0, "speed": 13.9, "heading": 90}`.
+  - `lat`/`lon` in degrees are required.
+  - `speed` in m/s (0–163.82), `heading` in degrees clockwise from north, `alt` in m are optional.
+  - Invalid updates are rejected and logged (`[MOBILITY] position update rejected: …`, the first 5).
+- **Mobility client** (`vnap-docker/mobility/`, image `vnap-mobility`): drives vehicles along
+  routes. Each vehicle waits at its first waypoint until `start_s`, then drives the polyline
+  at constant speed, publishing at `rate_hz` (default 5) with the retain flag, so a station
+  that reconnects gets its current position at once. With `loop` it drives back to the first
+  waypoint and starts over; without, it stops at the last one. It logs every vehicle's
+  position every 10 s (`docker logs mobility`).
+- **Scenarios:** a station's `mobility` key gives its route; `vnapctl` then connects the
+  station to the control network, starts it at the first waypoint and starts the mobility
+  client. The scenario needs a `[control]` section. See `vnap-docker/scenarios/README.md`
+  and `c-its-pki-traffic`.
+- **Access:** whoever can publish on a position topic moves that station. The topics share
+  the control broker, and its account (`control.auth`), with the pseudonym channel; the
+  mobility client and moving stations use the same credentials.
+
+```toml
+[[stations]]
+name = "obu1"
+# ...
+mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 0, loop = true }
+```
+
+Move a station by hand (any MQTT client on the control network):
+
+```bash
+docker run --rm --network vnapctl0 eclipse-mosquitto:2 mosquitto_pub -h pseudo-broker \
+    -t vnap/position/2 -m '{"lat": 40.0005, "lon": -8.0, "speed": 10, "heading": 0}'
+```
+
+Watch the positions in the CAMs the RSU receives:
+
+```bash
+docker run --rm --network vanetzalan0 eclipse-mosquitto:2 mosquitto_sub -h 192.168.98.10 -t vanetza/out/cam \
+  | jq -c '.fields.cam.camParameters | [.basicContainer.referencePosition.latitude,
+           .basicContainer.referencePosition.longitude,
+           .highFrequencyContainer.basicVehicleContainerHighFrequency.heading.headingValue,
+           .highFrequencyContainer.basicVehicleContainerHighFrequency.speed.speedValue]'
+```
+
+**CAM kinematics fixes.** Upstream filled these fields from a static position only, and
+several were wrong in units once the vehicle moves:
+- **Heading:** copied degrees into a field in 0.1°.
+- **Speed and heading confidence:** copied m/s and degrees into fields in 0.01 m/s and 0.1°.
+  A confidence of 0.1 m/s became the invalid value 0, and the OBU could not encode its CAMs
+  (`Can't determine size for unaligned PER encoding of type CAM because of SpeedConfidence`).
+- **Longitudinal acceleration and yaw rate:** wrong scale. The yaw rate also had the wrong
+  sign: ETSI counts it positive to the left, while the heading grows clockwise.
+
+The JSON on `vanetza/out/cam` shows the decoded physical values (m/s, degrees).
+
+## Eavesdropper (tracking attacker)
+
+`vnap-docker/eavesdropper/` is a passive listener playing an untrusted party that wants to
+track vehicles. It joins only the message network (`vanetzalan0`) with a raw socket
+(`NET_RAW`) and sees nothing but the frames on the wire: no keys or trust store, no MQTT,
+no control channel. It knows the public ETSI/IEEE formats.
+
+**What it decodes from each frame**
+
+| Layer | Standard | Extracted |
+|---|---|---|
+| Ethernet | | source MAC |
+| GeoNetworking | EN 302 636-4-1 | GN address (station type, MAC-derived ID), source position, speed, heading |
+| Security header v2 | ETSI TS 103 097 V1.2.1 (own parser) | signer, generation time, ITS-AID |
+| Security header v3 | IEEE 1609.2 / TS 103 097 V1.3.1 (OER, `asn1tools`) | signer, generation time, PSID |
+| Signer certificate | same | HashedId8 digest, computed exactly as Vanetza does: SHA-256 over the canonical encoding. Also issuer (AA), validity, permissions; full certificates are sent about once a second |
+| BTP | EN 302 636-5-1 | port, message type |
+| Facilities | TS 103 900 (CAM R2) | `stationId` of any message; full CAM: `referencePosition`, speed, heading, vehicle size, station type |
+
+The ASN.1 modules come from Vanetza-NAP (`eavesdropper/asn1/`, with their source note).
+
+**Tracking**
+- **Shared identifiers:** messages are linked into tracks when they share a MAC, GN
+  address, `stationId` or certificate digest.
+- **Position continuity:** a message with a certificate never seen before, and no known
+  identifier, can continue a track that went silent shortly before (`--link-window`,
+  default 3 s) at the same place (`--link-distance`, default 50 m, plus speed × gap).
+  - The link is confirmed only if the old identity stays silent for 1.5 message
+    intervals, so two vehicles parked side by side are not merged.
+- **Logging:** every linked pseudonym change is logged with its evidence (`same mac`,
+  `same gn`, `same station`, or `position continuity`).
+
+**Output**
+
+| Where | Content |
+|---|---|
+| `docker logs -f eavesdropper` | new tracks, linked pseudonym changes, periodic summary |
+| `/logs/messages.jsonl` | every decoded frame |
+| `/logs/events.jsonl` | track and linkage events |
+| `/logs/tracks.json` | per track: identifiers, pseudonyms (first/last seen, certificate fields), last position, recent trail. Rewritten every 5 s |
+
+Copy the logs out with `docker cp eavesdropper:/logs ./eavesdropper-logs`.
+
+**Running it**
+
+```bash
+cd vnap-docker
+./vnapctl up c-its-pki-tracking        # c-its-pki-pseudo (changes every 10 s) + eavesdropper
+./vnapctl status                       # includes the eavesdropper's tracks and linked changes
+./vnapctl check --expect 'eavesdropper.linked_changes==0'   # a privacy goal (fails today)
+./eavesdropper/run.sh [network] [name] # attach to any running simulation instead
+python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offline (needs asn1tools)
+```
+
+- **In scenarios:** an `[eavesdropper]` section in a scenario file adds it; see
+  `scenarios/README.md`.
+- **Metrics:** `vnapctl check` exposes `eavesdropper.frames`, `.decode_errors`, `.tracks`,
+  `.pseudonyms` and `.linked_changes`.
+
+**What it shows today**
+- **Full ID change (default):** in c-its-pki-tracking every OBU pseudonym change also
+  changes its MAC, GN address and `stationId`, so the eavesdropper sees a new vehicle each
+  time. It still links all of them by position continuity: the simulated OBU never moves,
+  and a vehicle that keeps sending its exact position is easy to follow. Unlinkability
+  needs more than synchronized identifiers, e.g. silent periods or changes in mix zones.
+- **Full ID change with a silent period** (`c-its-pki-tracking-silent`, 3–13 s):
+  - **Default eavesdropper:** in a 2.5-minute run with 10 changes it linked none. It saw
+    the one OBU as 8 separate vehicles, because each silence exceeded its 3 s link window.
+  - **Patient eavesdropper:** one with `--link-window 15`, attached to the same run, linked
+    every change again (gaps of 5–12 s). With a single stationary vehicle and nobody else
+    around, waiting out the silence is enough.
+  - **What this means:** a silent period protects only where other vehicles could be the
+    one that reappears, i.e. in dense traffic or mix zones (TR 103 415 clauses 4.1.4–4.1.6).
+  - **The cost:** the vehicle is invisible while silent; the RSU received 7 instead of 10
+    OBU CAMs in a 10 s window.
+- **Moving vehicles** (`c-its-pki-traffic`: two OBUs on crossing roads at 40 and 50 km/h,
+  full ID change and 3–13 s silent periods):
+  - **Default eavesdropper:** linked none of the changes; every new identity looked like a
+    new vehicle (8 vehicles plus the RSU in the first run).
+  - **Patient eavesdropper (`--link-window 15`):** linked every change of both vehicles
+    (3 of 3 each) without mixing them up. It predicts where a silent vehicle reappears from
+    its last speed and the length of the gap, and two vehicles on different roads are easy
+    to tell apart. Movement alone is no protection; it would take vehicles that could
+    plausibly have swapped places during the silence (a mix zone).
+- **Vehicles driving together** (`c-its-pki-convoy`: three OBUs about 28 m apart at
   50 km/h, synchronized full ID changes, 3–13 s silent periods, 15 s link window):
   - **First round of changes:** of its 4 links, 3 joined two different cars. While the cars
     are silent they can swap places, so continuing a track by position mostly picks the wrong
