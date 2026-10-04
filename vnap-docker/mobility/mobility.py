@@ -13,6 +13,11 @@ argument):
                  "speed_kmh": 50, "start_s": 0, "loop": true}]}
 A vehicle waits at its first waypoint until start_s, then drives the route at constant speed.
 With loop it drives back to the first waypoint and starts over; without, it stops at the end.
+
+Mix zones (optional): "mix_zones": [{"name": "x", "center": [lat, lon], "radius_m": 40,
+"stations": [2, 3]}] sends a pseudonym change event to a vehicle each time it enters a zone
+(topic <pseudonym_topic>/<station_id>/change, default vnap/pseudonym), so ID changes happen
+where vehicles can be confused with each other. Without "stations", every vehicle is watched.
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 """
 import json
@@ -88,6 +93,27 @@ class Vehicle:
         return b, self.speed, head
 
 
+class MixZone:
+    def __init__(self, raw, vehicles):
+        self.name = str(raw.get("name", "zone"))
+        self.center = tuple(float(c) for c in raw["center"])
+        self.radius = float(raw.get("radius_m", 40))
+        if self.radius <= 0:
+            raise ValueError(f"mix zone {self.name}: radius_m must be > 0")
+        ids = {v.station_id for v in vehicles}
+        self.stations = set(int(s) for s in raw.get("stations", ids))
+        if not self.stations <= ids:
+            raise ValueError(f"mix zone {self.name}: stations {sorted(self.stations - ids)} have no route")
+        self.inside = {}  # station id -> inside at the last tick (None: not evaluated yet)
+
+    def entered(self, station_id, position):
+        """True when the vehicle has just entered the zone (not when it starts inside)."""
+        inside = distance(position, self.center) <= self.radius
+        was = self.inside.get(station_id)
+        self.inside[station_id] = inside
+        return inside and was is False
+
+
 def load_config():
     if len(sys.argv) > 1:
         with open(sys.argv[1]) as f:
@@ -107,6 +133,11 @@ def main():
         sys.exit(f"mobility: bad configuration: {e}")
     if not vehicles:
         sys.exit("mobility: no vehicles configured")
+    try:
+        zones = [MixZone(z, vehicles) for z in cfg.get("mix_zones", [])]
+    except (KeyError, TypeError, ValueError) as e:
+        sys.exit(f"mobility: bad mix zone: {e}")
+    pseudonym_topic = cfg.get("pseudonym_topic", "vnap/pseudonym").rstrip("/")
     period = 1.0 / float(cfg.get("rate_hz", 5))
     broker, port = cfg.get("broker", "pseudo-broker"), int(cfg.get("port", 1883))
 
@@ -130,6 +161,10 @@ def main():
     for v in vehicles:
         print(f"[MOBILITY] station {v.station_id}: {len(v.segments)} segment(s), {v.length:.0f} m"
               f"{' loop' if v.loop else ''}, {v.speed * 3.6:.0f} km/h from t={v.start:.0f} s, topic {v.topic}")
+    for z in zones:
+        print(f"[MOBILITY] mix zone {z.name}: {z.center[0]:.6f} {z.center[1]:.6f} radius {z.radius:.0f} m, "
+              f"stations {sorted(z.stations)}: pseudonym change on entry")
+    events = 0
     t0 = time.monotonic()
     next_tick, next_log = t0, t0
     while running:
@@ -142,6 +177,13 @@ def main():
                        "heading": round(heading, 1)}
             # retained: a station that (re)connects gets its current position at once
             client.publish(v.topic, json.dumps(payload), qos=0, retain=True)
+            for z in zones:
+                if v.station_id in z.stations and z.entered(v.station_id, (lat, lon)):
+                    events += 1
+                    event = {"event_id": f"mobility-{events}", "reason": f"mix-zone {z.name}"}
+                    client.publish(f"{pseudonym_topic}/{v.station_id}/change", json.dumps(event), qos=1)
+                    print(f"[MOBILITY] t={t:6.1f} s station {v.station_id} entered mix zone {z.name}: "
+                          f"change event {event['event_id']}")
             if log:
                 print(f"[MOBILITY] t={t:6.1f} s station {v.station_id}: {payload['lat']:.6f} {payload['lon']:.6f} "
                       f"{speed * 3.6:.0f} km/h heading {heading:.0f}")

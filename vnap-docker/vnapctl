@@ -25,6 +25,7 @@ the docker CLI and the eclipse-mosquitto:2 image (used for MQTT subscriptions).
 """
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import re
@@ -356,14 +357,17 @@ def build_status(sim):
                                  "interval": env.get("INTERVAL") if env.get("MODE", "periodic") == "periodic" else None}
         if sim.mobility:
             try:
-                vehicles = json.loads(env_of(sim.mobility).get("MOBILITY_CONFIG", "{}")).get("vehicles", [])
+                mcfg = json.loads(env_of(sim.mobility).get("MOBILITY_CONFIG", "{}"))
             except json.JSONDecodeError:
-                vehicles = []
+                mcfg = {}
+            vehicles = mcfg.get("vehicles", [])
             control["mobility"] = {"name": Simulation.name(sim.mobility), "state": sim.mobility["State"]["Status"],
                                    "ip": sim.ip(sim.mobility, sim.ctl),
                                    "vehicles": [{"station_id": v.get("station_id"), "waypoints": len(v.get("route", [])),
                                                  "speed_kmh": v.get("speed_kmh"), "loop": v.get("loop", False)}
-                                                for v in vehicles]}
+                                                for v in vehicles],
+                                   "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations")}
+                                                 for z in mcfg.get("mix_zones", [])]}
     free_gb = shutil.disk_usage("/").free / 1e9
 
     warnings = []
@@ -464,6 +468,9 @@ def print_status(s):
             print(f"mobility client: {mo['name']} {mo['state']} {mo['ip']}: " + ", ".join(
                 f"station {v['station_id']} {v['waypoints']} waypoints {v['speed_kmh']} km/h{' loop' if v['loop'] else ''}"
                 for v in mo["vehicles"]))
+            for z in mo.get("mix_zones", []):
+                print(f"  mix zone {z['name']}: {z['center'][0]:.6f} {z['center'][1]:.6f} radius {z['radius_m']} m, "
+                      f"pseudonym change on entry for stations {z['stations']}")
     for o in s.get("observers", []):
         print()
         if "tracks" in o:
@@ -980,6 +987,11 @@ def load_scenario(ref, sets=(), instance=0):
                 errors.append(f"control.mobility_ip {control['mobility']['ip']} not in {ctl_subnet}")
             if not 0 < control["mobility"]["rate_hz"] <= 50:
                 errors.append("control.mobility_rate_hz must be in (0, 50]")
+        control.setdefault("mobility", {})["mix_zones"] = check_mix_zones(ctl_raw.get("mix_zones", []), stations, errors)
+        if control["mobility"]["mix_zones"] and "name" not in control["mobility"]:
+            errors.append("control.mix_zones need stations with mobility (zones trigger on vehicle positions)")
+        if not control["mobility"].get("name"):
+            control["mobility"] = None
     elif any(s.get("mobility") for s in stations):
         errors.append("stations with mobility need a [control] section (positions travel on the control channel)")
     elif any(s.get("pseudonyms") for s in stations):
@@ -1012,6 +1024,41 @@ def load_scenario(ref, sets=(), instance=0):
         "check": {"defaults": check.get("defaults", True), "expect": list(check.get("expect", []))},
         "overrides": list(sets),
     }
+
+
+def check_mix_zones(raw, stations, errors):
+    """Validate [[control.mix_zones]]: pseudonym change events when a vehicle enters a zone."""
+    if not isinstance(raw, list):
+        errors.append("control.mix_zones must be an array of tables ([[control.mix_zones]])")
+        return []
+    by_id = {s["station_id"]: s for s in stations}
+    candidates = [s["station_id"] for s in stations if s.get("mobility") and s.get("pseudonyms")]
+    zones = []
+    for i, z in enumerate(raw):
+        where = f"control.mix_zones[{z.get('name', i) if isinstance(z, dict) else i}]"
+        if not isinstance(z, dict):
+            errors.append(f"{where}: must be a table")
+            continue
+        unknown = set(z) - {"name", "center", "radius_m", "stations"}
+        if unknown:
+            errors.append(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
+        center = z.get("center")
+        if not (isinstance(center, list) and len(center) == 2 and all(isinstance(c, (int, float)) for c in center)
+                and -90 <= center[0] <= 90 and -180 <= center[1] <= 180):
+            errors.append(f"{where}: center must be [lat, lon] in degrees")
+            continue
+        radius = z.get("radius_m", 40)
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            errors.append(f"{where}: radius_m must be > 0")
+        ids = z.get("stations", candidates)
+        bad = [s for s in ids if s not in by_id or not (by_id[s].get("mobility") and by_id[s].get("pseudonyms"))]
+        if bad:
+            errors.append(f"{where}: station(s) {bad} need both mobility and pseudonyms")
+        if not ids:
+            errors.append(f"{where}: no station with mobility and pseudonyms to watch")
+        zones.append({"name": str(z.get("name", f"zone{i}")), "center": [float(c) for c in center],
+                      "radius_m": radius, "stations": list(ids)})
+    return zones
 
 
 def check_mobility(mob, where, errors):
@@ -1143,6 +1190,34 @@ def run_labels(sc, run_id, role):
     return out
 
 
+def context_hash(directory, exclude=()):
+    """Digest of a helper image's build context (file names and contents)."""
+    h = hashlib.sha256()
+    skip = set(exclude) | {"__pycache__"}
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if d not in skip)
+        for f in sorted(files):
+            path = os.path.join(root, f)
+            h.update(os.path.relpath(path, directory).encode() + b"\0")
+            with open(path, "rb") as fh:
+                h.update(fh.read())
+    return h.hexdigest()[:16]
+
+
+def ensure_image(r, image, subdir, exclude=()):
+    """Build a helper image from vnap-docker/<subdir> if it is missing or its sources changed
+    (the image carries the context digest in the label vnap.context_hash)."""
+    directory = os.path.join(HERE, subdir)
+    digest = context_hash(directory, exclude)
+    current = subprocess.run(["docker", "image", "inspect", "-f", '{{index .Config.Labels "vnap.context_hash"}}', image],
+                             capture_output=True, text=True)
+    if current.returncode == 0 and current.stdout.strip() == digest:
+        return
+    tar = ["tar", "-C", directory, "--exclude=__pycache__", *(f"--exclude={e}" for e in exclude), "-c", "."]
+    # build context on stdin: snap docker cannot read /mnt/hgfs
+    r.run(["build", "-q", "-t", image, "--label", f"vnap.context_hash={digest}", "-"], stdin_cmd=tar)
+
+
 def container_exists(name):
     return bool(docker("ps", "-aq", "--filter", f"name=^/{re.escape(name)}$", check=False).strip())
 
@@ -1204,9 +1279,7 @@ def scenario_up(sc, dry_run=False, wait=30.0):
                 r.created_networks.append(name)
         c = sc["control"]
         if c:
-            if subprocess.run(["docker", "image", "inspect", CTL_IMAGE], capture_output=True).returncode != 0:
-                # build context on stdin: snap docker cannot read /mnt/hgfs
-                r.run(["build", "-q", "-t", CTL_IMAGE, "-"], stdin_cmd=["tar", "-C", os.path.join(HERE, "pseudo-ctl"), "-c", "."])
+            ensure_image(r, CTL_IMAGE, "pseudo-ctl")
             auth_args = ["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []
             r.run(["run", "-d", "--name", c["broker"]["name"], "--network", ctl, "--ip", c["broker"]["ip"],
                    *run_labels(sc, run_id, "broker"), *auth_args, CTL_IMAGE, "broker"])
@@ -1245,11 +1318,11 @@ def scenario_up(sc, dry_run=False, wait=30.0):
             r.created_containers.append(cl["name"])
         if c and c.get("mobility"):
             mo = c["mobility"]
-            if subprocess.run(["docker", "image", "inspect", MOBILITY_IMAGE], capture_output=True).returncode != 0:
-                r.run(["build", "-q", "-t", MOBILITY_IMAGE, "-"], stdin_cmd=["tar", "-C", os.path.join(HERE, "mobility"), "-c", "."])
+            ensure_image(r, MOBILITY_IMAGE, "mobility")
             config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
                       "vehicles": [{"station_id": st["station_id"], **st["mobility"]}
-                                   for st in sc["stations"] if st.get("mobility")]}
+                                   for st in sc["stations"] if st.get("mobility")],
+                      "mix_zones": mo["mix_zones"], "pseudonym_topic": "vnap/pseudonym"}
             r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"],
                    *run_labels(sc, run_id, "mobility"),
                    *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
@@ -1257,9 +1330,7 @@ def scenario_up(sc, dry_run=False, wait=30.0):
             r.created_containers.append(mo["name"])
         ev = sc["eavesdropper"]
         if ev:
-            if subprocess.run(["docker", "image", "inspect", EAVESDROPPER_IMAGE], capture_output=True).returncode != 0:
-                r.run(["build", "-q", "-t", EAVESDROPPER_IMAGE, "-"],
-                      stdin_cmd=["tar", "-C", os.path.join(HERE, "eavesdropper"), "--exclude=logs", "-c", "."])
+            ensure_image(r, EAVESDROPPER_IMAGE, "eavesdropper", exclude=("logs",))
             # only the message network and raw frames: no control network, no keys, no MQTT
             r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
                    *run_labels(sc, run_id, "eavesdropper"),

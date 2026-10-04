@@ -56,6 +56,12 @@ mobility_ip = "192.168.99.4"      # mobility client, started when a station has 
 mobility_rate_hz = 5              # position updates per second and vehicle
 auth = { username_env = "CTL_USER", password_env = "CTL_PASS" }   # optional; names of env vars, never values
 
+[[control.mix_zones]]              # optional, repeatable; needs stations with mobility and pseudonyms
+name = "crossing"
+center = [40.0, -8.0]             # [lat, lon]
+radius_m = 40                     # pseudonym change event when a vehicle enters this circle
+stations = [2, 3]                 # default: every station with mobility and pseudonyms
+
 [control.client]
 mode = "periodic"                 # periodic | random | once | manual
 interval = 30                     # periodic; random uses min_interval/max_interval; once uses delay/index
