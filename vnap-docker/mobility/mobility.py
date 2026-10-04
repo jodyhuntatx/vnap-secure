@@ -14,6 +14,14 @@ argument):
 A vehicle waits at its first waypoint until start_s, then drives the route at constant speed.
 With loop it drives back to the first waypoint and starts over; without, it stops at the end.
 
+Random turns: instead of "route", {"crossing": [lat, lon], "arm_m": 150, "start_arm": "east"}
+drives laps through a four-way crossing whose four roads (arms) end on a square ring road.
+Each lap: from the end of the arrival arm to the crossing, a random turn there (left,
+straight or right; no U-turn), out to the end of the exit arm, a random direction along the
+ring to the next arm, and back in on that arm, which is the next lap's arrival arm. Every lap
+is 4 x arm_m long, so vehicles keep their relative timing. "seed" (top level) makes the
+choices reproducible; each lap's choices are logged.
+
 Mix zones (optional): "mix_zones": [{"name": "x", "center": [lat, lon], "radius_m": 40,
 "stations": [2, 3]}] sends a pseudonym change event to a vehicle each time it enters a zone
 (topic <pseudonym_topic>/<station_id>/change, default vnap/pseudonym), so ID changes happen
@@ -23,6 +31,7 @@ Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 import json
 import math
 import os
+import random
 import signal
 import sys
 import time
@@ -114,6 +123,80 @@ class MixZone:
         return inside and was is False
 
 
+ARMS = {"north": (1, 0), "east": (0, 1), "south": (-1, 0), "west": (0, -1)}
+
+
+class CrossingVehicle:
+    """Laps through a four-way crossing with random turns (see the module docstring)."""
+
+    def __init__(self, raw, prefix, seed):
+        self.station_id = int(raw["station_id"])
+        self.center = tuple(float(c) for c in raw["crossing"])
+        self.arm = float(raw.get("arm_m", 150))
+        if self.arm <= 0:
+            raise ValueError(f"vehicle {self.station_id}: arm_m must be > 0")
+        self.arrival = raw.get("start_arm", "east")
+        if self.arrival not in ARMS:
+            raise ValueError(f"vehicle {self.station_id}: start_arm must be one of {', '.join(ARMS)}")
+        self.speed = float(raw.get("speed_kmh", 50)) / 3.6
+        if not (0 < self.speed <= 163.82):
+            raise ValueError(f"vehicle {self.station_id}: speed_kmh must be in (0, 589.7]")
+        self.start = float(raw.get("start_s", 0))
+        self.topic = raw.get("topic") or f"{prefix}/{self.station_id}"
+        self.loop = True
+        self.rng = random.Random(f"{seed}/{self.station_id}")
+        self.segments, self.length, self.laps = [], 0.0, 0
+        self.pending_log = []
+        self._add_lap()
+
+    def point(self, *arms):
+        """Centre plus arm_m along each given arm (an arm end, or a ring corner for two arms)."""
+        north = sum(ARMS[a][0] for a in arms) * self.arm
+        east = sum(ARMS[a][1] for a in arms) * self.arm
+        lat = self.center[0] + north / 111195.0
+        lon = self.center[1] + east / (111195.0 * math.cos(math.radians(self.center[0])))
+        return (lat, lon)
+
+    @staticmethod
+    def turn_name(arrival, exit_arm):
+        """Turn seen by a driver coming in on 'arrival' and leaving on 'exit_arm'."""
+        hn, he = (-ARMS[arrival][0], -ARMS[arrival][1])   # heading towards the centre
+        en, ee = ARMS[exit_arm]
+        if (en, ee) == (hn, he):
+            return "straight"
+        # z of heading x exit in (east, north) coordinates: negative = clockwise = right
+        return "right" if he * en - hn * ee < 0 else "left"
+
+    def _add_lap(self):
+        a = self.arrival
+        exit_arm = self.rng.choice([x for x in ARMS if x != a])              # no U-turn
+        nxt = self.rng.choice([x for x in ARMS if ARMS[x][0] * ARMS[exit_arm][0] + ARMS[x][1] * ARMS[exit_arm][1] == 0])
+        points = [self.point(a), self.center, self.point(exit_arm), self.point(exit_arm, nxt), self.point(nxt)]
+        lap_start = self.start + self.length / self.speed
+        for p, q in zip(points, points[1:]):
+            self.segments.append((p, q, distance(p, q), bearing(p, q)))
+            self.length += self.segments[-1][2]
+        self.laps += 1
+        self.pending_log.append(f"station {self.station_id} lap {self.laps} (from t={lap_start:.1f} s): in from {a}, "
+                                f"{self.turn_name(a, exit_arm)} turn, out {exit_arm}, ring to {nxt}")
+        self.arrival = nxt
+
+    def state(self, t):
+        driven = (t - self.start) * self.speed
+        if driven <= 0:
+            a, b, _, head = self.segments[0]
+            return a, 0.0, head
+        while driven > self.length:
+            self._add_lap()
+        for a, b, length, head in self.segments:
+            if driven <= length:
+                f = driven / length
+                return (a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])), self.speed, head
+            driven -= length
+        a, b, _, head = self.segments[-1]
+        return b, self.speed, head
+
+
 def load_config():
     if len(sys.argv) > 1:
         with open(sys.argv[1]) as f:
@@ -127,8 +210,10 @@ def load_config():
 def main():
     cfg = load_config()
     prefix = cfg.get("topic_prefix", "vnap/position").rstrip("/")
+    seed = cfg.get("seed", random.randrange(1 << 32))
     try:
-        vehicles = [Vehicle(v, prefix) for v in cfg.get("vehicles", [])]
+        vehicles = [CrossingVehicle(v, prefix, seed) if "crossing" in v else Vehicle(v, prefix)
+                    for v in cfg.get("vehicles", [])]
     except (KeyError, TypeError, ValueError) as e:
         sys.exit(f"mobility: bad configuration: {e}")
     if not vehicles:
@@ -159,8 +244,14 @@ def main():
     signal.signal(signal.SIGINT, stop)
 
     for v in vehicles:
-        print(f"[MOBILITY] station {v.station_id}: {len(v.segments)} segment(s), {v.length:.0f} m"
-              f"{' loop' if v.loop else ''}, {v.speed * 3.6:.0f} km/h from t={v.start:.0f} s, topic {v.topic}")
+        if isinstance(v, CrossingVehicle):
+            print(f"[MOBILITY] station {v.station_id}: random turns at {v.center[0]:.6f} {v.center[1]:.6f}, arms "
+                  f"{v.arm:.0f} m, {v.speed * 3.6:.0f} km/h from t={v.start:.1f} s, topic {v.topic}")
+        else:
+            print(f"[MOBILITY] station {v.station_id}: {len(v.segments)} segment(s), {v.length:.0f} m"
+                  f"{' loop' if v.loop else ''}, {v.speed * 3.6:.0f} km/h from t={v.start:.0f} s, topic {v.topic}")
+    if any(isinstance(v, CrossingVehicle) for v in vehicles):
+        print(f"[MOBILITY] random seed {seed}")
     for z in zones:
         print(f"[MOBILITY] mix zone {z.name}: {z.center[0]:.6f} {z.center[1]:.6f} radius {z.radius:.0f} m, "
               f"stations {sorted(z.stations)}: pseudonym change on entry")
@@ -177,6 +268,10 @@ def main():
                        "heading": round(heading, 1)}
             # retained: a station that (re)connects gets its current position at once
             client.publish(v.topic, json.dumps(payload), qos=0, retain=True)
+            for line in getattr(v, "pending_log", []):
+                print(f"[MOBILITY] {line}")
+            if getattr(v, "pending_log", None):
+                v.pending_log.clear()
             for z in zones:
                 if v.station_id in z.stations and z.entered(v.station_id, (lat, lon)):
                     events += 1

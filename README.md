@@ -262,7 +262,8 @@ Options:
 `c-its-pki-tracking-silent` (the same with a 3–13 s silent period after each ID change) and
 `c-its-pki-traffic` (two [moving](#vehicle-movement) OBUs and an RSU), `c-its-pki-convoy`
 (three OBUs driving together, watched by an eavesdropper with a 15 s link window) and
-`c-its-pki-mixzone` (four OBUs changing identity in an intersection mix zone). `vnapctl down` stops it again.
+`c-its-pki-mixzone` (four OBUs changing identity in an intersection mix zone) and
+`c-its-pki-mixzone-random` (the same with random turns). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker
@@ -646,6 +647,12 @@ position becomes controllable at runtime:
   station to the control network, starts it at the first waypoint and starts the mobility
   client. The scenario needs a `[control]` section. See `vnap-docker/scenarios/README.md`
   and `c-its-pki-traffic`.
+- **Random turns:** instead of a `route`, `mobility = { crossing = [lat, lon], arm_m = 150,
+  start_arm = "east", speed_kmh = 36 }` drives laps through a four-way crossing whose arms
+  end on a ring road: a random turn at the crossing (no U-turns), a random way along the
+  ring, and back in on the next arm. Every lap is 4 × `arm_m`, so vehicles keep their
+  relative timing. The choices come from `control.mobility_seed` (vnapctl picks and records
+  one if unset; `status` shows it), and each lap is logged (`docker logs mobility`).
 - **Mix zones:** `[[control.mix_zones]]` (center, radius) makes the mobility client send a
   pseudonym change event to a vehicle each time it enters the zone, instead of on a clock
   (set `control.client.mode = "manual"`). The events carry the reason `mix-zone <name>` and

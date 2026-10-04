@@ -46,6 +46,10 @@ mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s =
 #   route: two or more [lat, lon] waypoints in degrees, driven at constant speed_kmh
 #   start_s: seconds to wait at the first waypoint; loop: drive back to the first waypoint and
 #   repeat (otherwise stop at the last one)
+# ... or laps through a four-way crossing with random turns (instead of route and loop):
+mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
+#   arms of arm_m metres end on a square ring road; each lap: random turn at the crossing, random
+#   way along the ring, back in on the next arm (4 x arm_m per lap)
 
 [control]                         # optional control channel (pseudonym events, positions)
 network = "vnapctl0"
@@ -54,6 +58,7 @@ broker_ip = "192.168.99.2"
 client_ip = "192.168.99.3"
 mobility_ip = "192.168.99.4"      # mobility client, started when a station has mobility
 mobility_rate_hz = 5              # position updates per second and vehicle
+mobility_seed = 12345             # optional: repeat the random turns of a run (default: a new seed)
 auth = { username_env = "CTL_USER", password_env = "CTL_PASS" }   # optional; names of env vars, never values
 
 [[control.mix_zones]]              # optional, repeatable; needs stations with mobility and pseudonyms

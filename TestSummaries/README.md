@@ -10,6 +10,7 @@ could link across pseudonym changes. Scenario files are in `vnap-docker/scenario
 |---|---|---|
 | [convoy-test-2026-10-04.docx](convoy-test-2026-10-04.docx) | `c-its-pki-convoy`: three OBUs driving together, synchronized full ID changes, 3–13 s silent periods, 15 s link window | of 16 links, 11 joined two different cars; recommends further scenarios |
 | [mixzone-test-2026-10-04.docx](mixzone-test-2026-10-04.docx) | `c-its-pki-mixzone`: four OBUs changing identity in an intersection mix zone, 6–12 s silent periods, 15 s link window | of 17 links, 15 joined two different cars, but all follow one rotation an attacker could undo; recommends random turns next |
+| [mixzone-random-test-2026-10-04.docx](mixzone-random-test-2026-10-04.docx) | `c-its-pki-mixzone-random`: the same crossing with random turns and random return roads | of 18 links, 17 joined two different cars, spread over 10 pairings; the best fixed turn rule recovers 10 of 24 crossings; recommends a turn-aware attacker next |
 
 Each document has the setup, every link scored against ground truth, limitations and
 recommendations for subsequent scenarios.

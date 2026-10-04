@@ -1,0 +1,95 @@
+description = "intersection mix zone with random turns: four OBUs pass a crossing every 60 s, turning left, straight or right at random and coming back on a random road; identity change on entering a 40 m zone, 6-12 s silence; patient eavesdropper (15 s link window)"
+
+# Layout: crossing at 40.0, -8.0 (RSU) with four 150 m roads (arms) ending on a square ring
+# road. Each lap (600 m, 60 s at 36 km/h) a car comes in on one arm, turns left, straight or
+# right at random at the crossing (no U-turns), drives to the end of its exit arm, goes a
+# random way along the ring to the next arm and comes back in on it. Exits and arrivals are
+# therefore both random, unlike c-its-pki-mixzone, where every car always turns right on the
+# same block and the eavesdropper's mistakes form one rotation that an attacker could undo.
+# The cars start on different arms and reach the crossing 1.5 s apart on every lap. Each car
+# gets a pseudonym change event on entering the 40 m zone; the 6-12 s silent period covers
+# the turn. The turns come from control.mobility_seed (set it to repeat a run; otherwise
+# vnapctl picks one and records it in the mobility client's configuration, shown by status).
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+
+# 24 butterfly ATs, 6 per car: about 6 laps (6 minutes) before a certificate repeats
+[[stations]]
+name = "obu1"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
+mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
+
+[[stations]]
+name = "obu2"
+ip = "192.168.98.30"
+station_id = 3
+station_type = 5
+mac = "6e:06:e0:03:00:03"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 6, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
+mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "north", speed_kmh = 36, start_s = 1.5 }
+
+[[stations]]
+name = "obu3"
+ip = "192.168.98.40"
+station_id = 4
+station_type = 5
+mac = "6e:06:e0:03:00:04"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 12, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
+mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "west", speed_kmh = 36, start_s = 3 }
+
+[[stations]]
+name = "obu4"
+ip = "192.168.98.50"
+station_id = 5
+station_type = 5
+mac = "6e:06:e0:03:00:05"
+pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 18, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
+mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "south", speed_kmh = 36, start_s = 4.5 }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+broker_ip = "192.168.99.2"
+client_ip = "192.168.99.3"
+mobility_ip = "192.168.99.4"
+mobility_rate_hz = 5
+
+[[control.mix_zones]]
+# the mobility client sends a pseudonym change event to each car entering the zone
+name = "crossing"
+center = [40.0, -8.0]
+radius_m = 40
+
+[control.client]
+# no clock-driven changes: identities change only in the mix zone (the client still logs
+# the stations' answers)
+mode = "manual"
+
+[eavesdropper]
+# patient attacker: continues a track up to 15 s after it went silent
+link_window = 15.0
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=6"]

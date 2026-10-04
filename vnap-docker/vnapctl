@@ -26,6 +26,8 @@ the docker CLI and the eclipse-mosquitto:2 image (used for MQTT subscriptions).
 
 import argparse
 import hashlib
+import math
+import random
 import ipaddress
 import json
 import re
@@ -364,8 +366,10 @@ def build_status(sim):
             control["mobility"] = {"name": Simulation.name(sim.mobility), "state": sim.mobility["State"]["Status"],
                                    "ip": sim.ip(sim.mobility, sim.ctl),
                                    "vehicles": [{"station_id": v.get("station_id"), "waypoints": len(v.get("route", [])),
-                                                 "speed_kmh": v.get("speed_kmh"), "loop": v.get("loop", False)}
+                                                 "speed_kmh": v.get("speed_kmh"), "loop": v.get("loop", False),
+                                                 "random_turns": "crossing" in v}
                                                 for v in vehicles],
+                                   "seed": mcfg.get("seed"),
                                    "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations")}
                                                  for z in mcfg.get("mix_zones", [])]}
     free_gb = shutil.disk_usage("/").free / 1e9
@@ -466,8 +470,9 @@ def print_status(s):
         if "mobility" in c:
             mo = c["mobility"]
             print(f"mobility client: {mo['name']} {mo['state']} {mo['ip']}: " + ", ".join(
-                f"station {v['station_id']} {v['waypoints']} waypoints {v['speed_kmh']} km/h{' loop' if v['loop'] else ''}"
-                for v in mo["vehicles"]))
+                f"station {v['station_id']} " + ("random turns" if v.get("random_turns") else f"{v['waypoints']} waypoints")
+                + f" {v['speed_kmh']} km/h{' loop' if v['loop'] else ''}"
+                for v in mo["vehicles"]) + (f" (seed {mo['seed']})" if any(v.get("random_turns") for v in mo["vehicles"]) else ""))
             for z in mo.get("mix_zones", []):
                 print(f"  mix zone {z['name']}: {z['center'][0]:.6f} {z['center'][1]:.6f} radius {z['radius_m']} m, "
                       f"pseudonym change on entry for stations {z['stations']}")
@@ -982,7 +987,10 @@ def load_scenario(ref, sets=(), instance=0):
         if any(s.get("mobility") for s in stations):
             control["mobility"] = {"name": "mobility" + suffix,
                                    "ip": remap_ip(ctl_raw.get("mobility_ip", "192.168.99.4"), instance),
-                                   "rate_hz": float(ctl_raw.get("mobility_rate_hz", 5))}
+                                   "rate_hz": float(ctl_raw.get("mobility_rate_hz", 5)),
+                                   "seed": ctl_raw.get("mobility_seed")}
+            if control["mobility"]["seed"] is not None and not isinstance(control["mobility"]["seed"], int):
+                errors.append("control.mobility_seed must be an integer")
             if ctl_subnet and ipaddress.ip_address(control["mobility"]["ip"]) not in ctl_subnet:
                 errors.append(f"control.mobility_ip {control['mobility']['ip']} not in {ctl_subnet}")
             if not 0 < control["mobility"]["rate_hz"] <= 50:
@@ -1066,6 +1074,9 @@ def check_mobility(mob, where, errors):
     if not isinstance(mob, dict):
         errors.append(f"{where}: mobility must be a table {{ route = [[lat, lon], ...], speed_kmh = ... }}")
         return None
+    common = check_speed_start(mob, where, errors)
+    if "crossing" in mob:
+        return check_crossing(mob, where, errors, common)
     unknown = set(mob) - {"route", "speed_kmh", "start_s", "loop"}
     if unknown:
         errors.append(f"{where}: unknown mobility key(s) {', '.join(sorted(unknown))}")
@@ -1078,14 +1089,45 @@ def check_mobility(mob, where, errors):
         return None
     if all(p == route[0] for p in route):
         errors.append(f"{where}: mobility.route has zero length")
+    route = [[float(c) for c in p] for p in route]
+    return {"route": route, **common, "loop": bool(mob.get("loop", False)), "start": route[0]}
+
+
+def check_speed_start(mob, where, errors):
     speed = mob.get("speed_kmh", 50)
     if not isinstance(speed, (int, float)) or not 0 < speed <= 589.7:
         errors.append(f"{where}: mobility.speed_kmh must be in (0, 589.7] (CAM speed range)")
     start = mob.get("start_s", 0)
     if not isinstance(start, (int, float)) or start < 0:
         errors.append(f"{where}: mobility.start_s must be >= 0")
-    return {"route": [[float(c) for c in p] for p in route], "speed_kmh": speed, "start_s": start,
-            "loop": bool(mob.get("loop", False))}
+    return {"speed_kmh": speed, "start_s": start}
+
+
+CROSSING_ARMS = {"north": (1, 0), "east": (0, 1), "south": (-1, 0), "west": (0, -1)}
+
+
+def check_crossing(mob, where, errors, common):
+    """mobility = { crossing = [lat, lon], arm_m, start_arm, ... }: laps with random turns."""
+    unknown = set(mob) - {"crossing", "arm_m", "start_arm", "speed_kmh", "start_s"}
+    if unknown:
+        errors.append(f"{where}: unknown mobility key(s) {', '.join(sorted(unknown))} (route and crossing exclude each other)")
+    center = mob["crossing"]
+    if not (isinstance(center, list) and len(center) == 2 and all(isinstance(c, (int, float)) for c in center)
+            and -89 <= center[0] <= 89 and -180 <= center[1] <= 180):
+        errors.append(f"{where}: mobility.crossing must be [lat, lon] in degrees")
+        return None
+    arm = mob.get("arm_m", 150)
+    if not isinstance(arm, (int, float)) or not 10 <= arm <= 5000:
+        errors.append(f"{where}: mobility.arm_m must be in [10, 5000]")
+        return None
+    start_arm = mob.get("start_arm", "east")
+    if start_arm not in CROSSING_ARMS:
+        errors.append(f"{where}: mobility.start_arm must be one of {', '.join(CROSSING_ARMS)}")
+        return None
+    north, east = (c * arm for c in CROSSING_ARMS[start_arm])
+    # same conversion as the mobility client: the station starts where its first lap begins
+    first = [center[0] + north / 111195.0, center[1] + east / (111195.0 * math.cos(math.radians(center[0])))]
+    return {"crossing": [float(c) for c in center], "arm_m": arm, "start_arm": start_arm, **common, "start": first}
 
 
 def list_scenarios():
@@ -1165,7 +1207,7 @@ def station_env(sc, st):
         env["AT_CERT"], env["AT_KEY"] = st["at_cert"], st["at_key"]
     if st.get("mobility") and sc["control"]:
         # start at the first waypoint; the mobility client takes over from there
-        env["VANETZA_LATITUDE"], env["VANETZA_LONGITUDE"] = st["mobility"]["route"][0]
+        env["VANETZA_LATITUDE"], env["VANETZA_LONGITUDE"] = st["mobility"]["start"]
         env["VANETZA_USE_HARDCODED_GPS"] = "true"
         env["POSITION_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
         if sc["control"]["auth"]:
@@ -1322,7 +1364,9 @@ def scenario_up(sc, dry_run=False, wait=30.0):
             config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
                       "vehicles": [{"station_id": st["station_id"], **st["mobility"]}
                                    for st in sc["stations"] if st.get("mobility")],
-                      "mix_zones": mo["mix_zones"], "pseudonym_topic": "vnap/pseudonym"}
+                      "mix_zones": mo["mix_zones"], "pseudonym_topic": "vnap/pseudonym",
+                      # random turns: a fixed seed repeats a run; otherwise a new one, recorded in the config
+                      "seed": mo["seed"] if mo["seed"] is not None else random.randrange(1 << 31)}
             r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"],
                    *run_labels(sc, run_id, "mobility"),
                    *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
