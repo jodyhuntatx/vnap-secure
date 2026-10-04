@@ -4,6 +4,13 @@ Results of the privacy scenarios: what the passive eavesdropper
 (`vnap-docker/eavesdropper/`, see the main [README](../README.md#eavesdropper-tracking-attacker))
 could link across pseudonym changes. Scenario files are in `vnap-docker/scenarios/`.
 
+**CAM timing leak.** Every result below was measured with images up to vnap:r2-p16, where
+the CAM timer kept running through each ID change. A car's position within the 1 s CAM
+cycle therefore carried over to its new identity. Matching on that timing alone linked 16 of
+16 changes in the random-turn mix zone, so these results hold only against an eavesdropper
+that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on every ID change
+(the same matching then linked 1 of 13). See the main README, Pseudonym change events.
+
 ## Documents
 
 | Document | Scenario | Result |

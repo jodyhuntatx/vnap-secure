@@ -1,5 +1,6 @@
 #include <cmath>
 #include "../id_change.hpp"
+#include <random>
 #include "cam_application.hpp"
 #include <rapidjson/document.h>
 #include <vanetza/asn1/rj/jer_rj_encode.hpp>
@@ -239,6 +240,20 @@ void CamApplication::schedule_timer()
     runtime_.schedule(cam_interval_, std::bind(&CamApplication::on_timer, this, std::placeholders::_1), this);
 }
 
+void CamApplication::rephase_on_id_change(security::IdChangeService& service)
+{
+    using Command = security::IdChangeService::Command;
+    // the hook runs on the control channel's thread: it only sets a flag, which the CAM timer
+    // (on its own trigger) applies when it schedules the next CAM
+    id_change_subscription_ = std::make_shared<IdChangeSubscription>(service,
+        [this](Command command, const security::IdChangeService::Id&, const ByteBuffer&) {
+            if (command == Command::Commit) {
+                rephase_.store(true);
+            }
+            return true;
+        }, "CAM timer");
+}
+
 void CamApplication::on_message(string topic, string mqtt_message, const std::vector<uint8_t>& bytes, bool is_encoded, double time_reception, string test, vanetza::geonet::Router* router) {
     std::lock_guard<std::recursive_mutex> cam_lock(asn1::r2::cam_descriptor_mutex()); // see indicate()
 
@@ -381,6 +396,18 @@ void CamApplication::on_message(string topic, string mqtt_message, const std::ve
 
 void CamApplication::on_timer(Clock::time_point)
 {
+    if (rephase_.exchange(false)) {
+        // first CAM after an ID change: skip it and restart the timer at a random phase, so no
+        // CAM of the new identity continues the old identity's timing. The gap since the last
+        // CAM is one to two intervals (above T_GenCamMin), once; with a silent period these
+        // CAMs are not sent anyway.
+        const auto interval_us = duration_cast<microseconds>(cam_interval_).count();
+        std::uniform_int_distribution<long long> offset(0, std::max(1LL, (long long) interval_us) - 1);
+        const microseconds next(offset(rephase_rng_));
+        std::cerr << ("[IDCHANGE] CAM timer: new phase, next CAM in " + std::to_string(next.count() / 1000) + " ms\n");
+        runtime_.schedule(duration_cast<Clock::duration>(next), std::bind(&CamApplication::on_timer, this, std::placeholders::_1), this);
+        return;
+    }
     std::lock_guard<std::recursive_mutex> cam_lock(asn1::r2::cam_descriptor_mutex()); // see indicate()
     schedule_timer();
     vanetza::asn1::r2::Cam message;

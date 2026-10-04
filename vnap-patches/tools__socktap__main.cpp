@@ -266,6 +266,10 @@ int main(int argc, const char** argv)
                 new CamApplication(*positioning, context.get_dccp().get_trigger().runtime(), pubsub, config_s, metrics_s, get_router(num_threads), 1, prom_mtx)
             };
             cam_app->set_interval(std::chrono::milliseconds(config_s.cam.periodicity));
+            if (facilities_id_change) {
+                // full ID change: the CAM timing must not carry over to the new identity
+                cam_app->rephase_on_id_change(pseudonym_control(security.get())->id_changes());
+            }
             apps.emplace("cam", std::move(cam_app));
         }
 

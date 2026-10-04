@@ -579,6 +579,12 @@ following the two-phase commit of clause 6.3:
     outgoing frames (CAMs, beacons, injected messages) until it ends. Reception continues.
   - **Logging:** `[IDCHANGE] silent period <n> ms` at the start, and `silent period over,
     <n> frame(s) suppressed` at the end.
+- **CAM timing:** the CAM timer restarts at a random phase on every full ID change. It used
+  to keep running through the change, so each car's position within the 1 s CAM cycle
+  carried over to its new identity and linked the two: a timing-only linker matched 16 of
+  16 changes in the random-turn mix zone. The first CAM after the change is skipped and the
+  next one comes after a random delay of up to one interval (`[IDCHANGE] CAM timer: new
+  phase, next CAM in <n> ms`); with the fix the same linker matched 1 of 13.
   - **The cost** (TR 103 415): while silent, the vehicle is missing from its neighbours'
     view, and it reappears suddenly afterwards.
 - **Certificate-only changes:** `PSEUDO_ID_CHANGE=certificate` (scenario key
@@ -801,6 +807,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
 | ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour). Optional random silent period after each change (`--pseudonym-silent-min/-max`, TR 103 415 4.1.4; `tools/socktap/dcc_passthrough.{hpp,cpp}`) |
 | Position control channel (mobility) | `tools/socktap/mobility.{hpp,cpp}` (new), `positioning.cpp`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the station's position follows updates on an MQTT topic ([Vehicle movement](#vehicle-movement)). Options `--position-control-broker`, `-port`, `-topic`, `-username`, `-password`. The static position provider is replaced by a thread-safe controllable one |
+| CAM timer rephase | `tools/socktap/applications/cam_application.{hpp,cpp}`, `main.cpp` | with full ID change, the CAM timer restarts at a random phase on COMMIT, so CAM timing does not link old and new identities ([Pseudonym change events](#pseudonym-change-events)) |
 | CAM kinematics | `tools/socktap/applications/cam_application.cpp` | heading, speed/heading confidence, longitudinal acceleration and yaw rate in the CAM's units (and yaw rate sign); see [Vehicle movement](#vehicle-movement) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |
 
