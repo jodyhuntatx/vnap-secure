@@ -4,7 +4,7 @@ Results of the privacy scenarios: what the passive eavesdropper
 (`vnap-docker/eavesdropper/`, see the main [README](../README.md#eavesdropper-tracking-attacker))
 could link across pseudonym changes. Scenario files are in `vnap-docker/scenarios/`.
 
-**CAM timing leak.** Every result below was measured with images up to vnap:r2-p16, where
+**CAM timing leak.** Every result below, except the two vnap:r2-p17 reruns, was measured with images up to vnap:r2-p16, where
 the CAM timer kept running through each ID change. A car's position within the 1 s CAM
 cycle therefore carried over to its new identity. Matching on that timing alone linked 16 of
 16 changes in the random-turn mix zone, so these results hold only against an eavesdropper
@@ -18,6 +18,8 @@ that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on eve
 | [convoy-test-2026-10-04.docx](convoy-test-2026-10-04.docx) | `c-its-pki-convoy`: three OBUs driving together, synchronized full ID changes, 3–13 s silent periods, 15 s link window | of 16 links, 11 joined two different cars; recommends further scenarios |
 | [mixzone-test-2026-10-04.docx](mixzone-test-2026-10-04.docx) | `c-its-pki-mixzone`: four OBUs changing identity in an intersection mix zone, 6–12 s silent periods, 15 s link window | of 17 links, 15 joined two different cars, but all follow one rotation an attacker could undo; recommends random turns next |
 | [mixzone-random-test-2026-10-04.docx](mixzone-random-test-2026-10-04.docx) | `c-its-pki-mixzone-random`: the same crossing with random turns and random return roads | of 18 links, 17 joined two different cars, spread over 10 pairings; the best fixed turn rule recovers 10 of 24 crossings; recommends a turn-aware attacker next |
+| [mixzone-test-2026-10-04-r2-p17.docx](mixzone-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone` rerun on vnap:r2-p17 (CAM timer rephase), eavesdropper linking by timing and position | 18 links, none correct; timing at chance level, but 19 of 19 position links (replay) form the same one-road rotation, so a pattern-aware attacker can still undo them |
+| [mixzone-random-test-2026-10-04-r2-p17.docx](mixzone-random-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone-random` rerun on vnap:r2-p17 | 12 links, none correct; timing at chance level and position mistakes without a pattern |
 
 Each document has the setup, every link scored against ground truth, limitations and
 recommendations for subsequent scenarios.
