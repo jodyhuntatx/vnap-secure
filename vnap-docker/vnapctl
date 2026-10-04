@@ -480,9 +480,11 @@ def print_status(s):
         print()
         if "tracks" in o:
             counts = o.get("counts", {})
+            by = counts.get("linked_by")
+            by_text = (" (" + ", ".join(f"{n} by {k}" for k, n in by.items() if n) + ")") if by and any(by.values()) else ""
             print(f"eavesdropper: {o['name']} {o['state']} {o['ip']}: {counts.get('frames', 0)} frames "
                   f"({counts.get('errors', 0)} undecodable), {o['tracks']} track(s), {o['pseudonyms']} pseudonym(s), "
-                  f"{o['linked_changes']} linked pseudonym change(s)")
+                  f"{o['linked_changes']} linked pseudonym change(s){by_text}")
             for track, types, pseudonyms, linked in o["per_track"]:
                 print(f"  {track} {'/'.join(types) or '?'}: {pseudonyms} pseudonym(s), {linked} linked change(s)")
         else:
@@ -720,6 +722,8 @@ def compute_metrics(sim, status, events, seconds):
             m["eavesdropper.tracks"] = o["tracks"]
             m["eavesdropper.pseudonyms"] = o["pseudonyms"]
             m["eavesdropper.linked_changes"] = o["linked_changes"]
+            for kind, n in counts.get("linked_by", {}).items():
+                m[f"eavesdropper.linked_by_{kind}"] = n
     return m
 
 
@@ -1014,7 +1018,12 @@ def load_scenario(ref, sets=(), instance=0):
                         "verbose": bool(eav_raw.get("verbose", False)),
                         "summary_interval": eav_raw.get("summary_interval", 30),
                         "link_window": eav_raw.get("link_window", 3.0),
-                        "link_distance": eav_raw.get("link_distance", 50.0)}
+                        "link_distance": eav_raw.get("link_distance", 50.0),
+                        "link_by": eav_raw.get("link_by", ["position", "timing"]),
+                        "timing_window": eav_raw.get("timing_window", 20.0),
+                        "timing_tolerance_ms": eav_raw.get("timing_tolerance_ms", 25.0)}
+        if not (isinstance(eavesdropper["link_by"], list) and set(eavesdropper["link_by"]) <= {"position", "timing"}):
+            errors.append('eavesdropper.link_by must be a list of "position" and/or "timing" (empty: identifiers only)')
         if lan_subnet and eavesdropper["ip"] and ipaddress.ip_address(eavesdropper["ip"]) not in lan_subnet:
             errors.append(f"eavesdropper ip {eavesdropper['ip']} not in {lan_subnet}")
         if eavesdropper["ip"] in [s["ip"] for s in stations]:
@@ -1379,7 +1388,9 @@ def scenario_up(sc, dry_run=False, wait=30.0):
             r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
                    *run_labels(sc, run_id, "eavesdropper"),
                    "-e", f"EAVESDROP_SUMMARY={ev['summary_interval']}", "-e", f"EAVESDROP_VERBOSE={'1' if ev['verbose'] else '0'}",
-                   EAVESDROPPER_IMAGE, "--link-window", str(ev["link_window"]), "--link-distance", str(ev["link_distance"])])
+                   EAVESDROPPER_IMAGE, "--link-window", str(ev["link_window"]), "--link-distance", str(ev["link_distance"]),
+                   "--link-by", ",".join(ev["link_by"]) or "none", "--timing-window", str(ev["timing_window"]),
+                   "--timing-tolerance", str(ev["timing_tolerance_ms"])])
             r.created_containers.append(ev["name"])
     except (RuntimeError, ScenarioError) as e:
         if not dry_run:

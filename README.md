@@ -723,16 +723,45 @@ no control channel. It knows the public ETSI/IEEE formats.
 
 The ASN.1 modules come from Vanetza-NAP (`eavesdropper/asn1/`, with their source note).
 
-**Tracking**
-- **Shared identifiers:** messages are linked into tracks when they share a MAC, GN
-  address, `stationId` or certificate digest.
-- **Position continuity:** a message with a certificate never seen before, and no known
-  identifier, can continue a track that went silent shortly before (`--link-window`,
-  default 3 s) at the same place (`--link-distance`, default 50 m, plus speed × gap).
-  - The link is confirmed only if the old identity stays silent for 1.5 message
-    intervals, so two vehicles parked side by side are not merged.
-- **Logging:** every linked pseudonym change is logged with its evidence (`same mac`,
-  `same gn`, `same station`, or `position continuity`).
+**Linkage techniques**
+
+The eavesdropper groups messages into tracks (one per vehicle, as far as it can tell) and
+tries to carry a track across each pseudonym change. A new certificate digest is a new
+pseudonym; it is linked to an existing track by the first technique below that applies.
+
+| Technique | Evidence used | Option (scenario key) | Defeated by |
+|---|---|---|---|
+| **Shared identifiers** | the new pseudonym's frame carries a MAC, GN address or `stationId` already seen on the track | always on | full ID change: MAC, GN address and `stationId` change with the certificate (`PSEUDO_ID_CHANGE=full`, the default) |
+| **Timing phase** | CAMs come at a regular interval. The track's last CAM generation times (security header, 1 ms resolution) give its interval (least-squares fit) and phase; extended over the gap, they predict when its next CAM would come. One silent track must predict the new pseudonym's first CAM within the tolerance, and no other within twice the tolerance | `--link-by timing`, `--timing-window` 20 s, `--timing-tolerance` 25 ms (`link_by`, `timing_window`, `timing_tolerance_ms`) | restarting the CAM timer at a random phase on every ID change (vnap:r2-p17 and later) |
+| **Position continuity** | the new pseudonym appears where a track that went silent could have driven in the gap: within `--link-distance` plus last speed × gap, the nearest one | `--link-by position`, `--link-window` 3 s, `--link-distance` 50 m (`link_by`, `link_window`, `link_distance`) | a silent period longer than the attacker waits, with other vehicles nearby that could be the one that reappears (convoys, mix zones with random turns) |
+
+- **Precedence:** shared identifiers link immediately. Timing beats position when it is
+  unambiguous. Its log entry then also says whether position agreed (`position pointed to
+  another track` otherwise).
+- **Confirmation:** timing and position links are confirmed only if the old identity stays
+  silent for 1.5 message intervals, so two vehicles side by side are not merged.
+- **Greedy:** each new pseudonym is decided on its own, the moment it appears. A wrong link
+  uses up the old track, so the car that really owned it can no longer be linked.
+  - Example (vnap:r2-p16): timing could not separate two cars that happened to send in
+    phase, so position linked one of them to a third car's track.
+- **Chance timing matches:** once phases are random, a new pseudonym's first CAM sometimes
+  lands within the tolerance of another car's prediction. In a 3-minute run with 4 cars
+  that gave 1–2 timing links, about half of them wrong. An attacker sees the same
+  coincidences.
+- **Logging:** every linked change is logged with its evidence (`same mac`, `same gn`,
+  `same station`, `timing phase (<n> ms off after <k> CAM interval(s), next <m> ms)`,
+  `position continuity (<d> m, <s> s gap; ...)`). The summary line, `tracks.json` and
+  `vnapctl status` count links per technique. `vnapctl check` exposes the counts as
+  `eavesdropper.linked_by_identifier`, `.linked_by_timing` and `.linked_by_position`.
+- **Not used (yet):**
+  - heading and turn statistics;
+  - multiple hypotheses or a joint assignment of all changes at a crossing;
+  - vehicle attributes in CAMs (length, width, station type);
+  - the timing of GeoNetworking beacons and other periodic messages;
+  - RSSI or several receivers.
+- **Re-analysis:** `eavesdropper.py --replay messages.jsonl --log-dir out/ --link-by position`
+  reruns the linking on a saved run's frame log with other options (no `asn1tools`
+  needed). Get the log with `docker cp eavesdropper:/logs - | tar -x`.
 
 **Output**
 
@@ -759,7 +788,8 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
 - **In scenarios:** an `[eavesdropper]` section in a scenario file adds it; see
   `scenarios/README.md`.
 - **Metrics:** `vnapctl check` exposes `eavesdropper.frames`, `.decode_errors`, `.tracks`,
-  `.pseudonyms` and `.linked_changes`.
+  `.pseudonyms`, `.linked_changes` and, per technique, `.linked_by_identifier`,
+  `.linked_by_timing` and `.linked_by_position`.
 
 **Results:** what the eavesdropper achieved against each scenario, with recommendations
 for further scenarios, is in [`TestSummaries/`](TestSummaries/README.md).

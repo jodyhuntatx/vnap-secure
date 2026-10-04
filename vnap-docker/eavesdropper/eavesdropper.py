@@ -37,7 +37,6 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import asn1tools
 
 ETH_P_GEONET = 0x8947
 ITS_EPOCH = 1072915200  # 2004-01-01T00:00:00Z; ITS times count from here (TAI, leap seconds ignored)
@@ -61,6 +60,7 @@ def hexs(b):
 
 class Codecs:
     def __init__(self, asn1_dir):
+        import asn1tools  # only for decoding frames: --replay works without it
         f = lambda n: os.path.join(asn1_dir, n)
         self.sec = asn1tools.compile_files(
             [f("IEEE1609dot2BaseTypes.asn"), f("IEEE1609dot2.asn"), f("TS103097v131.asn")], "oer")
@@ -437,14 +437,57 @@ def position_of(obs):
     return None
 
 
-class Tracker:
-    """Links observations into tracks (union-find over identifiers) and records pseudonym changes."""
+def cam_time(obs):
+    """Generation time of a CAM (security header, 1 ms resolution), else the capture time."""
+    if obs.get("message") != "CAM":
+        return None
+    gt = obs.get("generation_time")
+    if gt:
+        try:
+            return datetime.fromisoformat(gt.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return obs["t"]
 
-    def __init__(self, link_window, link_distance, emit):
+
+def cam_period(times):
+    """CAM interval of one identity: least-squares slope of its recent CAM times against their
+    slot numbers (robust to a missed CAM). None with fewer than 3 CAMs or no regular interval."""
+    if len(times) < 3:
+        return None
+    gaps = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    if not gaps:
+        return None
+    rough = gaps[len(gaps) // 2]
+    if not 0.05 <= rough <= 2.0:
+        return None
+    k = [round((t - times[0]) / rough) for t in times]
+    n, mk, mt = len(times), sum(k) / len(k), sum(times) / len(times)
+    den = sum((x - mk) ** 2 for x in k)
+    return sum((x - mk) * (t - mt) for x, t in zip(k, times)) / den if den else rough
+
+
+class Tracker:
+    """Links observations into tracks (union-find over identifiers) and records pseudonym changes.
+
+    Evidence for linking a new pseudonym to an existing track, strongest first:
+      identifier  the new frame shares a MAC, GN address or stationId with the track
+      timing      the track's CAM timing (phase within its CAM interval), extended over the
+                  gap, predicts the new identity's first CAM within --timing-tolerance, and
+                  no other silent track comes close (--link-by timing)
+      position    the new identity appears where the silent track could have driven in the
+                  gap (--link-by position)
+    Timing and position links wait for confirmation: the old identity must stay silent."""
+
+    def __init__(self, link_window, link_distance, emit, link_by=("position", "timing"),
+                 timing_window=20.0, timing_tolerance_ms=25.0):
         self.parent = {}
         self.tracks = {}  # root key -> track
         self.cert_track = {}  # cert digest -> track id (after linking)
         self.link_window, self.link_distance = link_window, link_distance
+        self.link_by = set(link_by)
+        self.timing_window, self.timing_tolerance = timing_window, timing_tolerance_ms / 1000.0
+        self.linked_by = {"identifier": 0, "timing": 0, "position": 0}
         self.emit = emit
         self.next_id = 1
         # continuity links wait for confirmation: the old identity must stay silent
@@ -485,6 +528,9 @@ class Tracker:
             ta["pseudonyms"].setdefault(digest, p)
         ta["changes"] += tb["changes"]
         ta["trail"] = sorted(ta["trail"] + tb["trail"])[-30:]
+        # CAM timing continues with the identity that sent last (mixing two would spoil the fit)
+        if (tb["cam_times"][-1:] or [0]) > (ta["cam_times"][-1:] or [0]):
+            ta["cam_times"] = tb["cam_times"]
 
     @staticmethod
     def keys_of(obs):
@@ -524,6 +570,37 @@ class Tracker:
                 best = (root, d, dt)
         return best
 
+    def timing_candidate(self, obs, exclude_root):
+        """Silent track whose CAM timing predicts this CAM: (root, residual s, gap s, CAM slots,
+        next-best residual s or None), or None if no track fits or two fit equally well."""
+        g = cam_time(obs)
+        if g is None:
+            return None
+        fits = []
+        for root, tr in self.tracks.items():
+            times = tr["cam_times"]
+            if root == exclude_root or not times:
+                continue
+            dt = obs["t"] - tr["last_seen"]
+            if not (0.8 * self.expected_interval(tr) <= dt <= self.timing_window):
+                continue
+            period = cam_period(times)
+            if not period:
+                continue
+            slots = round((g - times[-1]) / period)
+            if slots < 1:
+                continue
+            fits.append((abs(g - (times[-1] + slots * period)), root, dt, slots))
+        if not fits:
+            return None
+        fits.sort(key=lambda f: f[0])
+        best = fits[0]
+        runner_up = fits[1][0] if len(fits) > 1 else None
+        # unambiguous: within tolerance, and nothing else within twice the tolerance
+        if best[0] > self.timing_tolerance or (runner_up is not None and runner_up <= 2 * self.timing_tolerance):
+            return None
+        return best[1], best[0], best[2], best[3], runner_up
+
     def observe(self, obs):
         # confirm or drop pending continuity links first: a merge changes the track roots
         self.resolve_pending(obs["t"])
@@ -542,7 +619,22 @@ class Tracker:
         root = self.find(root)
 
         new_identity = digest and not known_cert and not tracks_before
-        cand = self.continuity_candidate(obs, root) if new_identity else None
+        cand = None
+        if new_identity:
+            pos = self.continuity_candidate(obs, root) if "position" in self.link_by else None
+            tim = self.timing_candidate(obs, root) if "timing" in self.link_by else None
+            pos_text = (f"position continuity ({round(pos[1], 1)} m, {round(pos[2], 2)} s gap; "
+                        f"old identity silent since)") if pos else None
+            if tim:
+                nxt = f", next {tim[4] * 1000:.0f} ms" if tim[4] is not None else ", no other candidate"
+                evidence = [f"timing phase ({tim[1] * 1000:.0f} ms off after {tim[3]} CAM interval(s){nxt})"]
+                if pos and pos[0] == tim[0]:
+                    evidence.append(pos_text)
+                elif pos:
+                    evidence.append(f"position pointed to another track ({self.tracks[pos[0]]['track']})")
+                cand = {"root": tim[0], "gap": tim[2], "evidence": evidence, "kind": "timing"}
+            elif pos:
+                cand = {"root": pos[0], "gap": pos[2], "evidence": [pos_text], "kind": "position"}
 
         tr = self.tracks.get(root)
         if tr is None:
@@ -550,7 +642,7 @@ class Tracker:
                 "track": f"V{self.next_id}", "first_seen": obs["t"], "last_seen": obs["t"], "messages": 0,
                 "macs": [], "gn_addrs": [], "station_ids": [], "station_types": [], "pseudonyms": {},
                 "current_pseudonym": None, "changes": 0, "last_position": None, "last_speed": None, "trail": [],
-                "intervals": []}
+                "intervals": [], "cam_times": []}
             self.next_id += 1
             self.emit({"event": "new_track", "t": obs["t"], "time": obs["time"], "track": tr["track"],
                        "identifiers": {k: v for k, v in keys}})
@@ -573,6 +665,11 @@ class Tracker:
         speed = obs.get("cam_speed_mps", (obs.get("gn_so") or {}).get("speed_mps"))
         if speed is not None:
             tr["last_speed"] = abs(speed)
+        g = cam_time(obs)
+        if g is not None:
+            if digest and tr["current_pseudonym"] not in (None, digest):
+                tr["cam_times"] = []  # a new identity's timing starts afresh
+            tr["cam_times"] = (tr["cam_times"] + [g])[-20:]
 
         if digest:
             p = tr["pseudonyms"].setdefault(digest, {"first_seen": obs["t"], "last_seen": obs["t"], "messages": 0})
@@ -583,6 +680,7 @@ class Tracker:
             previous = tr["current_pseudonym"]
             if previous and previous != digest and digest not in self.cert_track:
                 tr["changes"] += 1
+                self.linked_by["identifier"] += 1
                 evidence = [f"same {k}" for k in ("mac", "gn", "station") if k in shared]
                 prev = tr["pseudonyms"].get(previous, {})
                 self.emit({"event": "pseudonym_change_linked", "t": obs["t"], "time": obs["time"],
@@ -594,10 +692,10 @@ class Tracker:
             tr["current_pseudonym"] = digest
             self.cert_track[digest] = tr["track"]
         if cand:
-            cand_track = self.tracks[cand[0]]
-            self.pending.append({"new": ("cert", digest), "old": next(iter(self.keys_for_track(cand[0]))),
-                                 "t": obs["t"], "time": obs["time"], "distance_m": round(cand[1], 1),
-                                 "gap_s": round(cand[2], 2), "old_track": cand_track["track"],
+            cand_track = self.tracks[cand["root"]]
+            self.pending.append({"new": ("cert", digest), "old": next(iter(self.keys_for_track(cand["root"]))),
+                                 "t": obs["t"], "time": obs["time"], "evidence": cand["evidence"], "kind": cand["kind"],
+                                 "gap_s": round(cand["gap"], 2), "old_track": cand_track["track"],
                                  "confirm_after": 1.5 * self.expected_interval(cand_track)})
         return tr["track"]
 
@@ -622,12 +720,12 @@ class Tracker:
             tr = self.tracks[survivor_root]
             tr["current_pseudonym"] = current
             tr["changes"] += 1
+            self.linked_by[p["kind"]] += 1
             for digest in tr["pseudonyms"]:
                 self.cert_track[digest] = tr["track"]
             self.emit({"event": "pseudonym_change_linked", "t": p["t"], "time": p["time"], "track": tr["track"],
                        "old": previous, "new": current, "old_last_seen_s_ago": p["gap_s"],
-                       "evidence": [f"position continuity ({p['distance_m']} m, {p['gap_s']} s gap; "
-                                    f"old identity silent since)"],
+                       "evidence": p["evidence"],
                        "merged_track": new["track"], "identifiers": {}})
         self.pending = still
 
@@ -687,7 +785,18 @@ class Logs:
 def summary_line(tracker, counts):
     parts = [f"{tr['track']}: {tr['messages']} msgs, {len(tr['pseudonyms'])} pseudonym(s), "
              f"{tr['changes']} linked change(s)" for tr in sorted(tracker.tracks.values(), key=lambda x: x["first_seen"])]
-    return f"[summary] {counts['frames']} frames, {counts['decoded']} decoded, {counts['errors']} errors; " + "; ".join(parts)
+    by = ", ".join(f"{n} by {k}" for k, n in tracker.linked_by.items())
+    return (f"[summary] {counts['frames']} frames, {counts['decoded']} decoded, {counts['errors']} errors; "
+            f"links: {by}; " + "; ".join(parts))
+
+
+def replay(path):
+    """Observations from a messages.jsonl of an earlier run (as (t, obs) pairs)."""
+    with open(path) as f:
+        for line in f:
+            obs = json.loads(line)
+            obs.pop("track", None)
+            yield obs["t"], obs
 
 
 def read_pcap(path):
@@ -721,19 +830,38 @@ def main():
                     help="max seconds between a track going quiet and a new pseudonym continuing it")
     ap.add_argument("--link-distance", type=float, default=50.0,
                     help="max metres (plus speed x gap) for position continuity linking")
+    ap.add_argument("--link-by", default=os.environ.get("EAVESDROP_LINK_BY", "position,timing"),
+                    help="evidence beyond shared identifiers: comma-separated position, timing (default both; "
+                         "'none' for identifiers only)")
+    ap.add_argument("--timing-window", type=float, default=20.0,
+                    help="max seconds of silence over which CAM timing is extended")
+    ap.add_argument("--timing-tolerance", type=float, default=25.0,
+                    help="max ms between the predicted and the actual CAM time for a timing link")
+    ap.add_argument("--replay", help="analyse a messages.jsonl from an earlier run instead of capturing "
+                                     "(e.g. with other --link-* options)")
     ap.add_argument("--verbose", action="store_true", default=os.environ.get("EAVESDROP_VERBOSE") == "1")
     args = ap.parse_args()
 
-    codecs = Codecs(args.asn1_dir)
+    link_by = [x for x in args.link_by.replace(" ", "").split(",") if x and x != "none"]
+    if set(link_by) - {"position", "timing"}:
+        ap.error("--link-by takes position, timing (comma-separated) or none")
     logs = Logs(args.log_dir, args.verbose)
-    tracker = Tracker(args.link_window, args.link_distance, logs.event)
+    tracker = Tracker(args.link_window, args.link_distance, logs.event, link_by,
+                      args.timing_window, args.timing_tolerance)
     counts = {"frames": 0, "decoded": 0, "errors": 0}
-    source = read_pcap(args.pcap) if args.pcap else live(args.iface)
-    print(f"eavesdropper: {'pcap ' + args.pcap if args.pcap else 'live on ' + args.iface}, logs in {args.log_dir}", flush=True)
+    if args.replay:
+        source, codecs = replay(args.replay), None
+    else:
+        codecs = Codecs(args.asn1_dir)
+        source = read_pcap(args.pcap) if args.pcap else live(args.iface)
+    where = "replay " + args.replay if args.replay else "pcap " + args.pcap if args.pcap else "live on " + args.iface
+    print(f"eavesdropper: {where}, logs in {args.log_dir}, linking by identifiers"
+          + "".join(f", {k}" for k in link_by), flush=True)
     last_snapshot = last_summary = time.time()
+    offline = bool(args.pcap or args.replay)
     try:
         for t, frame in source:
-            obs = parse_frame(codecs, frame, t)
+            obs = frame if args.replay else parse_frame(codecs, frame, t)
             if obs is None:
                 continue
             counts["frames"] += 1
@@ -742,15 +870,15 @@ def main():
             logs.message(obs, track)
             now = time.time()
             if now - last_snapshot >= 5:
-                logs.tracks(tracker.snapshot(), counts)
+                logs.tracks(tracker.snapshot(), {**counts, "linked_by": tracker.linked_by})
                 last_snapshot = now
             if now - last_summary >= args.summary_interval:
                 print(summary_line(tracker, counts), flush=True)
                 last_summary = now
     except KeyboardInterrupt:
         pass
-    tracker.finish(time.time() if not args.pcap else (tracker.tracks and max(t["last_seen"] for t in tracker.tracks.values()) or 0))
-    logs.tracks(tracker.snapshot(), counts)
+    tracker.finish(time.time() if not offline else (tracker.tracks and max(t["last_seen"] for t in tracker.tracks.values()) or 0))
+    logs.tracks(tracker.snapshot(), {**counts, "linked_by": tracker.linked_by})
     print(summary_line(tracker, counts), flush=True)
 
 

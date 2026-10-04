@@ -7,8 +7,8 @@ NET=${1:-vanetzalan0}
 NAME=${2:-eavesdropper}
 shift 2 2>/dev/null
 HERE=$(cd "$(dirname "$0")" && pwd)
-docker image inspect vnap-eavesdropper >/dev/null 2>&1 || \
-  tar -C "$HERE" --exclude=logs -c . | docker build -q -t vnap-eavesdropper - >/dev/null  # stdin: snap docker cannot read /mnt/hgfs
+# rebuild from the current sources (cached layers make this quick when nothing changed)
+tar -C "$HERE" --exclude=logs --exclude=__pycache__ -c . | docker build -q -t vnap-eavesdropper - >/dev/null  # stdin: snap docker cannot read /mnt/hgfs
 docker run -d --name "$NAME" --network "$NET" --cap-add NET_RAW \
   --label vnap.role=eavesdropper --label vnap.started_by=${USER:-unknown} \
   vnap-eavesdropper "$@"
