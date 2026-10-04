@@ -585,6 +585,7 @@ following the two-phase commit of clause 6.3:
 - **Not changed:** the configured station ID and MAC remain the station's identity on its
   local MQTT interface (e.g. `receiverID`). Messages injected on `vanetza/in/*` carry
   whatever `stationId` their payload has.
+
 **Client container** (`vnap-docker/pseudo-ctl/`, image `vnap-pseudo-ctl`, built on demand by
 `run-r2-sim.sh`). The same image runs the broker (`broker`) and the event client (`client`):
 
@@ -737,7 +738,7 @@ Copy the logs out with `docker cp eavesdropper:/logs ./eavesdropper-logs`.
 cd vnap-docker
 ./vnapctl up c-its-pki-tracking        # c-its-pki-pseudo (changes every 10 s) + eavesdropper
 ./vnapctl status                       # includes the eavesdropper's tracks and linked changes
-./vnapctl check --expect 'eavesdropper.linked_changes==0'   # a privacy goal (fails today)
+./vnapctl check --expect 'eavesdropper.linked_changes==0'   # a privacy goal
 ./eavesdropper/run.sh [network] [name] # attach to any running simulation instead
 python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offline (needs asn1tools)
 ```
@@ -747,49 +748,8 @@ python3 eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/   # offl
 - **Metrics:** `vnapctl check` exposes `eavesdropper.frames`, `.decode_errors`, `.tracks`,
   `.pseudonyms` and `.linked_changes`.
 
-**What it shows today**
-- **Full ID change (default):** in c-its-pki-tracking every OBU pseudonym change also
-  changes its MAC, GN address and `stationId`, so the eavesdropper sees a new vehicle each
-  time. It still links all of them by position continuity: the simulated OBU never moves,
-  and a vehicle that keeps sending its exact position is easy to follow. Unlinkability
-  needs more than synchronized identifiers, e.g. silent periods or changes in mix zones.
-- **Full ID change with a silent period** (`c-its-pki-tracking-silent`, 3–13 s):
-  - **Default eavesdropper:** in a 2.5-minute run with 10 changes it linked none. It saw
-    the one OBU as 8 separate vehicles, because each silence exceeded its 3 s link window.
-  - **Patient eavesdropper:** one with `--link-window 15`, attached to the same run, linked
-    every change again (gaps of 5–12 s). With a single stationary vehicle and nobody else
-    around, waiting out the silence is enough.
-  - **What this means:** a silent period protects only where other vehicles could be the
-    one that reappears, i.e. in dense traffic or mix zones (TR 103 415 clauses 4.1.4–4.1.6).
-  - **The cost:** the vehicle is invisible while silent; the RSU received 7 instead of 10
-    OBU CAMs in a 10 s window.
-- **Moving vehicles** (`c-its-pki-traffic`: two OBUs on crossing roads at 40 and 50 km/h,
-  full ID change and 3–13 s silent periods):
-  - **Default eavesdropper:** linked none of the changes; every new identity looked like a
-    new vehicle (8 vehicles plus the RSU in the first run).
-  - **Patient eavesdropper (`--link-window 15`):** linked every change of both vehicles
-    (3 of 3 each) without mixing them up. It predicts where a silent vehicle reappears from
-    its last speed and the length of the gap, and two vehicles on different roads are easy
-    to tell apart. Movement alone is no protection; it would take vehicles that could
-    plausibly have swapped places during the silence (a mix zone).
-- **Vehicles driving together** (`c-its-pki-convoy`: three OBUs about 28 m apart at
-  50 km/h, synchronized full ID changes, 3–13 s silent periods, 15 s link window, 8
-  butterfly ATs per car):
-  - **Result:** of 16 links, 11 joined two different cars. The first three (first 40 s)
-    were right; after that the cars swap places while silent and the eavesdropper mostly
-    picks the wrong one. Its tracks end up mixing two or three cars. The convoy acts as a
-    moving mix zone, at the cost of each car being silent about 40 % of the time.
-  - **Details and next scenarios:** `TestSummaries/convoy-test-2026-10-04.docx`.
-- **Intersection mix zone** (`c-its-pki-mixzone`: four OBUs looping the four blocks around
-  a crossing, each arriving on one road and leaving on another; identity change on entering
-  a 40 m zone, 6–12 s silence, 15 s link window):
-  - **Result (5 minutes, 24 changes):** of 17 links, 15 joined two different cars.
-  - **But the errors are systematic:** every car turns right, so the car that reappears on a
-    road is always matched with the car that had arrived on that road (obu1 with obu2, obu2
-    with obu3, …). An attacker who learns the turning pattern can undo the rotation. Mixed
-    or random turns are the next step.
-- **Certificate-only changes:** with `pseudonyms.id_change = "certificate"` it links every
-  change through the unchanged MAC, GN address and `stationId`.
+**Results:** what the eavesdropper achieved against each scenario, with recommendations
+for further scenarios, is in [`TestSummaries/`](TestSummaries/README.md).
 
 ## Certificates
 
