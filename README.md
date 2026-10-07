@@ -263,8 +263,10 @@ Options:
 `c-its-pki-traffic` (two [moving](#vehicle-movement) OBUs and an RSU), `c-its-pki-convoy`
 (three OBUs driving together, watched by an eavesdropper with a 15 s link window) and
 `c-its-pki-mixzone` (four OBUs changing identity in an intersection mix zone) and
-`c-its-pki-mixzone-random` (the same with random turns) and `c-its-pki-refill` (the run's own
-PKI with certificate refill). `vnapctl down` stops it again.
+`c-its-pki-mixzone-random` (the same with random turns), `c-its-pki-refill` (the run's own
+PKI with certificate refill), `c-its-pki-refill-sweep` (four OBUs refilling together, for
+batch-size sweeps) and `c-its-pki-mixzone-pki` (the random-turn mix zone with the run's own
+PKI). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker

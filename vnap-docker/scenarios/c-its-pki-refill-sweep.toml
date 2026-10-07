@@ -1,0 +1,68 @@
+description = "certificate refill load: four OBUs change together every 3 s and refill from the run's PKI (vary pki.batch with --set for a batch-size sweep)"
+
+# Every change event reaches the four OBUs at about the same moment, so when they run low
+# they ask the PKI for a batch together and the PKI (one request at a time) queues them.
+# Sweep: vnapctl up c-its-pki-refill-sweep --set pki.batch=4 (8, 16, 32, ...).
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+
+[pki]
+initial = 8
+refill_at = 2
+batch = 8
+validity_hours = 24
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+
+[[stations]]
+name = "obu1"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { min_interval_ms = 1000 }
+
+[[stations]]
+name = "obu2"
+ip = "192.168.98.30"
+station_id = 3
+station_type = 5
+mac = "6e:06:e0:03:00:03"
+pseudonyms = { min_interval_ms = 1000 }
+
+[[stations]]
+name = "obu3"
+ip = "192.168.98.40"
+station_id = 4
+station_type = 5
+mac = "6e:06:e0:03:00:04"
+pseudonyms = { min_interval_ms = 1000 }
+
+[[stations]]
+name = "obu4"
+ip = "192.168.98.50"
+station_id = 5
+station_type = 5
+mac = "6e:06:e0:03:00:05"
+pseudonyms = { min_interval_ms = 1000 }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+
+[control.client]
+mode = "periodic"
+interval = 3
+
+[check]
+expect = ["obu1.pki.starved==0", "obu2.pki.starved==0", "obu3.pki.starved==0", "obu4.pki.starved==0"]

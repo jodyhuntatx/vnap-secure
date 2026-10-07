@@ -20,6 +20,7 @@ that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on eve
 | [mixzone-random-test-2026-10-04.docx](mixzone-random-test-2026-10-04.docx) | `c-its-pki-mixzone-random`: the same crossing with random turns and random return roads | of 18 links, 17 joined two different cars, spread over 10 pairings; the best fixed turn rule recovers 10 of 24 crossings; recommends a turn-aware attacker next |
 | [mixzone-test-2026-10-04-r2-p17.docx](mixzone-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone` rerun on vnap:r2-p17 (CAM timer rephase), eavesdropper linking by timing and position | 18 links, none correct; timing at chance level, but 19 of 19 position links (replay) form the same one-road rotation, so a pattern-aware attacker can still undo them |
 | [mixzone-random-test-2026-10-04-r2-p17.docx](mixzone-random-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone-random` rerun on vnap:r2-p17 | 12 links, none correct; timing at chance level and position mistakes without a pattern |
+| [pki-refill-test-2026-10-07.docx](pki-refill-test-2026-10-07.docx) | `c-its-pki-refill-sweep` (batch sizes 4–32, four OBUs refilling together) and `c-its-pki-mixzone-pki` (random-turn mix zone with the run's own PKI) | refresh time ≈ PKI issue time (≈50 ms per ticket) × batch size × stations asking at once; no starvation, reuse or cross-run sharing; mix-zone links: 4 of 25 correct, timing at chance |
 
 Each document has the setup, every link scored against ground truth, limitations and
 recommendations for subsequent scenarios.
