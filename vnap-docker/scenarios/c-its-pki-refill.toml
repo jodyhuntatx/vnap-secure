@@ -1,0 +1,49 @@
+description = "per-run PKI: the run's own CA issues an RSU certificate and butterfly batches; two OBUs change every 5 s and request a new batch of 8 at 2 unused"
+
+# No certificate files: vnapctl starts the run's PKI service (vnap-pki), which creates a root
+# CA, EA and AA for this run, gives the RSU a regular authorization ticket and each OBU an
+# initial batch of 8 butterfly tickets. The OBUs ask the PKI for 8 more whenever only 2 unused
+# ones are left and never reuse a ticket. `vnapctl down` deletes the run's PKI with its keys.
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+
+[pki]
+# initial = 8, refill_at = 2, batch = 8 are the defaults; stations can override them in
+# pseudonyms = { ... }
+validity_hours = 24
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+
+[[stations]]
+name = "obu1"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+pseudonyms = { min_interval_ms = 1000 }
+
+[[stations]]
+name = "obu2"
+ip = "192.168.98.30"
+station_id = 3
+station_type = 5
+mac = "6e:06:e0:03:00:03"
+pseudonyms = { initial = 8, refill_at = 2, batch = 8, min_interval_ms = 1000 }
+
+[control]
+network = "vnapctl0"
+subnet = "192.168.99.0/24"
+
+[control.client]
+mode = "periodic"
+interval = 5

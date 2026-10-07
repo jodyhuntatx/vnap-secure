@@ -263,7 +263,8 @@ Options:
 `c-its-pki-traffic` (two [moving](#vehicle-movement) OBUs and an RSU), `c-its-pki-convoy`
 (three OBUs driving together, watched by an eavesdropper with a 15 s link window) and
 `c-its-pki-mixzone` (four OBUs changing identity in an intersection mix zone) and
-`c-its-pki-mixzone-random` (the same with random turns). `vnapctl down` stops it again.
+`c-its-pki-mixzone-random` (the same with random turns) and `c-its-pki-refill` (the run's own
+PKI with certificate refill). `vnapctl down` stops it again.
 
 ```bash
 cd vnap-docker
@@ -636,15 +637,49 @@ with a location, or to exhaust a small pool.
 Instead of a fixed set of certificates that every run reuses (and that wraps around when used
 up), each run can have its own certificate authority. Stations start with a batch of butterfly
 authorization tickets (ATs) and request a new batch when only a few unused ones are left. The
-design is in the product requirements document (VNAP-Secure-Simulation-Service-PRD.pdf,
-sections 5.5 and 7; kept in the local `specs/` folder, not in the repository).
+design is in the product requirements document (`Specs/VNAP-Secure-Simulation-Service-PRD.pdf`,
+sections 5.5 and 7).
 
-**Status:** the PKI service and station refill work (phases 1 and 2, "option A": the PKI
-returns the AT private keys). `vnapctl` does not start the PKI service yet (phase 3); until
-then it is provisioned and attached by hand, as below.
+**Status:** phases 1–3 are done ("option A": the PKI returns the AT private keys). A scenario
+with a `[pki]` section gets its own PKI from `vnapctl`; `c-its-pki-refill` is the example.
 
-- **PKI service** (`vnap-docker/pki/`, image `vnap-pki`, built by `pki/build.sh` from this
-  directory and C-ITS-PKI's `src/`; `CITS_PKI_DIR` if C-ITS-PKI is not next to vnap-secure):
+```bash
+cd vnap-docker
+./vnapctl up c-its-pki-refill        # run's CA, RSU AT, 8 butterfly ATs per OBU; refill at 2 unused
+./vnapctl status                     # per OBU: unused ATs, batches, refresh time; the PKI's issue times
+./vnapctl events --kind pki --since 2m
+./vnapctl check --expect 'obu1.pki.refresh_ms_max<2000'
+./vnapctl down                       # also deletes the run's PKI volume with all its keys
+```
+
+- **Scenario keys:**
+  - `[pki]`: `initial` (8), `refill_at` (2), `batch` (8), `validity_hours` (24), `etsi_version`
+    (from the stations' security), `ip` (host .5 of the control network). It needs a `[control]`
+    section.
+  - Per station, `pseudonyms = { initial, refill_at, batch, ... }` overrides the defaults;
+    `refill_at = 0` gives a fixed pool from the run's PKI that wraps around.
+  - Stations with certificates but no `pseudonyms` get a regular AT.
+  - Certificate paths (`at_cert`, `aa_cert`, `root_cert`, `pseudonyms.cert`) are not allowed;
+    the fixed-file pools remain available in scenarios without `[pki]`.
+- **What `up` does:** creates a volume for the run, starts the PKI container (`pki`, role
+  `pki`) on the control network, waits until it has provisioned the certificates, then mounts
+  into each station only `public/` and its own `stations/<name>/`, read-only. CA keys,
+  caterpillar keys and the other stations' files are not visible to a station. A failed start
+  removes the volume again; `down` removes it with the run.
+- **Status, events, checks:**
+  - `status`: a refill line per station (unused ATs, batches, refresh mean and max, retries,
+    starved changes, pending request) and a line for the run's PKI (provisioning time, batches,
+    issue and queue times).
+  - `events --kind pki`: requests, installed batches and retries from the stations, issued
+    batches from the PKI.
+  - `check` metrics: `<station>.pki.batches`, `.added`, `.unused`, `.retries`, `.refused`,
+    `.starved`, `.pending`, `.refresh_ms_mean`, `.refresh_ms_max`, and `pki.running`,
+    `pki.batches`, `pki.refused`, `pki.issue_ms_max`, `pki.queue_ms_max`. Default expectations
+    add `<station>.pki.starved==0` and `pki.running==1`.
+
+- **PKI service** (`vnap-docker/pki/`, image `vnap-pki`, built from this directory and
+  C-ITS-PKI's `src/` by `vnapctl up` or `pki/build.sh`; `CITS_PKI_DIR` if C-ITS-PKI is not next
+  to vnap-secure):
   - `provision`: the run's root CA, TLM, EA and AA; a regular AT for road-side units;
     enrolment (caterpillar keys) and an initial batch of butterfly ATs for pseudonym stations.
   - `serve`: answers batch requests on the control broker; each batch uses the station's next
@@ -666,8 +701,10 @@ then it is provisioned and attached by hand, as below.
     `[PKI] batch installed: request <id>, <n> certificate(s), refresh <ms> ms (PKI issue <ms> ms), <u> unused`.
     Refresh time runs from the first request for a batch (retries included) to installation.
 
+Without `vnapctl` (e.g. another harness), the service can be provisioned and attached by hand:
+
 ```bash
-# by hand, until vnapctl does it: provision into a host directory, use it as the scenario's certs_dir
+# provision into a host directory and use it as the scenario's certs_dir
 docker run --rm -v ~/vnap-pki-runs:/runs vnap-pki provision --dir /runs/run1 --config '{"etsi_version": "v3",
   "stations": [{"name": "rsu", "station_id": 1, "certificates": "regular"},
                {"name": "obu", "station_id": 2, "certificates": "bke", "initial": 8, "batch": 8}]}'

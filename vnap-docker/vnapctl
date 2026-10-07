@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 
 MQTT_IMAGE = "eclipse-mosquitto:2"
 DISK_WARN_GB = 2.0
-EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "idchange", "chain", "error")
+EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "idchange", "pki", "chain", "error")
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_DOWN, EXIT_DEGRADED = 0, 1, 2, 3, 4
 
@@ -108,6 +108,7 @@ class Simulation:
         self.broker = None   # control channel broker
         self.client = None   # control channel event client
         self.mobility = None  # mobility client (position updates on the control channel)
+        self.pki = None       # the run's PKI service (certificate authority, batch refill)
         self.observers = []  # passive listeners (eavesdropper) on the simulation network
         self.networks = {}
         members = {}
@@ -136,6 +137,8 @@ class Simulation:
                 self.stations.append(info)
             elif role == "mobility" and name in members.get(ctl, ()):
                 self.mobility = info
+            elif role == "pki" and name in members.get(ctl, ()):
+                self.pki = info
             elif role == "eavesdropper" and name in members.get(lan, ()):
                 self.observers.append(info)
             elif name in members.get(ctl, ()) and "broker" in cmd:
@@ -186,8 +189,19 @@ RE_IDC_SILENT_END = re.compile(r"\[IDCHANGE\] silent period over, (\d+) frame")
 RE_IDC_UNLOCK = re.compile(r"\[IDCHANGE\] ID-UNLOCK handle (\d+)")
 RE_POOL_START = re.compile(r"\[PSEUDONYM\] (v\d) pool of (\d+) certificate\(s\).*starting at index (\d+) \(certificate=(\w+)\)")
 RE_CHANGED = re.compile(r"\[PSEUDONYM\] changed pool index (\d+) -> (\d+) \(of (\d+)\), certificate=(\w+)")
-RE_REJECTED = re.compile(r"\[PSEUDONYM\] (?:change to index (\d+) rejected|change event rejected): (.*)")
-RE_CHAIN = re.compile(r"\[(V[23])-CHAIN\] (chain certificate|own authorization ticket) (\S+): (.*)")
+RE_REJECTED = re.compile(r"\[PSEUDONYM\] (?:change to index (\d+) rejected|change event rejected|change rejected): (.*)")
+RE_CHAIN = re.compile(r"\[(V[23])-CHAIN\] (chain certificate|own authorization ticket|batch authorization ticket) (\S+): (.*)")
+# certificate refill, station side
+RE_PKI_REQ = re.compile(r"\[PKI\] batch requested: request (\S+), (\d+) unused, (\d+) wanted")
+RE_PKI_INST = re.compile(r"\[PKI\] batch installed: request (\S+), (\d+) certificate\(s\), refresh (\d+) ms "
+                         r"\(PKI issue (\S+) ms\), (\d+) unused")
+RE_PKI_RETRY = re.compile(r"\[PKI\] no answer to request (\S+) after (\d+) s, retrying")
+RE_PKI_REFUSED = re.compile(r"\[PKI\] request (\S+) refused: (.*)")
+# PKI service
+RE_PKI_ISSUED = re.compile(r"\[PKI\] request (\S+) from station (\d+) \((\S+), (\S+) unused\): issued (\d+) AT\(s\) "
+                           r"in batch (\d+), issue (\d+) ms, queue (\d+) ms")
+RE_PKI_PROVISIONED = re.compile(r"\[PKI\] provisioned in (\d+) ms")
+RE_PKI_SVC_REFUSED = re.compile(r"\[PKI\] request (\S+) from (?:unknown )?station (\S+).*: (refused|issuance failed.*)")
 RE_CHAIN_WARN = re.compile(r"\[(V[23])-CHAIN\] WARNING: (.*)")
 RE_ERROR = re.compile(r"^(Exit[: ]|terminate called|.*Assertion .* failed|Segmentation fault|Aborted)")
 
@@ -214,9 +228,18 @@ def log_events(station, since=None, until=None):
             ev = {"kind": "pseudonym", "action": "changed", "previous": int(m[1]), "index": int(m[2]),
                   "pool_size": int(m[3]), "certificate": m[4], "wrapped": "wrapped around" in line}
         elif m := RE_REJECTED.search(line):
-            ev = {"kind": "pseudonym", "action": "rejected", "error": m[2]}
+            ev = {"kind": "pseudonym", "action": "rejected", "error": m[2], "starved": m[2].startswith("no unused pseudonym")}
             if m[1]:
                 ev["requested"] = int(m[1])
+        elif m := RE_PKI_REQ.search(line):
+            ev = {"kind": "pki", "action": "requested", "request": m[1], "unused": int(m[2]), "wanted": int(m[3])}
+        elif m := RE_PKI_INST.search(line):
+            ev = {"kind": "pki", "action": "installed", "request": m[1], "count": int(m[2]), "refresh_ms": int(m[3]),
+                  "issue_ms": int(m[4]) if m[4].isdigit() else None, "unused": int(m[5])}
+        elif m := RE_PKI_RETRY.search(line):
+            ev = {"kind": "pki", "action": "retry", "request": m[1], "after_s": int(m[2])}
+        elif m := RE_PKI_REFUSED.search(line):
+            ev = {"kind": "pki", "action": "refused", "request": m[1], "error": m[2]}
         elif "[PSEUDONYM] control channel connected" in line:
             ev = {"kind": "pseudonym", "action": "connected"}
         elif "[PSEUDONYM] control channel lost" in line or "[PSEUDONYM] control channel connection refused" in line:
@@ -240,7 +263,8 @@ def log_events(station, since=None, until=None):
         elif "[PSEUDONYM] WARNING" in line:
             ev = {"kind": "pseudonym", "action": "warning", "text": line.split("WARNING: ", 1)[1]}
         elif m := RE_CHAIN.search(line):
-            ev = {"kind": "chain", "version": m[1], "role": "chain" if m[2].startswith("chain") else "own_at",
+            ev = {"kind": "chain", "version": m[1],
+                  "role": "chain" if m[2].startswith("chain") else "batch_at" if m[2].startswith("batch") else "own_at",
                   "cert": m[3], "result": m[4], "ok": m[4] == "OK"}
         elif m := RE_CHAIN_WARN.search(line):
             ev = {"kind": "chain", "version": m[1], "role": "warning", "result": m[2], "ok": False}
@@ -249,6 +273,61 @@ def log_events(station, since=None, until=None):
         if ev:
             events.append({"t": t, "station": station, **ev})
     return events
+
+
+def pki_log_events(name, since=None, until=None):
+    """Events of the run's PKI service (issued batches, refusals, provisioning time)."""
+    args = ["logs", "--timestamps"]
+    if since is not None:
+        args += ["--since", f"{since:.3f}"]
+    if until is not None:
+        args += ["--until", f"{until:.3f}"]
+    events = []
+    for raw in docker(*args, name, check=False).splitlines():
+        stamp, _, line = raw.partition(" ")
+        t = parse_docker_time(stamp)
+        if t is None:
+            continue
+        ev = None
+        if m := RE_PKI_ISSUED.search(line):
+            ev = {"action": "issued", "request": m[1], "station_id": int(m[2]), "for": m[3], "count": int(m[5]),
+                  "batch": int(m[6]), "issue_ms": int(m[7]), "queue_ms": int(m[8])}
+        elif m := RE_PKI_PROVISIONED.search(line):
+            ev = {"action": "provisioned", "duration_ms": int(m[1])}
+        elif m := RE_PKI_SVC_REFUSED.search(line):
+            ev = {"action": "refused", "request": m[1], "station_id": m[2], "error": m[3]}
+        if ev:
+            events.append({"t": t, "station": "pki", "kind": "pki", **ev})
+    return events
+
+
+def refill_status(env, events):
+    """Certificate refill of one station from its log events (None without refill)."""
+    if int(env.get("PKI_REFILL_AT", "0") or 0) <= 0:
+        return None
+    pk = [e for e in events if e["kind"] == "pki"]
+    installed = [e for e in pk if e["action"] == "installed"]
+    refresh = [e["refresh_ms"] for e in installed]
+    requested = [e for e in pk if e["action"] == "requested"]
+    # unused pseudonyms: the pool start, minus one per change, reset by each installed batch
+    unused = None
+    for e in events:
+        if e["kind"] == "pseudonym" and e["action"] == "start":
+            unused = e["pool_size"] - 1
+        elif e["kind"] == "pseudonym" and e["action"] == "changed" and unused is not None:
+            unused -= 1
+        elif e["kind"] == "pki" and e["action"] == "installed":
+            unused = e["unused"]
+    return {
+        "refill_at": int(env["PKI_REFILL_AT"]), "batch": int(env.get("PKI_BATCH_SIZE", "8") or 8),
+        "unused": unused, "requests": len(requested), "batches": len(installed),
+        "added": sum(e["count"] for e in installed),
+        "retries": sum(e["action"] == "retry" for e in pk), "refused": sum(e["action"] == "refused" for e in pk),
+        "refresh_ms_mean": round(sum(refresh) / len(refresh)) if refresh else None,
+        "refresh_ms_max": max(refresh) if refresh else None, "refresh_ms_last": refresh[-1] if refresh else None,
+        "starved": sum(1 for e in events if e["kind"] == "pseudonym" and e["action"] == "rejected" and e.get("starved")),
+        "pending": bool(requested) and (not installed or requested[-1]["t"] > installed[-1]["t"]),
+    }
 
 
 # ---------------------------------------------------------------- status
@@ -304,6 +383,7 @@ def station_status(sim, info):
         scope = next((e["scope"] for e in reversed(idc) if e["action"] == "scope"), None)
         net = next((e for e in reversed(idc) if e["action"] == "network"), None)
         fac = next((e for e in reversed(idc) if e["action"] == "facilities"), None)
+        st["pseudonym"]["refill"] = refill_status(env, events)
         st["pseudonym"]["id_change"] = {
             "scope": scope or "certificate (image without ID change notification)",
             "mac": net["new"] if net else st["mac"],
@@ -342,11 +422,11 @@ def observer_reports(sim):
 
 def build_status(sim):
     labels = {}
-    for info in [c for c in (sim.broker, sim.client, sim.mobility) if c] + sim.stations:
+    for info in [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.stations:
         labels.update({k: v for k, v in (info["Config"].get("Labels") or {}).items() if k.startswith("vnap.")})
     stations = [station_status(sim, i) for i in sim.stations]
     control = None
-    if sim.broker or sim.client or sim.mobility:
+    if sim.broker or sim.client or sim.mobility or sim.pki:
         control = {}
         if sim.broker:
             env = env_of(sim.broker)
@@ -372,6 +452,17 @@ def build_status(sim):
                                    "seed": mcfg.get("seed"),
                                    "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations")}
                                                  for z in mcfg.get("mix_zones", [])]}
+        if sim.pki:
+            pe = pki_log_events(Simulation.name(sim.pki))
+            issued = [e for e in pe if e["action"] == "issued"]
+            prov = next((e for e in pe if e["action"] == "provisioned"), None)
+            control["pki"] = {"name": Simulation.name(sim.pki), "state": sim.pki["State"]["Status"],
+                              "ip": sim.ip(sim.pki, sim.ctl), "provisioned_ms": prov["duration_ms"] if prov else None,
+                              "batches": len(issued), "certificates": sum(e["count"] for e in issued),
+                              "refused": sum(e["action"] == "refused" for e in pe),
+                              "issue_ms_mean": round(sum(e["issue_ms"] for e in issued) / len(issued)) if issued else None,
+                              "issue_ms_max": max((e["issue_ms"] for e in issued), default=None),
+                              "queue_ms_max": max((e["queue_ms"] for e in issued), default=None)}
     free_gb = shutil.disk_usage("/").free / 1e9
 
     warnings = []
@@ -389,6 +480,8 @@ def build_status(sim):
                 warnings.append(f"{st['name']}: pseudonym pool without control broker, pseudonym never changes")
             elif not p["control"]["connected"]:
                 warnings.append(f"{st['name']}: control channel not connected")
+        if p and p.get("refill") and p["refill"]["starved"]:
+            warnings.append(f"{st['name']}: {p['refill']['starved']} pseudonym change(s) refused for lack of certificates")
     for part in (control or {}).values():
         if part["state"] != "running":
             warnings.append(f"{part['name']} is {part['state']}")
@@ -449,6 +542,14 @@ def print_status(s):
                         if ctl else "no control channel")
             print(f"  pseudonym: index {p['index']}/{p['pool_size']} cert {p['certificate']}, "
                   f"{p['changes']} change(s), {p['rejected']} rejected, last {p['last_change'] or '-'}; {ctl_text}")
+            rf = p.get("refill")
+            if rf:
+                refresh = (f"refresh mean {rf['refresh_ms_mean']} ms, max {rf['refresh_ms_max']} ms"
+                           if rf["batches"] else "no batch yet")
+                print(f"  refill: {rf['unused']} unused (request at {rf['refill_at']}, batches of {rf['batch']}); "
+                      f"{rf['batches']} batch(es), {rf['added']} certificate(s) added, {refresh}; "
+                      f"{rf['retries']} retr{'y' if rf['retries'] == 1 else 'ies'}, {rf['starved']} starved change(s)"
+                      + (", request pending" if rf["pending"] else ""))
             idc = p.get("id_change")
             if idc:
                 silent = f", silent until {idc['silent_until']}" if idc.get("silent_until") else ""
@@ -467,6 +568,13 @@ def print_status(s):
             cl = c["client"]
             every = f" every {cl['interval']}s" if cl["interval"] else ""
             print(f"control client: {cl['name']} {cl['state']} mode {cl['mode']}{every} stations [{cl['stations']}]")
+        if "pki" in c:
+            k = c["pki"]
+            issue = (f", issue mean {k['issue_ms_mean']} ms, max {k['issue_ms_max']} ms, queue max {k['queue_ms_max']} ms"
+                     if k["batches"] else "")
+            print(f"run PKI: {k['name']} {k['state']} {k['ip']}: provisioned in {k['provisioned_ms']} ms; "
+                  f"{k['batches']} refill batch(es), {k['certificates']} certificate(s){issue}"
+                  + (f"; {k['refused']} refused" if k["refused"] else ""))
         if "mobility" in c:
             mo = c["mobility"]
             print(f"mobility client: {mo['name']} {mo['state']} {mo['ip']}: " + ", ".join(
@@ -613,6 +721,10 @@ def collect_events(sim, duration, since=None, count=None, kinds=None, stations=N
         for ev in log_events(Simulation.name(info), since=log_since):
             if keep(ev):
                 events.append(ev)
+    if sim.pki:
+        for ev in pki_log_events(Simulation.name(sim.pki), since=log_since):
+            if keep(ev):
+                events.append(ev)
     # station IDs may have changed during the window (full ID change): name senders afterwards
     final_ids = sim.station_by_id()
     for ev in events:
@@ -660,6 +772,21 @@ def describe(ev):
         if a == "silent_end":
             return f"silent period over, {ev['suppressed']} frame(s) suppressed"
         return f"ID change scope: {ev.get('scope')}"
+    if k == "pki":
+        a = ev["action"]
+        if a == "requested":
+            return f"certificate batch requested ({ev['request']}): {ev['unused']} unused, {ev['wanted']} wanted"
+        if a == "installed":
+            return (f"certificate batch installed ({ev['request']}): {ev['count']} certificate(s), refresh {ev['refresh_ms']} ms"
+                    f" (PKI issue {ev['issue_ms']} ms), {ev['unused']} unused")
+        if a == "retry":
+            return f"no answer to batch request {ev['request']} after {ev['after_s']} s, retrying"
+        if a == "issued":
+            return (f"PKI issued {ev['count']} certificate(s) to {ev['for']} ({ev['request']}), batch {ev['batch']}, "
+                    f"issue {ev['issue_ms']} ms, queue {ev['queue_ms']} ms")
+        if a == "provisioned":
+            return f"PKI provisioned in {ev['duration_ms']} ms"
+        return f"PKI {a} {ev.get('request', '')}: {ev.get('error', '')}"
     if k == "chain":
         return f"chain {ev['role']} {ev.get('cert', '')}: {ev['result']}"
     if k == "error":
@@ -695,6 +822,8 @@ def compute_metrics(sim, status, events, seconds):
             inc(f"{s}.pseudonym.{ev['action']}")
         elif ev["kind"] == "idchange" and ev["action"] in ("network", "facilities", "lock", "unlock", "silent"):
             inc(f"{s}.idchange.{ev['action']}")
+        elif ev["kind"] == "pki":
+            inc(f"{s}.pki.{ev['action']}")
         elif ev["kind"] == "control":
             inc(f"control.{ev['direction']}")
             if ev.get("result"):
@@ -713,6 +842,24 @@ def compute_metrics(sim, status, events, seconds):
         p = st["pseudonym"]
         if p and p["control"]:
             m[f"{n}.pseudonym.control_connected"] = int(p["control"]["connected"])
+        if p and p.get("refill"):
+            rf = p["refill"]
+            for key in ("batches", "added", "retries", "refused", "starved"):
+                m[f"{n}.pki.{key}"] = rf[key]
+            m[f"{n}.pki.pending"] = int(rf["pending"])
+            if rf["unused"] is not None:
+                m[f"{n}.pki.unused"] = rf["unused"]
+            if rf["batches"]:
+                m[f"{n}.pki.refresh_ms_mean"] = rf["refresh_ms_mean"]
+                m[f"{n}.pki.refresh_ms_max"] = rf["refresh_ms_max"]
+    k = (status.get("control") or {}).get("pki")
+    if k:
+        m["pki.running"] = int(k["state"] == "running")
+        m["pki.batches"] = k["batches"]
+        m["pki.refused"] = k["refused"]
+        if k["batches"]:
+            m["pki.issue_ms_max"] = k["issue_ms_max"]
+            m["pki.queue_ms_max"] = k["queue_ms_max"]
     m["stations.running"] = sum(st["state"] == "running" for st in status["stations"])
     m["stations.total"] = len(names)
     m["disk.free_gb"] = status["disk"]["free_gb"]
@@ -742,6 +889,10 @@ def default_expectations(status):
             exps.append(f"{n}.cam.success_rate==1")
         if st["pseudonym"] and st["pseudonym"]["control"]:
             exps.append(f"{n}.pseudonym.control_connected==1")
+        if st["pseudonym"] and st["pseudonym"].get("refill"):
+            exps.append(f"{n}.pki.starved==0")
+    if (status.get("control") or {}).get("pki"):
+        exps.append("pki.running==1")
     return exps
 
 
@@ -785,6 +936,10 @@ SCENARIO_DIR = os.path.join(HERE, "scenarios")
 CTL_IMAGE = "vnap-pseudo-ctl"
 EAVESDROPPER_IMAGE = "vnap-eavesdropper"
 MOBILITY_IMAGE = "vnap-mobility"
+PKI_IMAGE = "vnap-pki"
+# C-ITS-PKI checkout (its src/ goes into the vnap-pki image): next to vnap-secure by default
+CITS_PKI_DIR = os.environ.get("CITS_PKI_DIR") or os.path.realpath(os.path.join(HERE, "..", "..", "C-ITS-PKI"))
+PKI_KEYS = {"enabled", "etsi_version", "validity_hours", "initial", "refill_at", "batch", "ip"}
 SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
 STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
                 "aa_cert", "root_cert", "pseudonyms", "mobility", "env"}
@@ -888,6 +1043,9 @@ def load_scenario(ref, sets=(), instance=0):
         return value
 
     defaults = data.get("defaults", {})
+    pki_raw = data.get("pki")
+    pki_on = isinstance(pki_raw, dict) and pki_raw.get("enabled", True)
+    pki_defaults = {k: (pki_raw or {}).get(k, v) for k, v in (("initial", 8), ("refill_at", 2), ("batch", 8))}
     stations = []
     for i, raw in enumerate(data.get("stations", [])):
         unknown = set(raw) - STATION_KEYS
@@ -911,20 +1069,45 @@ def load_scenario(ref, sets=(), instance=0):
         if bool(st["at_cert"]) != bool(st["at_key"]):
             errors.append(f"{where}: at_cert and at_key go together")
         pseudo = raw.get("pseudonyms")
+        if pki_on:
+            # certificates come from the run's own PKI, not from files
+            given = sorted(k for k in ("at_cert", "at_key", "aa_cert", "root_cert") if k in raw or k in defaults)
+            if given:
+                errors.append(f"{where}: with [pki] the certificates come from the run's PKI: remove {', '.join(given)}")
+            st.update({"at_cert": None, "at_key": None, "aa_cert": None, "root_cert": None})
         if pseudo:
             if st["at_cert"]:
                 errors.append(f"{where}: at_cert and pseudonyms cannot be combined")
             if entrypoint != "native":
                 errors.append(f"{where}: pseudonyms need entrypoint = 'native'")
-            count = int(pseudo.get("count", 0))
-            if count < 1 or "{i}" not in pseudo.get("cert", "") or "{i}" not in pseudo.get("key", ""):
-                errors.append(f"{where}: pseudonyms needs cert/key patterns with {{i}} and count >= 1")
+            pool = None
+            if pki_on:
+                files = sorted(set(pseudo) & {"cert", "key", "count", "first"})
+                if files:
+                    errors.append(f"{where}: with [pki] the pool comes from the run's PKI: remove pseudonyms.{', '.join(files)}")
+                policy = {k: pseudo.get(k, pki_defaults[k]) for k in ("initial", "refill_at", "batch")}
+                if not all(isinstance(v, int) for v in policy.values()):
+                    errors.append(f"{where}: pseudonyms.initial, refill_at and batch must be integers")
+                elif not (1 <= policy["initial"] <= 256 and 1 <= policy["batch"] <= 256
+                          and 0 <= policy["refill_at"] < policy["initial"]):
+                    errors.append(f"{where}: need 1 <= initial <= 256, 1 <= batch <= 256 and 0 <= refill_at < initial")
+                else:
+                    pool = [(f"/vnap-certs/stations/{raw['name']}/bke_at_{k}.cert",
+                             f"/vnap-certs/stations/{raw['name']}/bke_at_{k}_sign.der") for k in range(policy["initial"])]
+                    st["pki"] = {"certificates": "bke", **policy}
             else:
-                first = int(pseudo.get("first", 0))  # pool offset: stations can share one numbered set
-                if first < 0:
-                    errors.append(f"{where}: pseudonyms.first must be >= 0")
-                pool = [(cert_path(pseudo["cert"].format(i=n), where), cert_path(pseudo["key"].format(i=n), where))
-                        for n in range(first, first + count)]
+                count = int(pseudo.get("count", 0))
+                if set(pseudo) & {"initial", "refill_at", "batch"}:
+                    errors.append(f"{where}: pseudonyms.initial/refill_at/batch need a [pki] section")
+                if count < 1 or "{i}" not in pseudo.get("cert", "") or "{i}" not in pseudo.get("key", ""):
+                    errors.append(f"{where}: pseudonyms needs cert/key patterns with {{i}} and count >= 1")
+                else:
+                    first = int(pseudo.get("first", 0))  # pool offset: stations can share one numbered set
+                    if first < 0:
+                        errors.append(f"{where}: pseudonyms.first must be >= 0")
+                    pool = [(cert_path(pseudo["cert"].format(i=n), where), cert_path(pseudo["key"].format(i=n), where))
+                            for n in range(first, first + count)]
+            if pool:
                 id_change = pseudo.get("id_change", "full")
                 if id_change not in ("full", "certificate"):
                     errors.append(f"{where}: pseudonyms.id_change must be 'full' or 'certificate'")
@@ -941,10 +1124,17 @@ def load_scenario(ref, sets=(), instance=0):
             st["mobility"] = check_mobility(mob, where, errors)
             if entrypoint != "native":
                 errors.append(f"{where}: mobility needs entrypoint = 'native'")
-        cert_path(st["at_cert"], where)
-        cert_path(st["at_key"], where)
-        cert_path(st["aa_cert"], where)
-        cert_path(st["root_cert"], where)
+        if pki_on and st["security"].startswith("certs"):
+            st["aa_cert"], st["root_cert"] = "/vnap-certs/public/aa.cert", "/vnap-certs/public/root_ca.cert"
+            if not st.get("pki"):  # no pseudonym pool: a regular authorization ticket
+                st["at_cert"] = f"/vnap-certs/stations/{raw['name']}/at.cert"
+                st["at_key"] = f"/vnap-certs/stations/{raw['name']}/at.der"
+                st["pki"] = {"certificates": "regular"}
+        elif not pki_on:
+            cert_path(st["at_cert"], where)
+            cert_path(st["at_key"], where)
+            cert_path(st["aa_cert"], where)
+            cert_path(st["root_cert"], where)
         needs_chain = entrypoint == "native" and (st["at_cert"] or st.get("pseudonyms"))
         if needs_chain and not (st["aa_cert"] and st["root_cert"]):
             errors.append(f"{where}: the native entrypoint needs aa_cert and root_cert with certificates")
@@ -1031,6 +1221,47 @@ def load_scenario(ref, sets=(), instance=0):
         if eavesdropper["ip"] in [s["ip"] for s in stations]:
             errors.append(f"eavesdropper ip {eavesdropper['ip']} is used by a station")
 
+    pki = None
+    if pki_on:
+        unknown = set(pki_raw) - PKI_KEYS
+        if unknown:
+            errors.append(f"pki: unknown key(s) {', '.join(sorted(unknown))}")
+        users = [st for st in stations if st.get("pki")]
+        if not users:
+            errors.append("pki: no station uses certificates (security certs-v2/certs-v3)")
+        versions = {"v3" if st["security"] == "certs-v3" else "v2" for st in users}
+        etsi = pki_raw.get("etsi_version") or (versions.pop() if len(versions) == 1 else "v3")
+        if etsi not in ("v2", "v3"):
+            errors.append("pki.etsi_version must be 'v2' or 'v3'")
+        mismatched = [st["base_name"] for st in users if ("v3" if st["security"] == "certs-v3" else "v2") != etsi]
+        if mismatched:
+            errors.append(f"pki: etsi_version {etsi} does not match the security of {', '.join(mismatched)} "
+                          "(certs-v3 for v3, certs-v2 for v2)")
+        if entrypoint != "native":
+            errors.append("pki needs entrypoint = 'native'")
+        if not control:
+            errors.append("pki needs a [control] section (the PKI service and refill requests use its broker)")
+        validity = pki_raw.get("validity_hours", 24)
+        if not isinstance(validity, int) or not 1 <= validity <= 8760:
+            errors.append("pki.validity_hours must be an integer from 1 to 8760")
+        pki = {"name": "pki" + suffix, "ip": remap_ip(pki_raw.get("ip", "192.168.99.5"), instance),
+               "etsi_version": etsi, "validity_hours": validity,
+               "stations": [{"name": st["base_name"], "station_id": st["station_id"], "certificates": st["pki"]["certificates"],
+                             **({"initial": st["pki"]["initial"], "batch": st["pki"]["batch"]}
+                                if st["pki"]["certificates"] == "bke" else {})} for st in users]}
+        if control and control.get("subnet"):
+            if ipaddress.ip_address(pki["ip"]) not in ipaddress.ip_network(control["subnet"]):
+                errors.append(f"pki.ip {pki['ip']} not in {control['subnet']}")
+            taken = {control["broker"]["ip"], control["client"]["ip"]} | (
+                {control["mobility"]["ip"]} if control.get("mobility") else set())
+            if pki["ip"] in taken:
+                errors.append(f"pki.ip {pki['ip']} is used by another control container")
+        if not os.path.isfile(os.path.join(CITS_PKI_DIR, "src", "pki.py")) and \
+                subprocess.run(["docker", "image", "inspect", PKI_IMAGE], capture_output=True).returncode != 0:
+            errors.append(f"pki: C-ITS-PKI not found at {CITS_PKI_DIR} (set CITS_PKI_DIR) and no {PKI_IMAGE} image")
+    elif pki_raw is not None and not isinstance(pki_raw, dict):
+        errors.append("pki must be a table ([pki])")
+
     check = data.get("check", {})
     if errors:
         raise ScenarioError(f"{path}:\n  " + "\n  ".join(errors))
@@ -1039,7 +1270,7 @@ def load_scenario(ref, sets=(), instance=0):
         "description": data.get("description", ""), "path": path, "instance": instance,
         "image": data.get("image", "vnap:latest"), "entrypoint": entrypoint, "certs_dir": certs_dir,
         "network": {"name": lan_name, "subnet": str(lan_subnet)}, "stations": stations, "control": control,
-        "eavesdropper": eavesdropper,
+        "eavesdropper": eavesdropper, "pki": pki,
         "check": {"defaults": check.get("defaults", True), "expect": list(check.get("expect", []))},
         "overrides": list(sets),
     }
@@ -1152,7 +1383,7 @@ def list_scenarios():
             out.append({"name": ref, "description": sc["description"], "image": sc["image"],
                         "stations": [f"{s['name']}:{s['security']}" + (f"+pool{len(s['pseudonyms']['pool'])}" if s.get("pseudonyms") else "")
                                      for s in sc["stations"]],
-                        "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]),
+                        "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]), "pki": bool(sc["pki"]),
                         "mobility": any(s.get("mobility") for s in sc["stations"]), "valid": True})
         except ScenarioError as e:
             out.append({"name": ref, "valid": False, "error": str(e)})
@@ -1167,7 +1398,7 @@ class Runner:
     def __init__(self, dry_run, secret_env):
         self.dry_run = dry_run
         self.env = {**os.environ, **secret_env}  # secrets reach docker via "-e NAME", never argv
-        self.created_containers, self.created_networks = [], []
+        self.created_containers, self.created_networks, self.created_volumes = [], [], []
 
     def run(self, args, stdin_cmd=None):
         if self.dry_run:
@@ -1189,6 +1420,8 @@ class Runner:
             subprocess.run(["docker", "rm", "-f", "-v", *self.created_containers], capture_output=True)
         for net in reversed(self.created_networks):
             subprocess.run(["docker", "network", "rm", net], capture_output=True)
+        if self.created_volumes:  # the run's PKI material, private keys included
+            subprocess.run(["docker", "volume", "rm", "-f", *self.created_volumes], capture_output=True)
 
 
 def station_env(sc, st):
@@ -1212,6 +1445,9 @@ def station_env(sc, st):
             env["PSEUDO_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
             if sc["control"]["auth"]:
                 secret_names = ["PSEUDO_CONTROL_USERNAME", "PSEUDO_CONTROL_PASSWORD"]
+        policy = st.get("pki") or {}
+        if policy.get("certificates") == "bke" and policy["refill_at"] > 0:
+            env["PKI_REFILL_AT"], env["PKI_BATCH_SIZE"] = policy["refill_at"], policy["batch"]
     elif st["at_cert"]:
         if native:
             env["SECURITY"] = "certs"
@@ -1243,9 +1479,9 @@ def run_labels(sc, run_id, role):
     return out
 
 
-def context_hash(directory, exclude=()):
+def context_hash(directory, exclude=(), h=None):
     """Digest of a helper image's build context (file names and contents)."""
-    h = hashlib.sha256()
+    h = h or hashlib.sha256()
     skip = set(exclude) | {"__pycache__"}
     for root, dirs, files in os.walk(directory):
         dirs[:] = sorted(d for d in dirs if d not in skip)
@@ -1257,16 +1493,27 @@ def context_hash(directory, exclude=()):
     return h.hexdigest()[:16]
 
 
-def ensure_image(r, image, subdir, exclude=()):
+def ensure_image(r, image, subdir, exclude=(), extra=None):
     """Build a helper image from vnap-docker/<subdir> if it is missing or its sources changed
-    (the image carries the context digest in the label vnap.context_hash)."""
+    (the image carries the context digest in the label vnap.context_hash). `extra` = (directory,
+    member, name in the context) adds one more directory, e.g. C-ITS-PKI's src/ for vnap-pki."""
     directory = os.path.join(HERE, subdir)
-    digest = context_hash(directory, exclude)
+    h = hashlib.sha256()
+    if extra:
+        if not os.path.isdir(os.path.join(extra[0], extra[1])):
+            if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
+                return  # sources not here, but the image is: use it as it is
+            raise ScenarioError(f"cannot build {image}: {os.path.join(extra[0], extra[1])} not found")
+        context_hash(os.path.join(extra[0], extra[1]), exclude, h)
+    digest = context_hash(directory, exclude, h)
     current = subprocess.run(["docker", "image", "inspect", "-f", '{{index .Config.Labels "vnap.context_hash"}}', image],
                              capture_output=True, text=True)
     if current.returncode == 0 and current.stdout.strip() == digest:
         return
     tar = ["tar", "-C", directory, "--exclude=__pycache__", *(f"--exclude={e}" for e in exclude), "-c", "."]
+    if extra:
+        # GNU tar applies --transform to every member: only names starting with extra[1] change
+        tar += ["-C", extra[0], f"--transform=s,^{extra[1]},{extra[2]},", extra[1]]
     # build context on stdin: snap docker cannot read /mnt/hgfs
     r.run(["build", "-q", "-t", image, "--label", f"vnap.context_hash={digest}", "-"], stdin_cmd=tar)
 
@@ -1296,7 +1543,8 @@ def scenario_up(sc, dry_run=False, wait=30.0):
     names = [s["name"] for s in sc["stations"]] + ([sc["control"]["broker"]["name"], sc["control"]["client"]["name"]]
                                                      if sc["control"] else []) \
         + ([sc["eavesdropper"]["name"]] if sc["eavesdropper"] else []) \
-        + ([sc["control"]["mobility"]["name"]] if sc["control"] and sc["control"].get("mobility") else [])
+        + ([sc["control"]["mobility"]["name"]] if sc["control"] and sc["control"].get("mobility") else []) \
+        + ([sc["pki"]["name"]] if sc["pki"] else [])
     taken = [n for n in names if container_exists(n)]
     if taken:
         raise ScenarioError(f"container name(s) already in use: {', '.join(taken)} (remove them or use --instance N)")
@@ -1337,11 +1585,20 @@ def scenario_up(sc, dry_run=False, wait=30.0):
             r.run(["run", "-d", "--name", c["broker"]["name"], "--network", ctl, "--ip", c["broker"]["ip"],
                    *run_labels(sc, run_id, "broker"), *auth_args, CTL_IMAGE, "broker"])
             r.created_containers.append(c["broker"]["name"])
+        pki_volume = start_pki(r, sc, run_id, ctl, dry_run) if sc["pki"] else None
         for st in sc["stations"]:
             env, secret_names = station_env(sc, st)
             args = ["create", "--name", st["name"], *run_labels(sc, run_id, "station"),
-                    "--volume", f"{sc['certs_dir']}:/vnap-certs:ro",
                     "--network", lan, "--ip", st["ip"], "--cap-add", "NET_ADMIN"]
+            if not pki_volume:
+                args += ["--volume", f"{sc['certs_dir']}:/vnap-certs:ro"]
+            elif st.get("pki"):
+                # only the public certificates and the station's own directory, read-only: the CA and
+                # caterpillar keys (private/) and the other stations' keys stay out of reach
+                base = st["base_name"]
+                args += ["--mount", f"type=volume,src={pki_volume},dst=/vnap-certs/public,volume-subpath=public,readonly",
+                         "--mount", f"type=volume,src={pki_volume},dst=/vnap-certs/stations/{base},"
+                                    f"volume-subpath=stations/{base},readonly"]
             for k, v in env.items():
                 args += ["-e", f"{k}={v}"]
             for k in secret_names:
@@ -1408,6 +1665,42 @@ def scenario_up(sc, dry_run=False, wait=30.0):
     return not pending, {"run_id": run_id, "pending": pending, "status": status}
 
 
+def pki_volume_name(run_id):
+    return "vnap-pki-" + re.sub(r"[^a-z0-9_.-]", "-", run_id.lower())
+
+
+def start_pki(r, sc, run_id, ctl, dry_run, timeout=90):
+    """Start the run's PKI service: it creates the CA hierarchy and the stations' certificates on a
+    fresh volume (provision), then answers batch requests (serve). Returns the volume name once the
+    certificates exist, so stations can be created."""
+    p, c = sc["pki"], sc["control"]
+    ensure_image(r, PKI_IMAGE, "pki", extra=(CITS_PKI_DIR, "src", "cits-pki/src"))
+    volume = pki_volume_name(run_id)
+    r.run(["volume", "create", "--label", "vnap.managed_by=vnapctl", "--label", f"vnap.run_id={run_id}",
+           "--label", f"vnap.instance={sc['instance']}", "--label", "vnap.role=pki-volume", volume])
+    r.created_volumes.append(volume)
+    config = {"etsi_version": p["etsi_version"], "validity_hours": p["validity_hours"], "psids": [36, 37],
+              "stations": p["stations"]}
+    r.run(["run", "-d", "--name", p["name"], "--network", ctl, "--ip", p["ip"], *run_labels(sc, run_id, "pki"),
+           "--mount", f"type=volume,src={volume},dst=/pki",
+           *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
+           "-e", f"CONTROL_BROKER={c['broker']['name']}", "-e", "PKI_CONFIG=" + json.dumps(config, separators=(",", ":")),
+           PKI_IMAGE, "run"])
+    r.created_containers.append(p["name"])
+    if dry_run:
+        return volume
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        logs = docker("logs", p["name"], check=False)
+        if "[PKI] provisioned" in logs:
+            return volume
+        state = docker("inspect", "-f", "{{.State.Status}}", p["name"], check=False).strip()
+        if state not in ("running", "created"):
+            raise ScenarioError(f"PKI service {state}: " + " | ".join(logs.strip().splitlines()[-3:]))
+        time.sleep(0.5)
+    raise ScenarioError(f"PKI service did not finish provisioning within {timeout} s")
+
+
 def wait_ready(sc, lan, wait):
     """Wait until every station's socktap publishes on its embedded broker (sent or received
     message) and pseudonym stations have joined the control channel. socktap's stdout is
@@ -1461,7 +1754,7 @@ def wait_ready(sc, lan, wait):
 def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     """Remove the simulation on lan/ctl. Returns report dict; raises ScenarioError on refusal."""
     sim = Simulation(lan, ctl)
-    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility) if c] + sim.observers
+    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.observers
     # probes and helpers from this tool are not part of the run
     names = [Simulation.name(c) for c in containers]
     owners = {(c["Config"].get("Labels") or {}).get("vnap.started_by") for c in containers}
@@ -1473,7 +1766,7 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
         others = owners - {me}
         if others:
             raise ScenarioError(f"refusing to stop {', '.join(names)}: started by {', '.join(sorted(others))}. Use --force.")
-    report = {"removed": names, "networks_removed": [], "networks_kept": []}
+    report = {"removed": names, "networks_removed": [], "networks_kept": [], "volumes_removed": []}
     if dry_run:
         print("dry run:")
         if names:
@@ -1482,6 +1775,16 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
         # -v: also their anonymous volumes (mosquitto data/log, eavesdropper /logs), which
         # otherwise accumulate; bind mounts such as vnap-certs are not affected
         docker("rm", "-f", "-v", *names)
+    # the run's PKI volume (CA, enrolment and certificate keys) goes with the run
+    m = re.search(r"-i(\d+)$", lan)
+    instance = int(m[1]) if m else 0
+    volumes = docker("volume", "ls", "-q", "--filter", "label=vnap.managed_by=vnapctl", "--filter", "label=vnap.role=pki-volume",
+                     "--filter", f"label=vnap.instance={instance}", check=False).split()
+    if volumes and dry_run:
+        print("  docker volume rm " + " ".join(volumes))
+    elif volumes:
+        docker("volume", "rm", "-f", *volumes, check=False)
+        report["volumes_removed"] = volumes
     if not keep_networks:
         for net in (lan, ctl):
             if net not in sim.networks:
@@ -1599,7 +1902,8 @@ def main():
         else:
             for it in items:
                 if it["valid"]:
-                    ctl_text = (" + control channel" if it["control"] else "") + (" + eavesdropper" if it.get("eavesdropper") else "")
+                    ctl_text = (" + control channel" if it["control"] else "") + (" + run PKI" if it.get("pki") else "") \
+                        + (" + eavesdropper" if it.get("eavesdropper") else "")
                     print(f"{it['name']:<24} {' '.join(it['stations'])}{ctl_text}\n{'':<24} {it['description']}")
                 else:
                     print(f"{it['name']:<24} INVALID: {it['error']}")
@@ -1645,6 +1949,8 @@ def main():
             print(f"removed: {', '.join(report['removed']) or 'nothing (no simulation running)'}")
             if report["networks_removed"]:
                 print(f"networks removed: {', '.join(report['networks_removed'])}")
+            if report["volumes_removed"]:
+                print(f"PKI volume(s) removed (with their keys): {', '.join(report['volumes_removed'])}")
             for n in report["networks_kept"]:
                 print(f"network kept: {n}")
         return EXIT_OK if report["removed"] else EXIT_DOWN

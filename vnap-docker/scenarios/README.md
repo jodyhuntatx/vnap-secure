@@ -51,6 +51,17 @@ mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "east", speed_kmh
 #   arms of arm_m metres end on a square ring road; each lap: random turn at the crossing, random
 #   way along the ring, back in on the next arm (4 x arm_m per lap)
 
+[pki]                             # optional: the run's own certificate authority (needs [control])
+initial = 8                       # butterfly ATs each pseudonym station starts with
+refill_at = 2                     # request a new batch at this many unused ATs (0: no refill, pool wraps)
+batch = 8                         # ATs per batch
+validity_hours = 24
+# etsi_version = "v3"             # default: from the stations' security (certs-v3 / certs-v2)
+# ip = "192.168.99.5"             # PKI service on the control network
+# With [pki], stations take no certificate paths: pseudonym stations use
+#   pseudonyms = { initial = 8, refill_at = 2, batch = 8, min_interval_ms = 1000, ... }
+# (all optional), other stations with security certs-* get a regular AT.
+
 [control]                         # optional control channel (pseudonym events, positions)
 network = "vnapctl0"
 subnet = "192.168.99.0/24"
