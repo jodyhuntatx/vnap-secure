@@ -48,6 +48,7 @@ add_executable(socktap
     main.cpp
     multi_link.cpp
     positioning.cpp
+    pki_channel.hpp pki_channel.cpp
     pseudonym_channel.hpp pseudonym_channel.cpp
     rssi_reader.cpp
     raw_socket_link.cpp

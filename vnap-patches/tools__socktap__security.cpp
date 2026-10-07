@@ -415,6 +415,74 @@ security::PseudonymControl* pseudonym_control(security::SecurityEntity* entity)
     return nullptr;
 }
 
+std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loader(security::SecurityEntity* entity)
+{
+    if (auto* v3 = dynamic_cast<SecurityContextV3*>(entity)) {
+        auto* provider = dynamic_cast<security::v3::PseudonymCertificateProvider*>(v3->cert_provider.get());
+        if (!provider) {
+            return {};
+        }
+        return [v3, provider](const PseudonymBatch& batch) {
+            PseudonymBatchResult result;
+            std::vector<security::v3::PseudonymCertificateProvider::Pseudonym> valid;
+            security::v3::CertificateChainVerifier verifier(*v3->backend, v3->trust_store);
+            const auto now = v3->runtime.now();
+            for (const auto& files : batch) {
+                try {
+                    auto certificate = security::v3::load_certificate_from_file(files.first);
+                    auto key = load_v3_private_key(certificate, files.second);
+                    const auto validity = verifier.verify(*certificate, &provider->cache(), now);
+                    std::cerr << (std::string("[V3-CHAIN] batch authorization ticket ") + files.first + ": "
+                                  + chain_result(validity) + "\n");
+                    if (!validity) {
+                        result.rejected.push_back(files.first + ": " + chain_result(validity));
+                        continue;
+                    }
+                    valid.push_back({ std::move(certificate), std::move(key) });
+                } catch (const std::exception& e) {
+                    result.rejected.push_back(files.first + ": " + e.what());
+                }
+            }
+            result.added = valid.size();
+            if (!valid.empty()) {
+                provider->add_pseudonyms(std::move(valid));
+            }
+            return result;
+        };
+    } else if (auto* v2 = dynamic_cast<SecurityContextV2*>(entity)) {
+        auto* provider = dynamic_cast<security::v2::PseudonymCertificateProvider*>(v2->cert_provider.get());
+        if (!provider) {
+            return {};
+        }
+        return [v2, provider](const PseudonymBatch& batch) {
+            PseudonymBatchResult result;
+            std::vector<security::v2::PseudonymCertificateProvider::Pseudonym> valid;
+            for (const auto& files : batch) {
+                try {
+                    auto certificate = security::v2::load_certificate_from_file(files.first);
+                    auto key_pair = security::v2::load_private_key_from_file(files.second);
+                    const auto validity = v2->cert_validator.check_certificate(certificate);
+                    std::cerr << (std::string("[V2-CHAIN] batch authorization ticket ") + files.first + ": "
+                                  + chain_result(validity) + "\n");
+                    if (!validity) {
+                        result.rejected.push_back(files.first + ": " + chain_result(validity));
+                        continue;
+                    }
+                    valid.push_back({ std::move(certificate), key_pair.private_key });
+                } catch (const std::exception& e) {
+                    result.rejected.push_back(files.first + ": " + e.what());
+                }
+            }
+            result.added = valid.size();
+            if (!valid.empty()) {
+                provider->add_pseudonyms(std::move(valid));
+            }
+            return result;
+        };
+    }
+    return {};
+}
+
 void add_security_options(po::options_description& options)
 {
     options.add_options()

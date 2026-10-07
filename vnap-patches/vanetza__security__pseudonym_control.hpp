@@ -2,6 +2,7 @@
 #include <vanetza/security/id_change_service.hpp>
 #include <boost/optional/optional.hpp>
 #include <cstddef>
+#include <functional>
 #include <string>
 
 namespace vanetza
@@ -31,13 +32,26 @@ public:
 
     /**
      * Change to another pseudonym of the pool
-     * \param index pool index to change to, or the next one (wrapping around) if none given
+     * \param index pool index to change to, or the next one if none given (wrapping around, or
+     *              the next unused one with certificate refill)
      * \return result of the change request
      */
     virtual Result change_pseudonym(boost::optional<std::size_t> index) = 0;
 
     virtual std::size_t current_pseudonym() const = 0;
     virtual std::size_t pseudonym_pool_size() const = 0;
+
+    /** Pseudonyms of the pool not used yet */
+    virtual std::size_t unused_pseudonyms() const = 0;
+
+    /**
+     * Certificate refill (vnap-secure): from now on every pseudonym is used at most once (the
+     * pool never wraps around), and \p low is called with the number of unused pseudonyms
+     * whenever a change leaves \p threshold or fewer, and once right away if there are already
+     * that few. \p low runs on the thread that changed the pseudonym; new pseudonyms are added
+     * with the provider's add_pseudonyms().
+     */
+    virtual void enable_refill(std::size_t threshold, std::function<void(std::size_t unused)> low) = 0;
 
     /**
      * ID change notification service (ETSI TS 102 723-8/-9): every pseudonym change runs its

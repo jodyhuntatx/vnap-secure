@@ -1,0 +1,89 @@
+#ifndef PKI_CHANNEL_HPP_SOCKTAP
+#define PKI_CHANNEL_HPP_SOCKTAP
+
+#include "security.hpp"
+#include "time_trigger.hpp"
+#include <vanetza/security/pseudonym_control.hpp>
+#include <boost/program_options/options_description.hpp>
+#include <boost/program_options/variables_map.hpp>
+#include <mosquittopp.h>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+
+/**
+ * Certificate batch refill (vnap-secure): requests a new batch of authorization tickets from
+ * the run's PKI service when the pseudonym pool runs low, and adds the batch to the pool.
+ *
+ * Uses the broker of the pseudonym control channel on its own MQTT connection. When a change
+ * leaves --pki-refill-at or fewer unused pseudonyms, it publishes
+ *   <topic>/request  {"request_id": "<station>-<n>", "unused": u, "count": --pki-batch-size}
+ * and waits for
+ *   <topic>/batch    {"request_id": ..., "certificates": [base64], "keys": [base64 PKCS#8],
+ *                     "issue_ms": t, "queue_ms": q}   or   {"request_id": ..., "error": "..."}
+ * At most one request is outstanding; unanswered requests are repeated with doubling delays.
+ * The pool never wraps around once refill is enabled: with no unused pseudonym left, changes
+ * are refused until a batch arrives.
+ *
+ * Logs (one line each): "[PKI] batch requested: ...", "[PKI] batch installed: request <id>,
+ * <n> certificate(s), refresh <ms> ms (PKI issue <ms> ms), <u> unused", "[PKI] request <id>
+ * refused: ...", "[PKI] no answer to request <id> after <s> s, retrying".
+ */
+class PkiChannel : public mosqpp::mosquittopp
+{
+public:
+    struct Options
+    {
+        std::string host;
+        int port = 1883;
+        std::string username;
+        std::string password;
+        std::string topic;              /*!< requests on <topic>/request, batches on <topic>/batch */
+        std::size_t refill_at = 2;      /*!< request a batch at this many unused pseudonyms */
+        std::size_t batch_size = 8;
+        std::chrono::seconds retry { 10 };
+        std::string batch_dir = "/tmp/vnap-pki";
+    };
+
+    PkiChannel(const Options&, const std::string& client_id, vanetza::security::PseudonymControl&,
+        std::function<PseudonymBatchResult(const PseudonymBatch&)> loader, TimeTrigger&, int station_id);
+    ~PkiChannel();
+
+private:
+    void on_connect(int rc) override;
+    void on_disconnect(int rc) override;
+    void on_message(const struct mosquitto_message*) override;
+
+    // all of these run on the io_context thread (serialized with signing and pseudonym changes)
+    void low(std::size_t unused);
+    void send_request(std::size_t unused);
+    void schedule_retry();
+    void on_retry(const std::string& request_id);
+    void handle_batch(const std::string& payload);
+
+    Options m_options;
+    std::string m_request_topic;
+    std::string m_batch_topic;
+    vanetza::security::PseudonymControl& m_control;
+    std::function<PseudonymBatchResult(const PseudonymBatch&)> m_loader;
+    TimeTrigger& m_trigger;
+    int m_station_id;
+    unsigned m_sequence = 0;
+    std::string m_outstanding;                                 // request id, empty if none
+    std::chrono::steady_clock::time_point m_first_request;     // of the outstanding need (retries included)
+    std::chrono::seconds m_backoff;
+};
+
+void add_pki_channel_options(boost::program_options::options_description&);
+
+/**
+ * Create the refill channel if --pki-refill-at is set, there is a pseudonym pool and a pseudonym
+ * control broker (whose connection settings it shares)
+ * \return channel or nullptr
+ */
+std::unique_ptr<PkiChannel> create_pki_channel(const boost::program_options::variables_map&,
+    vanetza::security::PseudonymControl*, std::function<PseudonymBatchResult(const PseudonymBatch&)> loader,
+    TimeTrigger&, int station_id);
+
+#endif /* PKI_CHANNEL_HPP_SOCKTAP */

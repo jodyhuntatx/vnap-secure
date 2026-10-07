@@ -17,6 +17,7 @@
 #include "router_context.hpp"
 #include "id_change.hpp"
 #include "mobility.hpp"
+#include "pki_channel.hpp"
 #include "pseudonym_channel.hpp"
 #include "security.hpp"
 #include "time_trigger.hpp"
@@ -48,6 +49,7 @@ int main(int argc, const char** argv)
     add_positioning_options(options);
     add_security_options(options);
     add_pseudonym_channel_options(options);
+    add_pki_channel_options(options);
     add_position_channel_options(options);
     add_link_layer_options(options);
 
@@ -179,6 +181,9 @@ int main(int argc, const char** argv)
         }
         // pseudonym change events arrive on their own MQTT channel, not with the application messages
         auto pseudonym_channel = create_pseudonym_channel(vm, pseudonym_control(security.get()), trigger, config_s.station_id);
+        // certificate refill from the run's PKI service, on the same broker
+        auto pki_channel = create_pki_channel(vm, pseudonym_control(security.get()),
+            pseudonym_batch_loader(security.get()), trigger, config_s.station_id);
 
         metrics_t metrics_s = {};
 

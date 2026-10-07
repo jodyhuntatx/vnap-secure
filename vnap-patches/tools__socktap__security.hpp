@@ -7,7 +7,11 @@
 #include <vanetza/security/security_entity.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/variables_map.hpp>
+#include <functional>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 #include "config.hpp"
 
 std::unique_ptr<vanetza::security::SecurityEntity>
@@ -18,6 +22,24 @@ create_security_entity(const boost::program_options::variables_map&, vanetza::Ru
  * \return interface if the entity uses a pseudonym pool (--pseudonym-certificate), otherwise nullptr
  */
 vanetza::security::PseudonymControl* pseudonym_control(vanetza::security::SecurityEntity*);
+
+/** Certificate batch (vnap-secure refill): pairs of authorization ticket and private key files */
+using PseudonymBatch = std::vector<std::pair<std::string, std::string>>;
+
+struct PseudonymBatchResult
+{
+    std::size_t added = 0;
+    std::vector<std::string> rejected; /*!< "<file>: <reason>" for each pseudonym not added */
+};
+
+/**
+ * Loader adding a certificate batch to the pseudonym pool of a security entity: each
+ * authorization ticket is chain-checked against the trusted root ([V3-CHAIN]/[V2-CHAIN] like
+ * at startup) and only valid ones are added. Must be serialized with signing, like
+ * PseudonymControl::change_pseudonym().
+ * \return loader, or an empty function without a pseudonym pool
+ */
+std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loader(vanetza::security::SecurityEntity*);
 
 void add_security_options(boost::program_options::options_description&);
 

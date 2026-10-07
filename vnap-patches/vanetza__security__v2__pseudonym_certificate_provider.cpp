@@ -26,14 +26,10 @@ std::string to_hex(const HashedId8& id)
 } // namespace
 
 PseudonymCertificateProvider::PseudonymCertificateProvider(std::vector<Pseudonym> pool, std::list<Certificate> chain) :
-    m_pool(std::move(pool)), m_index(0), m_chain(std::move(chain))
+    m_pool(std::move(pool)), m_chain(std::move(chain))
 {
-    if (m_pool.empty()) {
-        throw std::invalid_argument("PseudonymCertificateProvider requires a non-empty pseudonym pool");
-    }
-
     std::cerr << "[PSEUDONYM] v2 pool of " << m_pool.size() << " certificate(s), changed on events only, "
-              << "starting at index 0 (certificate=" << to_hex(calculate_hash(m_pool[0].certificate)) << ")\n";
+              << "starting at index 0 (certificate=" << to_hex(calculate_hash(m_pool.at(0).certificate)) << ")\n";
 
     // IDCHANGE-TRIGGER from any layer: change to the next pseudonym (unless ID-locked)
     m_id_changes.set_trigger_handler([this]() { change_pseudonym(boost::none); });
@@ -41,7 +37,7 @@ PseudonymCertificateProvider::PseudonymCertificateProvider(std::vector<Pseudonym
 
 const Certificate& PseudonymCertificateProvider::own_certificate()
 {
-    return m_pool[m_index].certificate;
+    return m_pool.current().certificate;
 }
 
 std::list<Certificate> PseudonymCertificateProvider::own_chain()
@@ -51,47 +47,70 @@ std::list<Certificate> PseudonymCertificateProvider::own_chain()
 
 const ecdsa256::PrivateKey& PseudonymCertificateProvider::own_private_key()
 {
-    return m_pool[m_index].private_key;
+    return m_pool.current().private_key;
 }
 
 PseudonymControl::Result PseudonymCertificateProvider::change_pseudonym(boost::optional<std::size_t> index)
 {
     Result result;
-    result.previous = m_index;
-    const std::size_t next = index ? *index : (result.previous + 1) % m_pool.size();
-
-    if (next >= m_pool.size()) {
-        result.error = "index out of range";
-    } else if (next == result.previous) {
-        result.error = "pseudonym already in use";
-    } else {
+    result.previous = m_pool.current_index();
+    const auto next = m_pool.select(index, result.error);
+    if (next) {
         // ID change notification (TS 102 723-8/-9 clause 6.3): PREPARE all subscribed layers,
         // switch the authorization ticket, then COMMIT -- or ABORT and keep the old one
-        const IdChangeService::Id id = calculate_hash(m_pool[next].certificate);
-        auto outcome = m_id_changes.change(id, [&]() { m_index = next; return true; });
+        const IdChangeService::Id id = calculate_hash(m_pool.at(*next).certificate);
+        auto outcome = m_id_changes.change(id, [&]() { m_pool.switch_to(*next); return true; });
         result.changed = outcome.committed;
         result.error = outcome.error;
     }
-    result.current = m_index;
-    result.certificate = to_hex(calculate_hash(m_pool[result.current].certificate));
+    result.current = m_pool.current_index();
+    result.certificate = to_hex(calculate_hash(m_pool.current().certificate));
 
     if (!result.changed) {
-        std::cerr << "[PSEUDONYM] change to index " << next << " rejected: " << result.error << "\n";
+        std::cerr << ((next ? "[PSEUDONYM] change to index " + std::to_string(*next) + " rejected: "
+                            : std::string("[PSEUDONYM] change rejected: ")) + result.error + "\n");
         return result;
     }
 
-    std::cerr << "[PSEUDONYM] changed pool index " << result.previous << " -> " << result.current
-              << " (of " << m_pool.size() << "), certificate=" << result.certificate;
-    if (!index && result.current < result.previous) {
-        std::cerr << " [pool wrapped around, reusing an earlier pseudonym]";
-    }
-    std::cerr << "\n";
+    std::cerr << ("[PSEUDONYM] changed pool index " + std::to_string(result.previous) + " -> " + std::to_string(result.current)
+                  + " (of " + std::to_string(m_pool.size()) + "), certificate=" + result.certificate
+                  + (!m_refill_low && !index && result.current < result.previous
+                     ? " [pool wrapped around, reusing an earlier pseudonym]" : "") + "\n");
 
     // broadcast the new full certificate right away instead of waiting for the regular resend
     if (m_sign_header_policy) {
         m_sign_header_policy->request_certificate();
     }
+    check_refill();
     return result;
+}
+
+void PseudonymCertificateProvider::enable_refill(std::size_t threshold, std::function<void(std::size_t)> low)
+{
+    m_pool.set_no_reuse(true);
+    m_refill_threshold = threshold;
+    m_refill_low = std::move(low);
+    check_refill();
+}
+
+void PseudonymCertificateProvider::check_refill()
+{
+    if (m_refill_low) {
+        const std::size_t unused = m_pool.unused();
+        if (unused <= m_refill_threshold) {
+            m_refill_low(unused);
+        }
+    }
+}
+
+std::size_t PseudonymCertificateProvider::add_pseudonyms(std::vector<Pseudonym> pseudonyms)
+{
+    const std::size_t count = pseudonyms.size();
+    const std::size_t first = m_pool.add(std::move(pseudonyms));
+    std::cerr << ("[PSEUDONYM] " + std::to_string(count) + " certificate(s) added to the pool (indices "
+                  + std::to_string(first) + ".." + std::to_string(first + count - 1) + "), "
+                  + std::to_string(m_pool.unused()) + " unused\n");
+    return m_pool.size();
 }
 
 } // namespace v2

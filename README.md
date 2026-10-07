@@ -28,7 +28,7 @@ This is **not** the Vanetza-NAP source tree. It holds the patch set and tooling 
 | `exec-to-vm.sh`, `run-build.sh`, `sync-vnap-dist.sh` | host-side helpers: ssh into the VM, build remotely and load the image on the host, copy `~/vanetza-nap` back |
 | `vnap-patches/` | patched Vanetza-NAP files (see [Patch set](#patch-set)) |
 | `vnap-origs/` | the corresponding upstream `release2-main` files |
-| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks), the pseudonym control channel (`pseudo-ctl/`), the `mobility` client that moves vehicles, the passive `eavesdropper` and the `vnap-msgcheck` message checker |
+| `vnap-docker/` | plain-docker simulation harness, `vnapctl` (scenario files in `scenarios/`: up/down, status, events, checks), the pseudonym control channel (`pseudo-ctl/`), the per-run PKI service (`pki/`), the `mobility` client that moves vehicles, the passive `eavesdropper` and the `vnap-msgcheck` message checker |
 | `vnap-certs/certify/` | Root/AA/AT generated with Vanetza's `certify` (TS 103 097 V1.2.1, `certs-v2`) |
 | `vnap-certs/c-its-pki/` | Root/AA/EA/TLM/AT and butterfly ATs from C-ITS-PKI (currently the v3 set, `certs-v3`) |
 
@@ -323,6 +323,9 @@ cd vnap-docker
 | `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
 | `PSEUDO_ID_CHANGE` | `full` (default): a pseudonym change also changes the GN address, MAC and CAM `stationId` through the ETSI ID change notification; `certificate`: only the certificate |
 | `PSEUDO_SILENT_MIN_MS` / `PSEUDO_SILENT_MAX_MS` | random radio silence after each full ID change, in ms (default 0 = off); see [Pseudonym change events](#pseudonym-change-events) |
+| `PKI_REFILL_AT` | certificate refill: request a new batch from the run's PKI service when this many unused pseudonyms are left (unset or 0: fixed pool that wraps around). With refill no pseudonym is used twice; uses the pseudonym control broker; see [Certificate refill](#certificate-refill-per-run-pki) |
+| `PKI_BATCH_SIZE` | certificates to request per batch (8) |
+| `PKI_TOPIC` | refill topic prefix: requests on `<prefix>/request`, batches on `<prefix>/batch` (default `vnap/pki/<station id>`) |
 | `POSITION_CONTROL_BROKER` | MQTT broker of the position control channel: the station's position follows updates on its position topic ([Vehicle movement](#vehicle-movement)); needs the static position provider (`VANETZA_USE_HARDCODED_GPS=true`, the default), not gpsd |
 | `POSITION_CONTROL_PORT` | position broker port (1883) |
 | `POSITION_CONTROL_TOPIC` | position topic (default `vnap/position/<station id>`) |
@@ -628,6 +631,67 @@ with a location, or to exhaust a small pool.
 - Use TLS and per-client ACLs before anything outside the simulation.
 - socktap logs a warning when it connects without credentials.
 
+## Certificate refill (per-run PKI)
+
+Instead of a fixed set of certificates that every run reuses (and that wraps around when used
+up), each run can have its own certificate authority. Stations start with a batch of butterfly
+authorization tickets (ATs) and request a new batch when only a few unused ones are left. The
+design is in the product requirements document (VNAP-Secure-Simulation-Service-PRD.pdf,
+sections 5.5 and 7; kept in the local `specs/` folder, not in the repository).
+
+**Status:** the PKI service and station refill work (phases 1 and 2, "option A": the PKI
+returns the AT private keys). `vnapctl` does not start the PKI service yet (phase 3); until
+then it is provisioned and attached by hand, as below.
+
+- **PKI service** (`vnap-docker/pki/`, image `vnap-pki`, built by `pki/build.sh` from this
+  directory and C-ITS-PKI's `src/`; `CITS_PKI_DIR` if C-ITS-PKI is not next to vnap-secure):
+  - `provision`: the run's root CA, TLM, EA and AA; a regular AT for road-side units;
+    enrolment (caterpillar keys) and an initial batch of butterfly ATs for pseudonym stations.
+  - `serve`: answers batch requests on the control broker; each batch uses the station's next
+    i-period. Logs issuance and queueing time per request.
+  - Output: `public/` (root, AA, ... certificates), `stations/<name>/` (what a station loads),
+    `private/` (CA keys, enrolment and caterpillar keys; never mount into stations) and
+    `issued.jsonl` (every issued AT with its HashedId8: ground truth).
+- **Stations** (`PKI_REFILL_AT`, `PKI_BATCH_SIZE`, `PKI_TOPIC`; options `--pki-refill-at`,
+  `--pki-batch-size`, `--pki-topic`, `--pki-retry`):
+  - When a change leaves `PKI_REFILL_AT` or fewer unused ATs, the station publishes
+    `vnap/pki/<station id>/request {"request_id", "unused", "count"}` on the pseudonym control
+    broker and installs the answer from `vnap/pki/<station id>/batch` while running. Each AT is
+    chain-checked first (`[V3-CHAIN] batch authorization ticket ...`).
+  - At most one request is outstanding; unanswered requests are repeated after 10, 20, 40 ...
+    seconds (up to 120).
+  - With refill on, no AT is used twice. With none left, changes are refused
+    (`[PSEUDONYM] change rejected: no unused pseudonym left`) until a batch arrives.
+  - Logs: `[PKI] batch requested: request <id>, <u> unused, <n> wanted` and
+    `[PKI] batch installed: request <id>, <n> certificate(s), refresh <ms> ms (PKI issue <ms> ms), <u> unused`.
+    Refresh time runs from the first request for a batch (retries included) to installation.
+
+```bash
+# by hand, until vnapctl does it: provision into a host directory, use it as the scenario's certs_dir
+docker run --rm -v ~/vnap-pki-runs:/runs vnap-pki provision --dir /runs/run1 --config '{"etsi_version": "v3",
+  "stations": [{"name": "rsu", "station_id": 1, "certificates": "regular"},
+               {"name": "obu", "station_id": 2, "certificates": "bke", "initial": 8, "batch": 8}]}'
+# scenario: certs_dir = "~/vnap-pki-runs/run1" (absolute), aa_cert /vnap-certs/public/aa.cert,
+#   root_cert /vnap-certs/public/root_ca.cert, OBU pool /vnap-certs/stations/obu/bke_at_{i}.cert
+#   with key bke_at_{i}_sign.der and count 8, env PKI_REFILL_AT = "2"
+docker run -d --name pki --network vnapctl0 -v ~/vnap-pki-runs:/runs -e CONTROL_BROKER=pseudo-broker \
+  vnap-pki serve --dir /runs/run1
+```
+
+**Tested** (vnap:r2-p18-test, two OBUs changing every 5 s, refill at 2, batches of 8):
+- **Refill:** each OBU received batches as it ran low. Every new AT passed the chain check,
+  and the RSU verified the CAMs signed with them.
+- **No reuse:** each OBU used 17 distinct ATs, all from its own entries in `issued.jsonl`.
+- **Refresh time:** 454–971 ms, of which the PKI issued a batch of 8 in 376–533 ms. Both OBUs
+  asked at the same moment, so one waited up to 537 ms behind the other at the PKI.
+- **PKI outage:** with the PKI stopped, requests were retried after 10 s and 20 s, and four
+  changes were refused while the pool was empty. The first retry after the PKI came back was
+  answered (refresh 31 170 ms, counted from the first unanswered request).
+- **Fixed pools:** without `PKI_REFILL_AT` the regression scenarios pass; the pool's unit
+  test confirms that fixed pools still wrap around.
+- **ThreadSanitizer:** the pool's own test passes clean, and a sanitized OBU running two
+  refills reported nothing in the new code (8 reports, all inside the Zenoh library).
+
 ## Vehicle movement
 
 Upstream socktap has a fixed position (`config.ini` or `VANETZA_LATITUDE`/`VANETZA_LONGITUDE`)
@@ -837,6 +901,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
 | ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour). Optional random silent period after each change (`--pseudonym-silent-min/-max`, TR 103 415 4.1.4; `tools/socktap/dcc_passthrough.{hpp,cpp}`) |
 | Position control channel (mobility) | `tools/socktap/mobility.{hpp,cpp}` (new), `positioning.cpp`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the station's position follows updates on an MQTT topic ([Vehicle movement](#vehicle-movement)). Options `--position-control-broker`, `-port`, `-topic`, `-username`, `-password`. The static position provider is replaced by a thread-safe controllable one |
+| Certificate refill | `vanetza/security/pseudonym_pool.hpp` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `tools/socktap/pki_channel.{hpp,cpp}` (new), `security.{hpp,cpp}`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the pseudonym pool grows at runtime: new ATs from the run's PKI service, requested at a threshold of unused ones, chain-checked before use, never reused ([Certificate refill](#certificate-refill-per-run-pki)) |
 | CAM timer rephase | `tools/socktap/applications/cam_application.{hpp,cpp}`, `main.cpp` | with full ID change, the CAM timer restarts at a random phase on COMMIT, so CAM timing does not link old and new identities ([Pseudonym change events](#pseudonym-change-events)) |
 | CAM kinematics | `tools/socktap/applications/cam_application.cpp` | heading, speed/heading confidence, longitudinal acceleration and yaw rate in the CAM's units (and yaw rate sign); see [Vehicle movement](#vehicle-movement) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |

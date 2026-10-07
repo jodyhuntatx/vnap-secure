@@ -532,8 +532,10 @@ class MqttProbe(threading.Thread):
     @staticmethod
     def kill_all(run_id):
         """Remove this run's probe containers (running, or created but never started when the
-        daemon stalls), without waiting for the daemon."""
-        subprocess.Popen(["sh", "-c", f"docker ps -aq --filter label=vnapctl.probe={run_id} | xargs -r docker rm -f -v"],
+        daemon stalls), without waiting for the daemon. A stalled daemon can still create a probe
+        after the first sweep (it then stays in "created" for good), so sweep again later."""
+        sweep = f"docker ps -aq --filter label=vnapctl.probe={run_id} | xargs -r docker rm -f -v"
+        subprocess.Popen(["sh", "-c", f"for i in 1 2 3 4; do {sweep}; sleep 15; done"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <vanetza/security/private_key.hpp>
 #include <vanetza/security/pseudonym_control.hpp>
+#include <vanetza/security/pseudonym_pool.hpp>
 #include <vanetza/security/v3/certificate_provider.hpp>
 #include <vanetza/security/v3/secured_message.hpp>  // sign_header_policy.hpp is not self-contained
 #include <vanetza/security/v3/sign_header_policy.hpp>
@@ -54,13 +55,24 @@ public:
     const PrivateKey& own_private_key() override;
 
     Result change_pseudonym(boost::optional<std::size_t> index) override;
-    std::size_t current_pseudonym() const override { return m_index; }
+    std::size_t current_pseudonym() const override { return m_pool.current_index(); }
     std::size_t pseudonym_pool_size() const override { return m_pool.size(); }
+    std::size_t unused_pseudonyms() const override { return m_pool.unused(); }
+    void enable_refill(std::size_t threshold, std::function<void(std::size_t)> low) override;
     IdChangeService& id_changes() override { return m_id_changes; }
 
+    /**
+     * Add pseudonyms to the pool (e.g. a certificate batch from the PKI), usable right away
+     * \return number of pseudonyms the pool has now
+     */
+    std::size_t add_pseudonyms(std::vector<Pseudonym> pseudonyms);
+
 private:
-    const std::vector<Pseudonym> m_pool;
-    std::atomic<std::size_t> m_index;
+    void check_refill();
+
+    PseudonymPool<Pseudonym> m_pool;
+    std::size_t m_refill_threshold = 0;
+    std::function<void(std::size_t)> m_refill_low;
     SignHeaderPolicy* m_sign_header_policy = nullptr;
     IdChangeService m_id_changes; // last member: destroyed (DEREG) first
 };

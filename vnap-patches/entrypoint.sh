@@ -69,7 +69,10 @@ fi
 #                 PSEUDO_ID_CHANGE (full: GN address, MAC and stationId change with the certificate
 #                 via the ETSI ID change notification; certificate: only the certificate; default full),
 #                 PSEUDO_SILENT_MIN_MS/PSEUDO_SILENT_MAX_MS (random radio silence after each full ID
-#                 change, ETSI TR 103 415 4.1.4; default 0 = off)
+#                 change, ETSI TR 103 415 4.1.4; default 0 = off),
+#                 PKI_REFILL_AT (request a certificate batch from the run's PKI service at this many
+#                 unused pseudonyms; unset/0 = fixed pool that wraps around), PKI_BATCH_SIZE (8),
+#                 PKI_TOPIC (default vnap/pki/<station id>); refill uses the control broker
 # release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
 # not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
 # certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
@@ -126,6 +129,10 @@ if [ -n "$SECURITY" ]; then
                 [ -n "$PSEUDO_CONTROL_TOPIC" ] && set -- "$@" --pseudonym-control-topic "$PSEUDO_CONTROL_TOPIC"
                 [ -n "$PSEUDO_CONTROL_USERNAME" ] && set -- "$@" --pseudonym-control-username "$PSEUDO_CONTROL_USERNAME"
                 # PSEUDO_CONTROL_PASSWORD is read by socktap from the environment (kept out of argv and set -x)
+                if [ "${PKI_REFILL_AT:-0}" -gt 0 ]; then
+                    set -- "$@" --pki-refill-at "$PKI_REFILL_AT" --pki-batch-size "${PKI_BATCH_SIZE:-8}"
+                    [ -n "$PKI_TOPIC" ] && set -- "$@" --pki-topic "$PKI_TOPIC"
+                fi
             else
                 echo "PSEUDO_CONTROL_BROKER is not set: the pseudonym will not change."
             fi
