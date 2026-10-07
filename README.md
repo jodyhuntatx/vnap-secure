@@ -310,6 +310,51 @@ cd vnap-docker
 - **Secrets:** broker credentials are given as names of environment variables
   (`control.auth`). They reach the containers through `docker -e NAME`, never through the
   command line or labels.
+- **Free instance:** `up --instance auto` claims the lowest free instance N ≥ 1 by creating
+  its simulation network. Docker refuses a duplicate name, so concurrent starts never share an
+  instance. `up` prints the number, and a failed start releases it. `VNAPCTL_INSTANCE` sets the
+  default instance for every command.
+- **Owner:** the run's owner is the account running `vnapctl` (not `$USER`).
+- **Helper images** (`vnap-pseudo-ctl`, `vnap-mobility`, `vnap-eavesdropper`, `vnap-pki`) are
+  tagged `<image>:<digest of their sources>` and built only when that tag is missing, so
+  different checkouts never overwrite each other's images. `:latest` is set as well, for
+  `eavesdropper/run.sh` and other tools.
+
+#### The vnapsim package, validation and the user policy
+
+`vnapctl` is a thin launcher for the `vnapsim` package next to it (`vnap-docker/vnapsim/`),
+which the API service will use as well. Its modules:
+
+| Module | Contents |
+|---|---|
+| `scenario.py` | loading, `--set` overrides, validation, identity assignment, the user policy |
+| `schema.py` | JSON Schema of the scenario format (`vnapctl schema`) |
+| `lifecycle.py` | `up` / `down`, instance allocation, helper images, the run's PKI |
+| `status.py`, `logs.py` | discovery, status, log parsing |
+| `events.py`, `check.py` | event collection, metrics and expectations |
+| `cli.py` | the command line |
+
+Unit tests that need no docker: `cd vnap-docker && python3 -m unittest discover -s tests`.
+
+```bash
+./vnapctl validate my-scenario.toml --json             # {"valid": false, "errors": [{"path": "stations[obu1].ip", "message": ...}]}
+./vnapctl validate my-scenario.toml --as-user          # also apply the user policy
+./vnapctl schema > scenario.schema.json                # for forms in a UI
+./vnapctl up my-scenario.toml --as-user --instance auto
+```
+
+- **Field-level errors:** every validation error has a field path, its message and the text
+  `vnapctl` prints (unchanged).
+- **Assigned identities:** stations may leave out `ip`, `station_id`, `mac` and
+  `station_type`. `vnapctl` assigns the next free station ID from 1, the next free host
+  (.10, .20, … .240, then the others; .1 and .99 are reserved), a MAC derived from the station
+  ID, and type 5 (passenger car). An RSU needs `station_type = 15`.
+- **Empty sections** such as `[control]`, `[eavesdropper]` or `pseudonyms = {}` mean "this
+  feature with its defaults".
+- **User policy** (`--as-user`, and later the API): fields the schema marks `admin` are refused
+  (images, container environment, certificate files, networks, broker credentials), except the
+  images and environment variables `vnap-docker/policy.toml` allows. Fields it marks `assigned`
+  (addresses, IDs) must be left out. Administrators, i.e. plain `vnapctl`, are not restricted.
 
 ### Container environment (`entrypoint.sh`)
 

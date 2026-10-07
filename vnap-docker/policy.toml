@@ -1,0 +1,10 @@
+# What a scenario from a user may set (vnapctl validate/up --as-user, and the API service).
+# Administrators (plain vnapctl) are not restricted. Fields the schema (vnapctl schema) marks
+# "admin" are refused for users, except the images and environment variables allowed here;
+# fields it marks "assigned" (addresses, IDs) are filled in by the service.
+
+# station images users may choose (scenario key "image"; default vnap:latest)
+approved_images = ["vnap:latest", "vnap:r2-p19"]
+
+# container environment variables users may set per station ("env")
+allowed_env = ["VANETZA_LATITUDE", "VANETZA_LONGITUDE"]

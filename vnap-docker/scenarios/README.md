@@ -23,6 +23,11 @@ aa_cert = "/vnap-certs/c-its-pki/aa.cert"
 root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
 env = { }                         # extra container environment
 
+# ip, station_id, mac and station_type are optional: left out, vnapctl assigns the next free
+# station ID, address (.10, .20, ...), a MAC derived from the ID and type 5 (an RSU needs 15).
+# Empty tables ([control], [eavesdropper], pseudonyms = {}) enable a feature with its defaults.
+# "vnapctl schema" prints the whole format as JSON Schema; "vnapctl validate --json" reports
+# errors by field.
 [[stations]]
 name = "rsu"
 ip = "192.168.98.10"
