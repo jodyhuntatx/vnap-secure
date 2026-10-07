@@ -1,6 +1,7 @@
 #ifndef PKI_CHANNEL_HPP_SOCKTAP
 #define PKI_CHANNEL_HPP_SOCKTAP
 
+#include "bke.hpp"
 #include "security.hpp"
 #include "time_trigger.hpp"
 #include <vanetza/security/pseudonym_control.hpp>
@@ -20,14 +21,18 @@
  * leaves --pki-refill-at or fewer unused pseudonyms, it publishes
  *   <topic>/request  {"request_id": "<station>-<n>", "unused": u, "count": --pki-batch-size}
  * and waits for
- *   <topic>/batch    {"request_id": ..., "certificates": [base64], "keys": [base64 PKCS#8],
- *                     "issue_ms": t, "queue_ms": q}   or   {"request_id": ..., "error": "..."}
+ *   <topic>/batch    {"request_id": ..., "certificates": [base64], "issue_ms": t, "queue_ms": q, plus
+ *                     either "i_period": i, "indices": [j], "offsets": [hex r]   (key derivation on the
+ *                     station: the private keys are a + f_k(i, j) + r, see bke.hpp)
+ *                     or "keys": [base64 PKCS#8]   (the PKI made the keys)}
+ *                    or {"request_id": ..., "error": "..."}
  * At most one request is outstanding; unanswered requests are repeated with doubling delays.
  * The pool never wraps around once refill is enabled: with no unused pseudonym left, changes
  * are refused until a batch arrives.
  *
  * Logs (one line each): "[PKI] batch requested: ...", "[PKI] batch installed: request <id>,
- * <n> certificate(s), refresh <ms> ms (PKI issue <ms> ms), <u> unused", "[PKI] request <id>
+ * <n> certificate(s), refresh <ms> ms (PKI issue <ms> ms[, key derivation <ms> ms]), <u> unused",
+ * "[PKI] request <id>
  * refused: ...", "[PKI] no answer to request <id> after <s> s, retrying".
  */
 class PkiChannel : public mosqpp::mosquittopp
@@ -44,6 +49,8 @@ public:
         std::size_t batch_size = 8;
         std::chrono::seconds retry { 10 };
         std::string batch_dir = "/tmp/vnap-pki";
+        std::string caterpillar_key;    /*!< the vehicle's caterpillar private key (PKCS#8 DER) */
+        std::string expansion_key;      /*!< and expansion key (16 bytes): needed for "offsets" batches */
     };
 
     PkiChannel(const Options&, const std::string& client_id, vanetza::security::PseudonymControl&,
@@ -73,6 +80,7 @@ private:
     std::string m_outstanding;                                 // request id, empty if none
     std::chrono::steady_clock::time_point m_first_request;     // of the outstanding need (retries included)
     std::chrono::seconds m_backoff;
+    std::unique_ptr<BkeSecrets> m_bke; // with key derivation on the station
 };
 
 void add_pki_channel_options(boost::program_options::options_description&);

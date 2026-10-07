@@ -11,24 +11,40 @@ ETSI TS 102 941). Commands:
   run        provision, then serve
 
 Configuration (--config, JSON text or @file, default: environment variable PKI_CONFIG):
-  {"etsi_version": "v3", "validity_hours": 24, "psids": [36, 37], "bke_mode": "original",
+  {"etsi_version": "v3", "validity_hours": 24, "psids": [36, 37], "key_derivation": "station",
    "stations": [{"name": "rsu", "station_id": 1, "certificates": "regular"},
                 {"name": "obu", "station_id": 2, "certificates": "bke", "initial": 8, "batch": 8}]}
 
+key_derivation (butterfly ATs):
+  station  (default) the vehicle keeps its caterpillar private key; the PKI knows only the
+           caterpillar public key and the expansion key, certifies cocoon key + r*G and returns
+           the offsets r, from which the station derives the private keys (IEEE 1609.2.1). The
+           PKI never holds an AT private key. Provisioning plays the vehicle once to derive the
+           initial batch into the station's directory (the keys are not kept on the PKI side).
+  pki      the PKI generates the caterpillar keys too and returns finished private keys
+           (simpler; the PKI then knows every AT key)
+
 Layout of --dir (default /pki):
   public/                 root_ca.cert, tlm.cert, ea.cert, aa.cert (what stations trust)
-  stations/<name>/        what the station loads: at.cert + at.der, or bke_at_<k>.cert + bke_at_<k>_sign.der
+  stations/<name>/        the station's own files: at.cert + at.der, or bke_at_<k>.cert +
+                          bke_at_<k>_sign.der; with station key derivation also the vehicle's
+                          caterpillar_sign.key, sign_expansion.key and ec_sign.key
   private/ca/             CA private keys and pki_meta.json (never mounted into stations)
-  private/stations/<name> enrolment credential, caterpillar and expansion keys, batch state
-  issued.jsonl            every issued AT: station, HashedId8, batch, i-period (ground truth)
+  private/stations/<name> enrolment certificate, caterpillar public key (or keys) and expansion
+                          key, batch state
+  private/issued.jsonl    every issued AT: station, HashedId8, batch, i-period (ground truth)
+
+With station key derivation, vnapctl runs "provision" once with the whole directory and then
+"serve" with only private/ and public/ mounted: the serving PKI cannot read the vehicles'
+directories (caterpillar private keys, initial AT keys).
 
 Refill protocol (MQTT, QoS 1, topic prefix --topic, default vnap/pki):
   <prefix>/<station id>/request  {"request_id": ..., "unused": n, "count": m}
   <prefix>/<station id>/batch    {"request_id": ..., "i_period": i, "certificates": [base64 COER],
-                                  "keys": [base64 PKCS#8 DER], "issue_ms": t, "queue_ms": q}
+                                  "issue_ms": t, "queue_ms": q, plus "indices": [j] and
+                                  "offsets": [hex r] (station key derivation) or "keys": [base64
+                                  PKCS#8 DER] (key_derivation pki)}
                               or {"request_id": ..., "error": "..."}
-Phase A of the design: the service returns the AT private keys. In a deployment the vehicle
-derives them itself from its caterpillar key and the AA's offsets, so the PKI never knows them.
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 """
 import argparse
@@ -44,8 +60,13 @@ import threading
 import time
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+
 sys.path.insert(0, os.environ.get("CITS_PKI_HOME", "/opt/cits-pki"))
-from src.crypto import deserialize_private_key, generate_keypair, random_bytes, serialize_private_key  # noqa: E402
+from src.certificates import issue_butterfly_authorization_tickets as aa_issue_butterfly  # noqa: E402
+from src.crypto import (bke_butterfly_private_key, bke_cocoon_private_key, bke_cocoon_public_key,  # noqa: E402
+                        deserialize_private_key, generate_keypair, public_key_to_point, random_bytes,
+                        serialize_private_key)
 from src.pki import CITSPKI, PKIEntity  # noqa: E402
 from src.types import (Certificate, CertificateId, CertificateType, CertIdChoice, Duration, DurationChoice,  # noqa: E402
                        EtsiVersion, IssuerChoice, IssuerIdentifier, PsidSsp, PublicKeyAlgorithm,
@@ -94,6 +115,9 @@ class RunPKI:
         self.validity_hours = int(cfg.get("validity_hours", 24))
         self.psids = [PsidSsp(psid=int(p)) for p in cfg.get("psids", [36, 37])]
         self.mode = cfg.get("bke_mode", "original")
+        self.derivation = cfg.get("key_derivation", "station")
+        if self.derivation not in ("station", "pki"):
+            sys.exit("pki: key_derivation must be 'station' or 'pki'")
         self.pki = None
         self.lock = threading.Lock()   # issuance and state files: one request at a time
 
@@ -121,15 +145,30 @@ class RunPKI:
             else:
                 self.enrol(st)
                 n = int(st.get("initial", 8))
-                batch, issue_ms = self.issue_batch(st["name"], n)
                 out = self.dir / "stations" / st["name"]
                 out.mkdir(parents=True, exist_ok=True)
-                for k, t in enumerate(batch):
-                    (out / f"bke_at_{k}.cert").write_bytes(t["at"])
-                    write_private(out / f"bke_at_{k}_sign.der", t["priv_key_der"])
+                if self.derivation == "station":
+                    batch, issue_ms = self.issue_batch_public(st["name"], n)
+                    # the vehicle's part, once at provisioning: derive the initial keys from its own secrets
+                    cat = deserialize_private_key((out / "caterpillar_sign.key").read_bytes())
+                    exp = (out / "sign_expansion.key").read_bytes()
+                    for k, t in enumerate(batch):
+                        key = bke_butterfly_private_key(bke_cocoon_private_key(cat, exp, t["i"], t["j"]), t["offset"])
+                        if public_key_to_point(key.public_key()).compressed != t["certificate"].tbs.verify_key_indicator.point.compressed:
+                            sys.exit(f"pki: derived key {k} of {st['name']} does not match its certificate")
+                        (out / f"bke_at_{k}.cert").write_bytes(t["at"])
+                        write_private(out / f"bke_at_{k}_sign.der", serialize_private_key(key))
+                    del cat
+                else:
+                    batch, issue_ms = self.issue_batch(st["name"], n)
+                    for k, t in enumerate(batch):
+                        (out / f"bke_at_{k}.cert").write_bytes(t["at"])
+                        write_private(out / f"bke_at_{k}_sign.der", t["priv_key_der"])
                 log(f"station {st['name']} (id {st.get('station_id')}): enrolled, initial batch of {n} AT(s) "
-                    f"in {issue_ms:.0f} ms")
-        log(f"provisioned in {(time.monotonic() - t0) * 1000:.0f} ms")
+                    f"in {issue_ms:.0f} ms (key derivation: {self.derivation})")
+        elapsed = (time.monotonic() - t0) * 1000
+        (self.dir / "private" / "provision.json").write_text(json.dumps({"provisioned_ms": round(elapsed)}))
+        log(f"provisioned in {elapsed:.0f} ms")
 
     def issue_regular(self, st):
         at = self.pki.issue_authorization_ticket(app_psids=self.psids, validity_hours=self.validity_hours)
@@ -145,15 +184,28 @@ class RunPKI:
         priv = self.dir / "private" / "stations" / name
         ec = self.pki.enrol_its_station(name=f"vnap-{name}")
         write_private(priv / "ec.cert", ec["ec"])
-        write_private(priv / "ec_sign.key", ec["priv_key_der"])
         cat, _ = generate_keypair(self.algo)
-        write_private(priv / "caterpillar_sign.key", serialize_private_key(cat))
-        write_private(priv / "sign_expansion.key", random_bytes(16))
-        if self.mode == "original":
+        expansion = random_bytes(16)
+        write_private(priv / "sign_expansion.key", expansion)   # the EA/RA knows the expansion key
+        if self.derivation == "station":
+            # the vehicle's secrets go to the vehicle only; the PKI keeps the public key
+            vehicle = self.dir / "stations" / name
+            write_private(vehicle / "ec_sign.key", ec["priv_key_der"])
+            write_private(vehicle / "caterpillar_sign.key", serialize_private_key(cat))
+            write_private(vehicle / "sign_expansion.key", expansion)
+            os.chmod(vehicle, 0o755)
+            write_private(priv / "caterpillar_sign.pub", cat.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
+            del cat
+        else:
+            write_private(priv / "ec_sign.key", ec["priv_key_der"])
+            write_private(priv / "caterpillar_sign.key", serialize_private_key(cat))
+        if self.derivation == "pki" and self.mode == "original":
             cat_enc, _ = generate_keypair(self.algo)
             write_private(priv / "caterpillar_enc.key", serialize_private_key(cat_enc))
             write_private(priv / "enc_expansion.key", random_bytes(16))
         state = {"name": name, "station_id": st.get("station_id"), "batch_size": int(st.get("batch", 8)),
+                 "key_derivation": self.derivation,
                  "i_base": now_its_time32() // (7 * 86400), "batches": 0, "issued": 0}
         write_private(priv / "state.json", json.dumps(state, indent=1).encode())
 
@@ -206,8 +258,32 @@ class RunPKI:
             self.record(name, state.get("station_id"), [t["at"] for t in tickets], state["batches"], i_value, "bke")
         return tickets, issue_ms
 
+    def issue_batch_public(self, name, count):
+        """RA/AA side only (station key derivation): cocoon public keys from the vehicle's caterpillar
+        public key, certified with fresh offsets. Returns ([{at, certificate, i, j, offset}], issue ms)."""
+        priv = self.dir / "private" / "stations" / name
+        with self.lock:
+            state = json.loads((priv / "state.json").read_text())
+            i_value = state["i_base"] + state["batches"]
+            caterpillar = serialization.load_der_public_key((priv / "caterpillar_sign.pub").read_bytes())
+            expansion = (priv / "sign_expansion.key").read_bytes()
+            t0 = time.monotonic()
+            cocoons = [bke_cocoon_public_key(caterpillar, expansion, i_value, j) for j in range(count)]
+            issued = aa_issue_butterfly(cocoon_sign_pubs=cocoons, aa_cert=self.pki.aa.certificate,
+                                        aa_priv_key=self.pki.aa.sign_priv_key, app_psids=self.psids,
+                                        sign_algorithm=self.algo, validity_hours=self.validity_hours,
+                                        region_ids=self.pki.region_ids, version=self.version)
+            issue_ms = (time.monotonic() - t0) * 1000
+            state["batches"] += 1
+            state["issued"] += count
+            write_private(priv / "state.json", json.dumps(state, indent=1).encode())
+            tickets = [{"at": cert.encoded, "certificate": cert, "i": i_value, "j": j, "offset": offset}
+                       for j, (cert, offset) in enumerate(issued)]
+            self.record(name, state.get("station_id"), [t["at"] for t in tickets], state["batches"], i_value, "bke")
+        return tickets, issue_ms
+
     def record(self, name, station_id, certs, batch, i_period, kind):
-        with open(self.dir / "issued.jsonl", "a") as f:
+        with open(self.dir / "private" / "issued.jsonl", "a") as f:
             for c in certs:
                 f.write(json.dumps({"t": round(time.time(), 3), "station": name, "station_id": station_id, "kind": kind,
                                     "batch": batch, "i_period": i_period, "hashed_id8": hashed_id8(c)}) + "\n")
@@ -217,6 +293,9 @@ class RunPKI:
         import paho.mqtt.client as mqtt
         if self.pki is None:
             self.load_aa()
+            done = self.dir / "private" / "provision.json"
+            if done.exists():  # provisioned by a separate step: report it like "run" does
+                log(f"provisioned in {json.loads(done.read_text())['provisioned_ms']} ms (separate provisioning step)")
         work = queue.Queue()
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="vnap-pki")
         if os.environ.get("CONTROL_USERNAME"):
@@ -279,18 +358,24 @@ class RunPKI:
         except (TypeError, ValueError):
             count = 8
         queue_ms = (time.monotonic() - received) * 1000
+        derivation = json.loads((self.dir / "private" / "stations" / name / "state.json").read_text()).get(
+            "key_derivation", "pki")
         try:
-            tickets, issue_ms = self.issue_batch(name, count)
+            tickets, issue_ms = (self.issue_batch_public if derivation == "station" else self.issue_batch)(name, count)
         except Exception as e:  # report, keep serving
             log(f"request {rid} from station {sid}: issuance failed: {e}")
             client.publish(reply, json.dumps({"request_id": rid, "error": f"issuance failed: {e}"}), qos=1)
             return
         state = json.loads((self.dir / "private" / "stations" / name / "state.json").read_text())
-        client.publish(reply, json.dumps({
-            "request_id": rid, "i_period": state["i_base"] + state["batches"] - 1, "count": len(tickets),
-            "certificates": [base64.b64encode(t["at"]).decode() for t in tickets],
-            "keys": [base64.b64encode(t["priv_key_der"]).decode() for t in tickets],
-            "issue_ms": round(issue_ms, 1), "queue_ms": round(queue_ms, 1)}), qos=1)
+        answer = {"request_id": rid, "i_period": state["i_base"] + state["batches"] - 1, "count": len(tickets),
+                  "certificates": [base64.b64encode(t["at"]).decode() for t in tickets],
+                  "issue_ms": round(issue_ms, 1), "queue_ms": round(queue_ms, 1), "key_derivation": derivation}
+        if derivation == "station":
+            answer["indices"] = [t["j"] for t in tickets]
+            answer["offsets"] = [f"{t['offset']:064x}" for t in tickets]   # the private keys stay with the vehicle
+        else:
+            answer["keys"] = [base64.b64encode(t["priv_key_der"]).decode() for t in tickets]
+        client.publish(reply, json.dumps(answer), qos=1)
         log(f"request {rid} from station {sid} ({name}, {req.get('unused', '?')} unused): issued {len(tickets)} AT(s) "
             f"in batch {state['batches']}, issue {issue_ms:.0f} ms, queue {queue_ms:.0f} ms")
 

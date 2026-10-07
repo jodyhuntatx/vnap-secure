@@ -20,6 +20,7 @@
 #include <vanetza/security/v3/sign_service.hpp>
 #include <vanetza/security/v3/static_certificate_provider.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <iostream>
 
@@ -415,6 +416,29 @@ security::PseudonymControl* pseudonym_control(security::SecurityEntity* entity)
     return nullptr;
 }
 
+namespace
+{
+
+/** Does the private key's public point equal the certified one (x, and y or its parity)? */
+bool key_matches(const boost::optional<security::PublicKey>& certified, const security::ecdsa256::PublicKey& own)
+{
+    if (!certified || certified->x.size() != own.x.size()
+            || !std::equal(certified->x.begin(), certified->x.end(), own.x.begin())) {
+        return false;
+    }
+    switch (certified->compression) {
+        case security::KeyCompression::NoCompression:
+            return certified->y.size() == own.y.size() && std::equal(certified->y.begin(), certified->y.end(), own.y.begin());
+        case security::KeyCompression::Y0:
+            return (own.y.back() & 1) == 0;
+        case security::KeyCompression::Y1:
+            return (own.y.back() & 1) == 1;
+    }
+    return false;
+}
+
+} // namespace
+
 std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loader(security::SecurityEntity* entity)
 {
     if (auto* v3 = dynamic_cast<SecurityContextV3*>(entity)) {
@@ -430,6 +454,12 @@ std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loade
             for (const auto& files : batch) {
                 try {
                     auto certificate = security::v3::load_certificate_from_file(files.first);
+                    // the key must belong to the certificate (e.g. a key derived by the station)
+                    const auto key_pair = security::v3::load_private_key_from_file(files.second);
+                    if (!key_matches(security::v3::get_public_key(*certificate), key_pair.public_key)) {
+                        result.rejected.push_back(files.first + ": private key does not match the certificate");
+                        continue;
+                    }
                     auto key = load_v3_private_key(certificate, files.second);
                     const auto validity = verifier.verify(*certificate, &provider->cache(), now);
                     std::cerr << (std::string("[V3-CHAIN] batch authorization ticket ") + files.first + ": "
@@ -461,6 +491,12 @@ std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loade
                 try {
                     auto certificate = security::v2::load_certificate_from_file(files.first);
                     auto key_pair = security::v2::load_private_key_from_file(files.second);
+                    // the key must belong to the certificate (e.g. a key derived by the station)
+                    const auto certified = security::v2::get_public_key(certificate, *v2->backend);
+                    if (!certified || certified->x != key_pair.public_key.x || certified->y != key_pair.public_key.y) {
+                        result.rejected.push_back(files.first + ": private key does not match the certificate");
+                        continue;
+                    }
                     const auto validity = v2->cert_validator.check_certificate(certificate);
                     std::cerr << (std::string("[V2-CHAIN] batch authorization ticket ") + files.first + ": "
                                   + chain_result(validity) + "\n");

@@ -58,6 +58,7 @@ batch = 8                         # ATs per batch
 validity_hours = 24
 # etsi_version = "v3"             # default: from the stations' security (certs-v3 / certs-v2)
 # ip = "192.168.99.5"             # PKI service on the control network
+# key_derivation = "station"      # stations derive their ATs' private keys (default); "pki": the PKI returns them
 # With [pki], stations take no certificate paths: pseudonym stations use
 #   pseudonyms = { initial = 8, refill_at = 2, batch = 8, min_interval_ms = 1000, ... }
 # (all optional), other stations with security certs-* get a regular AT.

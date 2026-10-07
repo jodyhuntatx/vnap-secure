@@ -194,7 +194,7 @@ RE_CHAIN = re.compile(r"\[(V[23])-CHAIN\] (chain certificate|own authorization t
 # certificate refill, station side
 RE_PKI_REQ = re.compile(r"\[PKI\] batch requested: request (\S+), (\d+) unused, (\d+) wanted")
 RE_PKI_INST = re.compile(r"\[PKI\] batch installed: request (\S+), (\d+) certificate\(s\), refresh (\d+) ms "
-                         r"\(PKI issue (\S+) ms\), (\d+) unused")
+                         r"\(PKI issue (\S+) ms(?:, key derivation (\d+) ms)?\), (\d+) unused")
 RE_PKI_RETRY = re.compile(r"\[PKI\] no answer to request (\S+) after (\d+) s, retrying")
 RE_PKI_REFUSED = re.compile(r"\[PKI\] request (\S+) refused: (.*)")
 # PKI service
@@ -235,7 +235,8 @@ def log_events(station, since=None, until=None):
             ev = {"kind": "pki", "action": "requested", "request": m[1], "unused": int(m[2]), "wanted": int(m[3])}
         elif m := RE_PKI_INST.search(line):
             ev = {"kind": "pki", "action": "installed", "request": m[1], "count": int(m[2]), "refresh_ms": int(m[3]),
-                  "issue_ms": int(m[4]) if m[4].isdigit() else None, "unused": int(m[5])}
+                  "issue_ms": int(m[4]) if m[4].isdigit() else None,
+                  "derivation_ms": int(m[5]) if m[5] else None, "unused": int(m[6])}
         elif m := RE_PKI_RETRY.search(line):
             ev = {"kind": "pki", "action": "retry", "request": m[1], "after_s": int(m[2])}
         elif m := RE_PKI_REFUSED.search(line):
@@ -324,6 +325,9 @@ def refill_status(env, events):
         "added": sum(e["count"] for e in installed),
         "retries": sum(e["action"] == "retry" for e in pk), "refused": sum(e["action"] == "refused" for e in pk),
         "refresh_ms_mean": round(sum(refresh) / len(refresh)) if refresh else None,
+        "derivation_ms_mean": (round(sum(d) / len(d)) if (d := [e["derivation_ms"] for e in installed
+                                                               if e.get("derivation_ms") is not None]) else None),
+        "key_derivation": "station" if env.get("PKI_CATERPILLAR_KEY") else "pki",
         "refresh_ms_max": max(refresh) if refresh else None, "refresh_ms_last": refresh[-1] if refresh else None,
         "starved": sum(1 for e in events if e["kind"] == "pseudonym" and e["action"] == "rejected" and e.get("starved")),
         "pending": bool(requested) and (not installed or requested[-1]["t"] > installed[-1]["t"]),
@@ -545,6 +549,7 @@ def print_status(s):
             rf = p.get("refill")
             if rf:
                 refresh = (f"refresh mean {rf['refresh_ms_mean']} ms, max {rf['refresh_ms_max']} ms"
+                           + (f" (key derivation {rf['derivation_ms_mean']} ms)" if rf.get("derivation_ms_mean") is not None else "")
                            if rf["batches"] else "no batch yet")
                 print(f"  refill: {rf['unused']} unused (request at {rf['refill_at']}, batches of {rf['batch']}); "
                       f"{rf['batches']} batch(es), {rf['added']} certificate(s) added, {refresh}; "
@@ -778,7 +783,8 @@ def describe(ev):
             return f"certificate batch requested ({ev['request']}): {ev['unused']} unused, {ev['wanted']} wanted"
         if a == "installed":
             return (f"certificate batch installed ({ev['request']}): {ev['count']} certificate(s), refresh {ev['refresh_ms']} ms"
-                    f" (PKI issue {ev['issue_ms']} ms), {ev['unused']} unused")
+                    f" (PKI issue {ev['issue_ms']} ms" + (f", key derivation {ev['derivation_ms']} ms" if ev.get("derivation_ms") is not None else "")
+                    + f"), {ev['unused']} unused")
         if a == "retry":
             return f"no answer to batch request {ev['request']} after {ev['after_s']} s, retrying"
         if a == "issued":
@@ -849,6 +855,8 @@ def compute_metrics(sim, status, events, seconds):
             m[f"{n}.pki.pending"] = int(rf["pending"])
             if rf["unused"] is not None:
                 m[f"{n}.pki.unused"] = rf["unused"]
+            if rf.get("derivation_ms_mean") is not None:
+                m[f"{n}.pki.derivation_ms_mean"] = rf["derivation_ms_mean"]
             if rf["batches"]:
                 m[f"{n}.pki.refresh_ms_mean"] = rf["refresh_ms_mean"]
                 m[f"{n}.pki.refresh_ms_max"] = rf["refresh_ms_max"]
@@ -939,7 +947,7 @@ MOBILITY_IMAGE = "vnap-mobility"
 PKI_IMAGE = "vnap-pki"
 # C-ITS-PKI checkout (its src/ goes into the vnap-pki image): next to vnap-secure by default
 CITS_PKI_DIR = os.environ.get("CITS_PKI_DIR") or os.path.realpath(os.path.join(HERE, "..", "..", "C-ITS-PKI"))
-PKI_KEYS = {"enabled", "etsi_version", "validity_hours", "initial", "refill_at", "batch", "ip"}
+PKI_KEYS = {"enabled", "etsi_version", "validity_hours", "initial", "refill_at", "batch", "ip", "key_derivation"}
 SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
 STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
                 "aa_cert", "root_cert", "pseudonyms", "mobility", "env"}
@@ -1241,11 +1249,14 @@ def load_scenario(ref, sets=(), instance=0):
             errors.append("pki needs entrypoint = 'native'")
         if not control:
             errors.append("pki needs a [control] section (the PKI service and refill requests use its broker)")
+        derivation = pki_raw.get("key_derivation", "station")
+        if derivation not in ("station", "pki"):
+            errors.append("pki.key_derivation must be 'station' (the vehicle derives its keys) or 'pki'")
         validity = pki_raw.get("validity_hours", 24)
         if not isinstance(validity, int) or not 1 <= validity <= 8760:
             errors.append("pki.validity_hours must be an integer from 1 to 8760")
         pki = {"name": "pki" + suffix, "ip": remap_ip(pki_raw.get("ip", "192.168.99.5"), instance),
-               "etsi_version": etsi, "validity_hours": validity,
+               "etsi_version": etsi, "validity_hours": validity, "key_derivation": derivation,
                "stations": [{"name": st["base_name"], "station_id": st["station_id"], "certificates": st["pki"]["certificates"],
                              **({"initial": st["pki"]["initial"], "batch": st["pki"]["batch"]}
                                 if st["pki"]["certificates"] == "bke" else {})} for st in users]}
@@ -1448,6 +1459,10 @@ def station_env(sc, st):
         policy = st.get("pki") or {}
         if policy.get("certificates") == "bke" and policy["refill_at"] > 0:
             env["PKI_REFILL_AT"], env["PKI_BATCH_SIZE"] = policy["refill_at"], policy["batch"]
+            if sc["pki"]["key_derivation"] == "station":
+                # the vehicle's own butterfly secrets: the station derives its certificates' keys
+                own = f"/vnap-certs/stations/{st['base_name']}"
+                env["PKI_CATERPILLAR_KEY"], env["PKI_EXPANSION_KEY"] = f"{own}/caterpillar_sign.key", f"{own}/sign_expansion.key"
     elif st["at_cert"]:
         if native:
             env["SECURITY"] = "certs"
@@ -1680,19 +1695,28 @@ def start_pki(r, sc, run_id, ctl, dry_run, timeout=90):
            "--label", f"vnap.instance={sc['instance']}", "--label", "vnap.role=pki-volume", volume])
     r.created_volumes.append(volume)
     config = {"etsi_version": p["etsi_version"], "validity_hours": p["validity_hours"], "psids": [36, 37],
-              "stations": p["stations"]}
-    r.run(["run", "-d", "--name", p["name"], "--network", ctl, "--ip", p["ip"], *run_labels(sc, run_id, "pki"),
-           "--mount", f"type=volume,src={volume},dst=/pki",
-           *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
-           "-e", f"CONTROL_BROKER={c['broker']['name']}", "-e", "PKI_CONFIG=" + json.dumps(config, separators=(",", ":")),
-           PKI_IMAGE, "run"])
+              "key_derivation": p["key_derivation"], "stations": p["stations"]}
+    env = ["-e", f"CONTROL_BROKER={c['broker']['name']}", "-e", "PKI_CONFIG=" + json.dumps(config, separators=(",", ":"))]
+    if p["key_derivation"] == "station":
+        # provision once with the whole volume (it writes the vehicles' directories), then serve with
+        # only private/ and public/: the running PKI cannot read the vehicles' keys
+        r.run(["run", "--rm", "--name", p["name"] + "-provision", "--network", "none",
+               "--mount", f"type=volume,src={volume},dst=/pki", *env, PKI_IMAGE, "provision"])
+        mounts = ["--mount", f"type=volume,src={volume},dst=/pki/private,volume-subpath=private",
+                  "--mount", f"type=volume,src={volume},dst=/pki/public,volume-subpath=public,readonly"]
+        command, ready = "serve", "[PKI] ready"
+    else:
+        mounts = ["--mount", f"type=volume,src={volume},dst=/pki"]
+        command, ready = "run", "[PKI] provisioned"
+    r.run(["run", "-d", "--name", p["name"], "--network", ctl, "--ip", p["ip"], *run_labels(sc, run_id, "pki"), *mounts,
+           *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []), *env, PKI_IMAGE, command])
     r.created_containers.append(p["name"])
     if dry_run:
         return volume
     deadline = time.time() + timeout
     while time.time() < deadline:
         logs = docker("logs", p["name"], check=False)
-        if "[PKI] provisioned" in logs:
+        if ready in logs:
             return volume
         state = docker("inspect", "-f", "{{.State.Status}}", p["name"], check=False).strip()
         if state not in ("running", "created"):

@@ -642,8 +642,9 @@ authorization tickets (ATs) and request a new batch when only a few unused ones 
 design is in the product requirements document (`Specs/VNAP-Secure-Simulation-Service-PRD.pdf`,
 sections 5.5 and 7).
 
-**Status:** phases 1–3 are done ("option A": the PKI returns the AT private keys). A scenario
-with a `[pki]` section gets its own PKI from `vnapctl`; `c-its-pki-refill` is the example.
+**Status:** phases 1–5 are done. A scenario with a `[pki]` section gets its own PKI from
+`vnapctl`; `c-its-pki-refill` is the example. By default the stations derive their ATs' private
+keys themselves (butterfly key expansion, "option B"), so the PKI never holds them.
 
 ```bash
 cd vnap-docker
@@ -656,18 +657,22 @@ cd vnap-docker
 
 - **Scenario keys:**
   - `[pki]`: `initial` (8), `refill_at` (2), `batch` (8), `validity_hours` (24), `etsi_version`
-    (from the stations' security), `ip` (host .5 of the control network). It needs a `[control]`
-    section.
+    (from the stations' security), `ip` (host .5 of the control network), `key_derivation`
+    (`station`, the default, or `pki`: the PKI makes and returns the private keys, as in phases
+    1–4). It needs a `[control]` section.
   - Per station, `pseudonyms = { initial, refill_at, batch, ... }` overrides the defaults;
     `refill_at = 0` gives a fixed pool from the run's PKI that wraps around.
   - Stations with certificates but no `pseudonyms` get a regular AT.
   - Certificate paths (`at_cert`, `aa_cert`, `root_cert`, `pseudonyms.cert`) are not allowed;
     the fixed-file pools remain available in scenarios without `[pki]`.
-- **What `up` does:** creates a volume for the run, starts the PKI container (`pki`, role
-  `pki`) on the control network, waits until it has provisioned the certificates, then mounts
-  into each station only `public/` and its own `stations/<name>/`, read-only. CA keys,
-  caterpillar keys and the other stations' files are not visible to a station. A failed start
-  removes the volume again; `down` removes it with the run.
+- **What `up` does:** creates a volume for the run and provisions it, then starts the PKI
+  container (`pki`, role `pki`) on the control network, and mounts into each station only
+  `public/` and its own `stations/<name>/`, read-only. A failed start removes the volume again;
+  `down` removes it with the run.
+  - A station sees neither the CA keys nor the other stations' files.
+  - With `key_derivation = "station"`, provisioning is a separate one-shot container. The
+    serving PKI mounts only `private/` and `public/`, so it cannot read the vehicles'
+    caterpillar keys or AT keys either. With `pki`, one container provisions and serves.
 - **Status, events, checks:**
   - `status`: a refill line per station (unused ATs, batches, refresh mean and max, retries,
     starved changes, pending request) and a line for the run's PKI (provisioning time, batches,
@@ -686,9 +691,28 @@ cd vnap-docker
     enrolment (caterpillar keys) and an initial batch of butterfly ATs for pseudonym stations.
   - `serve`: answers batch requests on the control broker; each batch uses the station's next
     i-period. Logs issuance and queueing time per request.
-  - Output: `public/` (root, AA, ... certificates), `stations/<name>/` (what a station loads),
-    `private/` (CA keys, enrolment and caterpillar keys; never mount into stations) and
-    `issued.jsonl` (every issued AT with its HashedId8: ground truth).
+  - Output:
+    - `public/`: root, AA, ... certificates.
+    - `stations/<name>/`: the station's own files. With station key derivation this includes
+      the vehicle's caterpillar private key, expansion key and enrolment key.
+    - `private/`: CA keys, and per station the caterpillar public key (or, with
+      `key_derivation = "pki"`, the caterpillar keys), the expansion key, the enrolment
+      certificate and the batch state. Never mounted into stations.
+    - `private/issued.jsonl`: every issued AT with its HashedId8 (ground truth).
+- **Key derivation on the station** (option B, `--pki-caterpillar-key`, `--pki-expansion-key`,
+  `PKI_CATERPILLAR_KEY`, `PKI_EXPANSION_KEY`; `tools/socktap/bke.{hpp,cpp}`):
+  - The PKI's expansion step uses only the vehicle's caterpillar public key A and expansion
+    key k. For each AT (i-period i, index j) it computes the cocoon key A + f_k(i, j)·G,
+    certifies cocoon key + r·G, and returns the certificates with the offsets r and indices j,
+    with no keys.
+  - The station computes each private key as a + f_k(i, j) + r mod n, with f_k the IEEE
+    1609.2.1 expansion function as implemented in C-ITS-PKI. It checks every key against its
+    certificate and rejects ATs whose key does not match.
+  - The initial batch is derived once at provisioning, playing the vehicle; those keys are
+    written only to the vehicle's directory.
+  - The "batch installed" line adds the derivation time:
+    `(PKI issue <ms> ms, key derivation <ms> ms)`; `status` and the metric
+    `<station>.pki.derivation_ms_mean` report it.
 - **Stations** (`PKI_REFILL_AT`, `PKI_BATCH_SIZE`, `PKI_TOPIC`; options `--pki-refill-at`,
   `--pki-batch-size`, `--pki-topic`, `--pki-retry`):
   - When a change leaves `PKI_REFILL_AT` or fewer unused ATs, the station publishes
@@ -940,7 +964,7 @@ the vanetza-nap `jodyhuntatx` branch:
 | RSSI reader synchronization | `tools/socktap/rssi_reader.cpp` | the RSSI thread (nl80211 polling) inserts into and expires the RSSI/MCS maps and writes the channel survey while the receive thread reads them for every packet; on a real radio this could crash socktap. One mutex now guards them, never held across netlink I/O. ThreadSanitizer: RSSI reports 2 -> 0 |
 | ID change notification service | `vanetza/security/id_change_service.{hpp,cpp}` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `vanetza/security/CMakeLists.txt`, `tools/socktap/id_change.{hpp,cpp}` (new), `router_context.{hpp,cpp}`, `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`, `CMakeLists.txt`, `entrypoint.sh` | ETSI TS 102 723-8/-9 ID change notification: subscribe, two-phase commit (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK. A pseudonym change also changes the GN address, MAC and CAM `stationId` (`--pseudonym-id-change full`, default; `certificate` for the old behaviour). Optional random silent period after each change (`--pseudonym-silent-min/-max`, TR 103 415 4.1.4; `tools/socktap/dcc_passthrough.{hpp,cpp}`) |
 | Position control channel (mobility) | `tools/socktap/mobility.{hpp,cpp}` (new), `positioning.cpp`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the station's position follows updates on an MQTT topic ([Vehicle movement](#vehicle-movement)). Options `--position-control-broker`, `-port`, `-topic`, `-username`, `-password`. The static position provider is replaced by a thread-safe controllable one |
-| Certificate refill | `vanetza/security/pseudonym_pool.hpp` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `tools/socktap/pki_channel.{hpp,cpp}` (new), `security.{hpp,cpp}`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the pseudonym pool grows at runtime: new ATs from the run's PKI service, requested at a threshold of unused ones, chain-checked before use, never reused ([Certificate refill](#certificate-refill-per-run-pki)) |
+| Certificate refill | `tools/socktap/bke.{hpp,cpp}` (new, station key derivation), `vanetza/security/pseudonym_pool.hpp` (new), `pseudonym_control.hpp`, `v{2,3}/pseudonym_certificate_provider.{hpp,cpp}`, `tools/socktap/pki_channel.{hpp,cpp}` (new), `security.{hpp,cpp}`, `main.cpp`, `CMakeLists.txt`, `entrypoint.sh` | the pseudonym pool grows at runtime: new ATs from the run's PKI service, requested at a threshold of unused ones, chain-checked before use, never reused ([Certificate refill](#certificate-refill-per-run-pki)) |
 | CAM timer rephase | `tools/socktap/applications/cam_application.{hpp,cpp}`, `main.cpp` | with full ID change, the CAM timer restarts at a random phase on COMMIT, so CAM timing does not link old and new identities ([Pseudonym change events](#pseudonym-change-events)) |
 | CAM kinematics | `tools/socktap/applications/cam_application.cpp` | heading, speed/heading confidence, longitudinal acceleration and yaw rate in the CAM's units (and yaw rate sign); see [Vehicle movement](#vehicle-movement) |
 | Event-driven pseudonym change | `vanetza/security/pseudonym_control.hpp` (new), `tools/socktap/pseudonym_channel.{hpp,cpp}` (new), `tools/socktap/{main.cpp,CMakeLists.txt}`, `tools/socktap/time_trigger.{hpp,cpp}` (`post()`), `entrypoint.sh` | the pseudonym changes only on events from a separate MQTT control channel, not on a timer ([Pseudonym change events](#pseudonym-change-events)). Options `--pseudonym-control-broker`, `-port`, `-topic`, `-username`, `-password` and `--pseudonym-min-interval` |

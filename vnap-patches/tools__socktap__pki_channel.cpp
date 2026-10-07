@@ -79,6 +79,10 @@ PkiChannel::PkiChannel(const Options& options, const std::string& client_id, Pse
     reconnect_delay_set(1, 30, true);
     loop_start();
     connect_async(m_options.host.c_str(), m_options.port, 60);
+    if (!m_options.caterpillar_key.empty() || !m_options.expansion_key.empty()) {
+        m_bke.reset(new BkeSecrets(load_bke_secrets(m_options.caterpillar_key, m_options.expansion_key)));
+        log("butterfly key derivation on the station (caterpillar key " + m_options.caterpillar_key + ")");
+    }
     log("certificate refill: batches of " + std::to_string(m_options.batch_size) + " requested at "
         + std::to_string(m_options.refill_at) + " unused, " + m_options.host + ":" + std::to_string(m_options.port)
         + " " + m_request_topic + " / " + m_batch_topic);
@@ -182,10 +186,18 @@ void PkiChannel::handle_batch(const std::string& payload)
         return log("request " + id + " refused: "
             + std::string(batch["error"].IsString() ? batch["error"].GetString() : "?"));
     }
-    if (!batch.HasMember("certificates") || !batch["certificates"].IsArray() || !batch.HasMember("keys")
-            || !batch["keys"].IsArray() || batch["certificates"].Size() != batch["keys"].Size()) {
-        return log("request " + id + ": malformed batch (certificates and keys must be arrays of equal length)");
+    const bool derive = batch.HasMember("offsets");
+    const char* secret = derive ? "offsets" : "keys";
+    if (!batch.HasMember("certificates") || !batch["certificates"].IsArray() || !batch.HasMember(secret)
+            || !batch[secret].IsArray() || batch["certificates"].Size() != batch[secret].Size()) {
+        return log("request " + id + ": malformed batch (certificates and keys or offsets must be arrays of equal length)");
     }
+    if (derive && (!m_bke || !batch.HasMember("i_period") || !batch["i_period"].IsUint() || !batch.HasMember("indices")
+            || !batch["indices"].IsArray() || batch["indices"].Size() != batch["offsets"].Size())) {
+        return log("request " + id + (m_bke ? ": malformed batch (i_period and indices needed with offsets)"
+                                            : ": batch needs key derivation but no caterpillar key is configured"));
+    }
+    long derivation_us = 0;
 
     // the loaders read files: stage the batch in a private directory, removed afterwards
     const fs::path dir = fs::path(m_options.batch_dir) / id;
@@ -195,17 +207,35 @@ void PkiChannel::handle_batch(const std::string& payload)
         fs::create_directories(dir);
         fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace);
         const auto& certs = batch["certificates"];
-        const auto& keys = batch["keys"];
+        const auto& secrets = batch[secret];
         for (rapidjson::SizeType k = 0; k < certs.Size(); ++k) {
-            std::string cert, key;
-            if (!certs[k].IsString() || !keys[k].IsString() || !base64_decode(certs[k].GetString(), cert)
-                    || !base64_decode(keys[k].GetString(), key)) {
-                throw std::runtime_error("entry " + std::to_string(k) + " is not base64");
+            std::string cert;
+            if (!certs[k].IsString() || !secrets[k].IsString() || !base64_decode(certs[k].GetString(), cert)) {
+                throw std::runtime_error("entry " + std::to_string(k) + " is malformed");
             }
             const auto cert_path = dir / (std::to_string(k) + ".cert");
             const auto key_path = dir / (std::to_string(k) + ".der");
             write_file(cert_path, cert, false);
-            write_file(key_path, key, true);
+            if (derive) {
+                // the private key exists only here: caterpillar key + expansion + the AA's offset
+                if (!batch["indices"][k].IsUint()) {
+                    throw std::runtime_error("index " + std::to_string(k) + " is not an unsigned integer");
+                }
+                const auto start = std::chrono::steady_clock::now();
+                const CryptoPP::Integer offset((std::string(secrets[k].GetString()) + "h").c_str());
+                const auto key = bke_butterfly_private_key(*m_bke, batch["i_period"].GetUint(),
+                    batch["indices"][k].GetUint(), offset);
+                write_pkcs8_private_key(key, key_path.string());
+                fs::permissions(key_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
+                derivation_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+            } else {
+                std::string key;
+                if (!base64_decode(secrets[k].GetString(), key)) {
+                    throw std::runtime_error("key " + std::to_string(k) + " is not base64");
+                }
+                write_file(key_path, key, true);
+            }
             files.emplace_back(cert_path.string(), key_path.string());
         }
         result = m_loader(files);
@@ -228,7 +258,9 @@ void PkiChannel::handle_batch(const std::string& payload)
         ? std::to_string(static_cast<long>(batch["issue_ms"].GetDouble())) : std::string("?");
     const std::size_t unused = m_control.unused_pseudonyms();
     log("batch installed: request " + id + ", " + std::to_string(result.added) + " certificate(s), refresh "
-        + std::to_string(refresh) + " ms (PKI issue " + issue + " ms), " + std::to_string(unused) + " unused");
+        + std::to_string(refresh) + " ms (PKI issue " + issue + " ms"
+        + (derive ? ", key derivation " + std::to_string(derivation_us / 1000) + " ms" : std::string()) + "), "
+        + std::to_string(unused) + " unused");
     m_outstanding.clear();
     m_trigger.runtime().cancel(this);
     if (unused <= m_options.refill_at) {
@@ -251,6 +283,11 @@ void add_pki_channel_options(po::options_description& options)
             "Seconds before an unanswered request is repeated (doubling, up to 120).")
         ("pki-batch-dir", po::value<std::string>()->default_value("/tmp/vnap-pki"),
             "Private directory where received batches are staged while they are loaded.")
+        ("pki-caterpillar-key", po::value<std::string>(),
+            "The vehicle's butterfly caterpillar private key (PKCS#8 DER): with it (and --pki-expansion-key) the "
+            "station derives its certificates' private keys from the offsets the PKI returns, so the PKI never "
+            "knows them.")
+        ("pki-expansion-key", po::value<std::string>(), "The vehicle's butterfly expansion key (16 bytes, AES-128).")
     ;
 }
 
@@ -292,6 +329,13 @@ std::unique_ptr<PkiChannel> create_pki_channel(const po::variables_map& vm, Pseu
     options.batch_size = static_cast<std::size_t>(batch_size);
     options.retry = std::chrono::seconds(retry);
     options.batch_dir = vm["pki-batch-dir"].as<std::string>();
+    if (vm.count("pki-caterpillar-key") != vm.count("pki-expansion-key")) {
+        throw std::runtime_error("--pki-caterpillar-key and --pki-expansion-key go together");
+    }
+    if (vm.count("pki-caterpillar-key")) {
+        options.caterpillar_key = vm["pki-caterpillar-key"].as<std::string>();
+        options.expansion_key = vm["pki-expansion-key"].as<std::string>();
+    }
     return std::make_unique<PkiChannel>(options, "vanetza-pki-" + std::to_string(station_id), *control,
         std::move(loader), trigger, station_id);
 }
