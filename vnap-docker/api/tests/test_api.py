@@ -213,5 +213,59 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(alice.post(f"/api/runs/{run['id']}/control", json={"action": "change", "station": "obu1-i7"}).status_code, 409)
 
 
+    # ------------------------------------------------------------ web UI
+    def test_ui_is_served_with_a_strict_csp(self):
+        c = TestClient(self.app)
+        r = c.get("/", follow_redirects=False)
+        self.assertEqual((r.status_code, r.headers["location"]), (307, "/ui/"))
+        r = c.get("/ui/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('src="js/main.js"', r.text)
+        csp = r.headers["content-security-policy"]
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("unsafe", csp)
+        self.assertIn("https://tile.openstreetmap.org", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        for path in ("/ui/js/main.js", "/ui/js/views/run.js", "/ui/vendor/leaflet/leaflet.js", "/ui/app.css"):
+            self.assertEqual(c.get(path).status_code, 200, path)
+        self.assertEqual(c.get("/ui/../vnapapi/app.py").status_code, 404)
+        self.assertEqual(c.get("/api/ui-config").json()["tile_url"], "https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+        self.assertEqual(c.get("/api/runs").status_code, 401)        # the UI files are public, the data is not
+
+    def test_layout_for_the_map(self):
+        alice = self.client("alice")
+        run = alice.post("/api/runs", json={"template": "mixzone-random"}).json()
+        r = alice.get(f"/api/runs/{run['id']}/layout")
+        self.assertEqual(r.status_code, 200, r.text)
+        lay = r.json()
+        names = [s["name"].split("-")[0] for s in lay["stations"]]
+        self.assertEqual(names[:2], ["rsu", "obu1"])
+        rsu, obu1 = lay["stations"][0], lay["stations"][1]
+        self.assertEqual((rsu["station_type"], rsu["mobility"], rsu["pseudonyms"]), (15, {}, False))
+        self.assertTrue(obu1["pseudonyms"])
+        self.assertEqual(obu1["mobility"]["crossing"], [40.0, -8.0])
+        self.assertGreater(obu1["start"][1], -8.0)                  # starts on the east arm
+        self.assertEqual(len(lay["mix_zones"]), 1)
+        self.assertTrue(lay["pki"] and lay["eavesdropper"] and lay["control"])
+        self.assertEqual(self.client("bob").get(f"/api/runs/{run['id']}/layout").status_code, 404)
+
+
+    def test_probe_timeout_removes_the_container(self):
+        import subprocess
+        from vnapapi import control
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[:2] == ["docker", "run"]:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(control.subprocess, "run", fake_run):
+            with self.assertRaises(control.ControlError):
+                control.read_retained("net", "broker", "vnap/position/+", ("u", "secret"))
+        name = calls[0][calls[0].index("--name") + 1]
+        self.assertEqual(calls[1], ["docker", "rm", "-f", name])
+        self.assertNotIn("secret", " ".join(calls[0]))              # credentials go by environment only
+
 if __name__ == "__main__":
     unittest.main()

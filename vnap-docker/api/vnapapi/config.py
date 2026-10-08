@@ -14,6 +14,8 @@ DEFAULTS = {
     "containers": {"station": {"cpus": 1.0, "memory": "512m"}, "pki": {"cpus": 1.0, "memory": "512m"},
                    "default": {"cpus": 0.5, "memory": "256m"}},
     "worker": {"threads": 2},
+    "ui": {"tile_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+           "tile_attribution": "&copy; OpenStreetMap contributors"},
 }
 
 

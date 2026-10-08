@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VNAP Simulations</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="app.css">
+  <script src="vendor/leaflet/leaflet.js" defer></script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/runs">VNAP Simulations</a>
+    <nav id="nav" hidden>
+      <a href="#/runs">Runs</a>
+      <a href="#/new">New run</a>
+      <a href="#/account">Account</a>
+      <a href="#/admin" id="nav-admin" hidden>Admin</a>
+      <span class="who" id="who"></span>
+      <button type="button" class="link" id="logout">Log out</button>
+    </nav>
+  </header>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <main id="app">Loading...</main>
+</body>
+</html>

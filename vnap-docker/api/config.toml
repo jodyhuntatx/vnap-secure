@@ -34,5 +34,10 @@ memory = "512m"
 cpus = 0.5
 memory = "256m"
 
+# web UI: map tiles (the browser loads them; the CSP allows only this origin besides the service)
+[ui]
+tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+tile_attribution = "&copy; OpenStreetMap contributors"
+
 [worker]
 threads = 2                    # runs starting or stopping at the same time

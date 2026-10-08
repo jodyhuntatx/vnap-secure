@@ -386,7 +386,7 @@ are.
 
 ## Simulation service (API)
 
-`vnap-docker/api/` is the HTTP API of the multi-user simulation service (phase 7 of
+`vnap-docker/api/` is the HTTP API and web UI of the multi-user simulation service (phases 7 and 8 of
 `Specs/VNAP-Secure-Simulation-Service-PRD.pdf`). It drives simulations through the same
 `vnapsim` package as `vnapctl`. Users reach it only over HTTPS through a reverse proxy; the
 service account is the only one with access to docker.
@@ -434,8 +434,49 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
     scoring (`score.json`: the eavesdropper's links per technique, correct or wrong, and track
     purity, against the stations' own logs) and the PKI's issue log (digests only, never keys).
     Download them from `/results`.
-- **Tests:** `cd vnap-docker/api && python3 -m unittest discover -s tests` (18 tests, no docker;
+- **Tests:** `cd vnap-docker/api && python3 -m unittest discover -s tests` (21 tests, no docker;
   needs the packages of `requirements.txt`).
+
+### Web UI
+
+The same service serves a browser UI at `/ui/` (`/` redirects there), phase 8 of the PRD: a
+user can author, run, observe and evaluate a scenario without the command line. It is plain
+JavaScript modules (`api/ui/`), with no build step and no third-party code except Leaflet
+(vendored in `api/ui/vendor/leaflet/`), and it uses only the API above.
+
+- **Runs:** every visible run with its state and time left; stop and delete.
+- **New run:**
+  - *From a template*: pick a template, see its text, add overrides.
+  - *Scenario text*: edit TOML directly.
+  - *Builder*: RSUs and vehicles, pseudonyms and silent periods, routes or random-turn
+    crossings, mix zones, the run's PKI (certificates at start, refill) and the eavesdropper.
+    Positions, routes, crossings and zones are set by clicking the map. *Edit as text* turns
+    the result into TOML.
+
+  All three validate against the user policy before starting. Field errors are listed, and
+  in the builder the station concerned is highlighted.
+- **Run:**
+  - *Overview*: owner, instance, time left, image and seed; per station its state,
+    pseudonym, refill and chain checks; the run PKI's issue times; the eavesdropper's
+    tracks; warnings. Stop and share are here.
+  - *Map*: start positions, routes, crossings and mix zones, with live positions every 2 s.
+    Pick a station, then click the map to move it.
+  - *Events*: the server-sent event stream, filtered by kind, with pause.
+  - *Control*: change pseudonym, ID change trigger, lock and unlock, with each station's
+    answer.
+  - *Results*: run a check (extra expectations allowed) and see earlier checks. After the
+    stop, download the collected files and see the eavesdropper's score against ground
+    truth.
+- **Account:** change password; create and revoke API tokens (a new token is shown once).
+- **Admin:** create users, change roles, disable, unlock, reset passwords; the audit log,
+  filtered by user.
+
+Security: a strict Content-Security-Policy (scripts and styles only from the service, no
+inline code; images also from the map tile server), `frame-ancestors 'none'`, no referrer.
+Text is only ever inserted as text, never as HTML. The session cookie and CSRF token are
+the API's. Map tiles come from `[ui] tile_url` in `config.toml` (OpenStreetMap by default).
+For an installation without internet access, set it to an internal tile server, or to `""`
+for no background map.
 
 ## Monitor messages between stations
 

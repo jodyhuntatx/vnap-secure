@@ -7,16 +7,19 @@ import asyncio
 import json
 import os
 import re
+import threading
 import time
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from urllib.parse import urlsplit
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .config import load_config
-from .control import publish, read_retained, request as mqtt_request
+from .control import ControlError, publish, read_retained, request as mqtt_request
 from .db import Database
 from .runs import RunError, RunManager
 from .security import CSRF_HEADER, ROLES, SESSION_COOKIE, TOKEN_PREFIX, Accounts, check_password_policy
@@ -26,7 +29,10 @@ from vnapsim.common import EVENT_KINDS, env_of  # noqa: E402
 from vnapsim.events import collect_events, describe  # noqa: E402
 from vnapsim.schema import SCENARIO_SCHEMA  # noqa: E402
 from vnapsim.status import Simulation, build_status, observer_reports  # noqa: E402
+from vnapsim.scenario import load_scenario  # noqa: E402
 from vnapsim.scoring import score_run  # noqa: E402
+
+UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "ui")
 
 STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -51,12 +57,26 @@ def create_app(cfg=None, start_workers=True):
     async def run_error(request, exc):
         return JSONResponse({"error": str(exc), "errors": exc.errors}, status_code=exc.status)
 
+    @app.exception_handler(ControlError)
+    async def control_error(request, exc):
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    tiles = urlsplit(cfg["ui"]["tile_url"].replace("{s}", "*"))   # {s}: Leaflet's a/b/c subdomains
+    tile_origin = f"{tiles.scheme}://{tiles.netloc}" if tiles.netloc else ""
+    csp = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: " + tile_origin
+           + "; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
     @app.middleware("http")
     async def headers(request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Cache-Control"] = "no-store"
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/ui"):
+            response.headers["Content-Security-Policy"] = csp
+            response.headers["Cache-Control"] = "no-cache"
+        else:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     def principal(request: Request):
@@ -370,15 +390,25 @@ def create_app(cfg=None, start_workers=True):
                 await asyncio.sleep(2)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    position_cache = {}   # run id -> (time, positions): one probe container serves every viewer of a map
+    position_locks = {}
+
     @app.get("/api/runs/{run_id}/positions")
     def positions(run_id: str, user=Depends(principal)):
         """Current position of every moving station (retained position updates on the control channel)."""
-        sim = runs.simulation(run_for(user, run_id))
-        if not sim.broker:
-            return {}
-        ids = {v: k for k, v in station_names(sim).items()}
-        found = read_retained(sim.ctl, Simulation.name(sim.broker), "vnap/position/+", sim.control_auth())
-        return {ids.get(int(t.rsplit("/", 1)[1]), t): p for t, p in found.items() if t.rsplit("/", 1)[1].isdigit()}
+        run = run_for(user, run_id)
+        with position_locks.setdefault(run_id, threading.Lock()):
+            cached = position_cache.get(run_id)
+            if cached and time.time() - cached[0] < 1.5:
+                return cached[1]
+            sim = runs.simulation(run)
+            if not sim.broker:
+                return {}
+            ids = {v: k for k, v in station_names(sim).items()}
+            found = read_retained(sim.ctl, Simulation.name(sim.broker), "vnap/position/+", sim.control_auth(), wait_s=1)
+            out = {ids.get(int(t.rsplit("/", 1)[1]), t): p for t, p in found.items() if t.rsplit("/", 1)[1].isdigit()}
+            position_cache[run_id] = (time.time(), out)
+            return out
 
     @app.get("/api/runs/{run_id}/eavesdropper")
     def eavesdropper(run_id: str, user=Depends(principal)):
@@ -489,6 +519,38 @@ def create_app(cfg=None, start_workers=True):
     @app.get("/api/healthz")
     def health():
         return {"ok": True}
+
+    # ------------------------------------------------------------ web UI
+    @app.get("/api/ui-config")
+    def ui_config():
+        return {"tile_url": cfg["ui"]["tile_url"], "tile_attribution": cfg["ui"]["tile_attribution"]}
+
+    @app.get("/api/runs/{run_id}/layout")
+    def layout(run_id: str, user=Depends(principal)):
+        """Where the stations start and how they move, and the mix zones: for the map."""
+        run = run_for(user, run_id)
+        try:
+            sc = load_scenario(run["scenario_file"], run["overrides"], run["instance"] or 0)
+        except Exception as e:  # noqa: BLE001  (the run's file is validated; report rather than fail)
+            raise HTTPException(409, f"cannot read the run's scenario: {e}")
+        stations = []
+        for st in sc["stations"]:
+            mob = st.get("mobility") or {}
+            start = mob.get("start") or [float(st["env"].get("VANETZA_LATITUDE", 40.0)),
+                                         float(st["env"].get("VANETZA_LONGITUDE", -8.0))]
+            stations.append({"name": st["name"], "station_id": st["station_id"], "station_type": st["station_type"],
+                             "start": start, "pseudonyms": bool(st.get("pseudonyms")),
+                             "mobility": {k: mob[k] for k in ("route", "loop", "crossing", "arm_m", "speed_kmh") if k in mob}})
+        zones = ((sc["control"] or {}).get("mobility") or {}).get("mix_zones", []) if sc["control"] else []
+        return {"stations": stations, "mix_zones": zones, "control": bool(sc["control"]), "pki": bool(sc["pki"]),
+                "eavesdropper": bool(sc["eavesdropper"])}
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/ui/")
+
+    if os.path.isdir(UI_DIR):
+        app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
 
     return app
 
