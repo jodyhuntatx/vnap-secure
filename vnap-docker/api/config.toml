@@ -1,0 +1,38 @@
+# vnap-secure simulation service (API) configuration. Paths are relative to this directory.
+
+[server]
+data_dir = "data"              # database, user scenarios, collected results
+cookie_secure = true           # session cookie only over HTTPS (false only for http://localhost tests)
+session_hours = 12
+
+[auth]
+max_failed_logins = 5          # then the account is locked for lockout_minutes
+lockout_minutes = 15
+login_attempts_per_minute = 10 # per client address
+
+# per role: runs at the same time, longest run (stopped automatically), space for kept results
+[limits.user]
+concurrent_runs = 2
+max_duration_minutes = 60
+results_mb = 500
+
+[limits.admin]
+concurrent_runs = 10
+max_duration_minutes = 480
+results_mb = 5000
+
+# resource limits of the containers of every run, per role (vnap.role label)
+[containers.station]
+cpus = 1.0
+memory = "512m"
+
+[containers.pki]
+cpus = 1.0
+memory = "512m"
+
+[containers.default]
+cpus = 0.5
+memory = "256m"
+
+[worker]
+threads = 2                    # runs starting or stopping at the same time

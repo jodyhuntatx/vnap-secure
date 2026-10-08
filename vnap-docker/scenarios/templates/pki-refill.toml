@@ -1,0 +1,27 @@
+description = "the run's own PKI: an RSU and two OBUs that change pseudonym every 10 s and refill butterfly certificates (8, refill at 2)"
+
+# A template users may start (no addresses, networks or certificate files: the service assigns
+# them). Change it with overrides, e.g. control.client.interval=5 or pki.batch=16.
+
+[defaults]
+security = "certs-v3"
+
+[pki]
+
+[[stations]]
+name = "rsu"
+station_type = 15
+
+[[stations]]
+name = "obu1"
+pseudonyms = {}
+
+[[stations]]
+name = "obu2"
+pseudonyms = {}
+
+[control]
+
+[control.client]
+mode = "periodic"
+interval = 10

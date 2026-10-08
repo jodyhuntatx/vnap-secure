@@ -216,7 +216,7 @@ def resolve_scenario_path(ref):
     raise ScenarioError(f"scenario '{ref}' not found (vnapctl scenarios lists them)")
 
 
-def load_scenario(ref, sets=(), instance=0, role="admin", policy=None):
+def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_sets=()):
     """Read, override, validate and resolve a scenario file into a flat description."""
     path = resolve_scenario_path(ref)
     with open(path, "rb") as f:
@@ -231,6 +231,9 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None):
     if role == "user":
         for message in policy_violations(data, policy or load_policy()):
             errors.append(message)
+    # the service's own settings (e.g. generated broker credentials): after the user policy
+    for assignment in service_sets:
+        apply_override(data, assignment)
     base = os.path.dirname(path)
     # default: the repository's vnap-certs/; an explicit certs_dir is relative to the scenario file
     certs_dir = os.path.realpath(os.path.join(base, data["certs_dir"]) if "certs_dir" in data

@@ -1,0 +1,10 @@
+# Caddy terminates TLS (automatic certificates) and forwards to the API on localhost; only
+# 443 (and 80 for the certificate challenge) is open to the internet.
+vnap.example.org {
+    encode gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Referrer-Policy "no-referrer"
+    }
+    reverse_proxy 127.0.0.1:8080
+}

@@ -24,12 +24,26 @@ from .status import Simulation, build_status
 class Runner:
     """Runs (or, with dry_run, prints) docker commands; remembers what to roll back."""
 
-    def __init__(self, dry_run, secret_env):
+    def __init__(self, dry_run, secret_env, limits=None):
         self.dry_run = dry_run
         self.env = {**os.environ, **secret_env}  # secrets reach docker via "-e NAME", never argv
         self.created_containers, self.created_networks, self.created_volumes = [], [], []
+        # resource limits per container role (label vnap.role), e.g. {"station": {"cpus": 1,
+        # "memory": "512m"}, "default": {...}}: applied to every "docker run/create"
+        self.limits = limits or {}
+
+    def limit_args(self, args):
+        role = next((a.split("=", 1)[1] for a in args if a.startswith("vnap.role=")), None)
+        spec = self.limits.get(role) or self.limits.get("default") or {}
+        out = []
+        for key in ("cpus", "memory", "pids_limit"):
+            if spec.get(key) is not None:
+                out += [f"--{key.replace('_', '-')}", str(spec[key])]
+        return out
 
     def run(self, args, stdin_cmd=None):
+        if args and args[0] in ("run", "create") and self.limits:
+            args = [args[0], *self.limit_args(args), *args[1:]]
         if self.dry_run:
             print(("  " + " ".join(stdin_cmd) + " | " if stdin_cmd else "  ") + "docker " + " ".join(
                 a if " " not in a else repr(a) for a in args))
@@ -166,12 +180,12 @@ def network_subnet(name):
     return (info.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet")
 
 
-def allocate_instance(ref, sets=(), role="admin", dry_run=False, first=1, last=250):
+def allocate_instance(ref, sets=(), role="admin", dry_run=False, first=1, last=250, policy=None, service_sets=()):
     """Claim the lowest free instance N >= 1 for a scenario, atomically: creating the instance's
     simulation network fails if it exists, so concurrent `up --instance auto` never share an N.
     Returns (scenario for N, claimed network name or None in a dry run)."""
     for n in range(first, last + 1):
-        sc = load_scenario(ref, sets, n, role)
+        sc = load_scenario(ref, sets, n, role, policy, service_sets)
         lan = sc["network"]["name"]
         if network_subnet(lan):
             continue
@@ -187,7 +201,7 @@ def allocate_instance(ref, sets=(), role="admin", dry_run=False, first=1, last=2
     raise ScenarioError(f"no free instance between {first} and {last}")
 
 
-def scenario_up(sc, dry_run=False, wait=30.0, claimed=None):
+def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
     """Start a scenario. Returns (ok, report dict)."""
     lan, ctl = sc["network"]["name"], (sc["control"] or {}).get("network", "vnapctl0-unused")
     sim = Simulation(lan, ctl)
@@ -227,7 +241,7 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None):
                       "POSITION_CONTROL_USERNAME": user or "", "POSITION_CONTROL_PASSWORD": password or ""}
 
     run_id = f"{sc['name']}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-    r = Runner(dry_run, secret_env)
+    r = Runner(dry_run, secret_env, limits)
     if claimed:  # the network --instance auto created: it belongs to this run (rollback, down)
         r.created_networks.append(claimed)
     if dry_run:
