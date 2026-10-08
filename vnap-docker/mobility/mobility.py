@@ -9,7 +9,7 @@ Publishes each vehicle's position on the control channel broker, topic
 Configuration: JSON in the environment variable MOBILITY_CONFIG (or a file given as the only
 argument):
   {"broker": "pseudo-broker", "port": 1883, "topic_prefix": "vnap/position", "rate_hz": 5,
-   "vehicles": [{"station_id": 2, "route": [[40.0, -8.003], [40.0, -7.997]],
+   "vehicles": [{"station_id": 2, "route": [[40.208106, -8.4227848], [40.208106, -8.4167664]],
                  "speed_kmh": 50, "start_s": 0, "loop": true}]}
 A vehicle waits at its first waypoint until start_s, then drives the route at constant speed.
 With loop it drives back to the first waypoint and starts over; without, it stops at the end.

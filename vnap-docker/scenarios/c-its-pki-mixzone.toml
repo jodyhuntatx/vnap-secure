@@ -1,7 +1,8 @@
 description = "intersection mix zone: four OBUs loop four blocks around a crossing, change identity on entering a 40 m zone and stay silent 6-12 s while they turn; patient eavesdropper (15 s link window)"
 
-# Layout: crossing at 40.0, -8.0 (RSU), four 150 m blocks around it (0.00135 deg latitude,
-# 0.00176 deg longitude). Each OBU drives clockwise around one block at 36 km/h (60 s a lap)
+# Layout: crossing at 40.208106, -8.4197756 (RSU; Rua Alexandre Herculano x Rua
+# Venancio Rodrigues, Coimbra), four 150 m blocks around it (0.00135 deg latitude,
+# 0.00177 deg longitude). Each OBU drives clockwise around one block at 36 km/h (60 s a lap)
 # and turns right at the crossing, so it arrives on one road and leaves on another:
 #   obu1 (NE block) arrives from the east,  leaves north
 #   obu2 (NW block) arrives from the north, leaves west
@@ -29,7 +30,7 @@ station_type = 15
 mac = "6e:06:e0:03:00:01"
 at_cert = "/vnap-certs/c-its-pki/at.cert"
 at_key = "/vnap-certs/c-its-pki/at.der"
-env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
 
 # 24 butterfly ATs, 6 per car: about 6 laps (6 minutes) before a certificate repeats
 [[stations]]
@@ -39,7 +40,7 @@ station_id = 2
 station_type = 5
 mac = "6e:06:e0:03:00:02"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { route = [[40.0, -7.99824], [40.0, -8.0], [40.00135, -8.0], [40.00135, -7.99824]], speed_kmh = 36, start_s = 0, loop = true }
+mobility = { route = [[40.208106, -8.4180102], [40.208106, -8.4197756], [40.209456, -8.4197756], [40.209456, -8.4180102]], speed_kmh = 36, start_s = 0, loop = true }
 
 [[stations]]
 name = "obu2"
@@ -48,7 +49,7 @@ station_id = 3
 station_type = 5
 mac = "6e:06:e0:03:00:03"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 6, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { route = [[40.00135, -8.0], [40.0, -8.0], [40.0, -8.00176], [40.00135, -8.00176]], speed_kmh = 36, start_s = 1.5, loop = true }
+mobility = { route = [[40.209456, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.421541], [40.209456, -8.421541]], speed_kmh = 36, start_s = 1.5, loop = true }
 
 [[stations]]
 name = "obu3"
@@ -57,7 +58,7 @@ station_id = 4
 station_type = 5
 mac = "6e:06:e0:03:00:04"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 12, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { route = [[40.0, -8.00176], [40.0, -8.0], [39.99865, -8.0], [39.99865, -8.00176]], speed_kmh = 36, start_s = 3, loop = true }
+mobility = { route = [[40.208106, -8.421541], [40.208106, -8.4197756], [40.206756, -8.4197756], [40.206756, -8.421541]], speed_kmh = 36, start_s = 3, loop = true }
 
 [[stations]]
 name = "obu4"
@@ -66,7 +67,7 @@ station_id = 5
 station_type = 5
 mac = "6e:06:e0:03:00:05"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 18, count = 6, min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { route = [[39.99865, -8.0], [40.0, -8.0], [40.0, -7.99824], [39.99865, -7.99824]], speed_kmh = 36, start_s = 4.5, loop = true }
+mobility = { route = [[40.206756, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.4180102], [40.206756, -8.4180102]], speed_kmh = 36, start_s = 4.5, loop = true }
 
 [control]
 network = "vnapctl0"
@@ -79,7 +80,7 @@ mobility_rate_hz = 5
 [[control.mix_zones]]
 # the mobility client sends a pseudonym change event to each car entering the zone
 name = "crossing"
-center = [40.0, -8.0]
+center = [40.208106, -8.4197756]
 radius_m = 40
 
 [control.client]

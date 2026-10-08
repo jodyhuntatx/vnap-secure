@@ -206,7 +206,19 @@ def describe(ev):
             return f"PKI provisioned in {ev['duration_ms']} ms"
         return f"PKI {a} {ev.get('request', '')}: {ev.get('error', '')}"
     if k == "chain":
-        return f"chain {ev['role']} {ev.get('cert', '')}: {ev['result']}"
+        # the station verifies a certificate's signature chain up to the root CA before using it
+        role, cert = ev["role"], ev.get("cert", "")
+        if role == "batch_at":
+            parts = cert.rstrip("/").split("/")
+            what = (f"refill certificate {parts[-1].removesuffix('.cert')} of batch request {parts[-2]}"
+                    if len(parts) >= 2 else f"refill certificate {cert}")
+        elif role == "own_at":
+            what = f"own pseudonym certificate {cert}"
+        elif role == "chain":
+            what = f"CA certificate {cert}"
+        else:
+            return f"certificate check warning: {ev['result']}"
+        return f"certificate check, {what}: chain to the root CA {ev['result']}"
     if k == "error":
         return f"ERROR {ev['text']}"
     return json.dumps(ev)

@@ -3,13 +3,20 @@ import { get } from "../api.js";
 
 let uiConfig = null;
 
-export async function makeMap(el, center, zoom) {
+export async function getUiConfig() {
   if (!uiConfig) {
     try { uiConfig = await get("/ui-config"); } catch (e) { uiConfig = {}; }
   }
-  const map = L.map(el, { zoomControl: true }).setView(center || [40.0, -8.0], zoom || 16);
+  return uiConfig;
+}
+
+export async function makeMap(el, center, zoom) {
+  await getUiConfig();
+  const map = L.map(el, { zoomControl: true }).setView(center || uiConfig.origin || [40.208106, -8.4197756], zoom || 16);
   if (uiConfig.tile_url) {
-    L.tileLayer(uiConfig.tile_url, { maxZoom: 19, attribution: uiConfig.tile_attribution || "" }).addTo(map);
+    // Tile servers such as OpenStreetMap's refuse requests without a Referer; the page's policy is
+    // no-referrer, so tiles alone send the site's origin (never a path).
+    L.tileLayer(uiConfig.tile_url, { maxZoom: 19, attribution: uiConfig.tile_attribution || "", referrerPolicy: "strict-origin" }).addTo(map);
   }
   return map;
 }

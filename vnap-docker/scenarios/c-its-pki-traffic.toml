@@ -17,7 +17,7 @@ station_type = 15
 mac = "6e:06:e0:03:00:01"
 at_cert = "/vnap-certs/c-its-pki/at.cert"
 at_key = "/vnap-certs/c-its-pki/at.der"
-env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
 
 # about 260 m either side of the RSU, back and forth at 50 km/h (one lap ~37 s)
 [[stations]]
@@ -27,7 +27,7 @@ station_id = 2
 station_type = 5
 mac = "6e:06:e0:03:00:02"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 0, count = 4, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
-mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, loop = true }
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, loop = true }
 
 # about 280 m either side of the RSU, back and forth at 40 km/h, starting 5 s later
 [[stations]]
@@ -37,7 +37,7 @@ station_id = 3
 station_type = 5
 mac = "6e:06:e0:03:00:03"
 pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-certs/c-its-pki/bke_at_{i}_sign.der", first = 4, count = 4, min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
-mobility = { route = [[39.9975, -8.0], [40.0025, -8.0]], speed_kmh = 40, start_s = 5, loop = true }
+mobility = { route = [[40.205606, -8.4197756], [40.210606, -8.4197756]], speed_kmh = 40, start_s = 5, loop = true }
 
 [control]
 network = "vnapctl0"

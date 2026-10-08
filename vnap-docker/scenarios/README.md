@@ -46,13 +46,17 @@ pseudonyms = { cert = "/vnap-certs/c-its-pki/bke_at_{i}.cert", key = "/vnap-cert
 #   silent_min_ms/silent_max_ms: random radio silence after each full ID change (0 = off)
 #   first: index of the first file ({i} = first .. first+count-1, default 0), so stations can
 #          split one numbered set, e.g. first = 0, count = 4 and first = 4, count = 4
+# a fixed position (default: 40.208106, -8.4197756, the crossing of Rua Alexandre Herculano and
+# Rua Venancio Rodrigues in Coimbra, ORIGIN in vnapsim/common.py; the example layouts are built
+# around it):
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
 # optional movement (needs [control]); the station starts at the first waypoint:
-mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 0, loop = true }
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, start_s = 0, loop = true }
 #   route: two or more [lat, lon] waypoints in degrees, driven at constant speed_kmh
 #   start_s: seconds to wait at the first waypoint; loop: drive back to the first waypoint and
 #   repeat (otherwise stop at the last one)
 # ... or laps through a four-way crossing with random turns (instead of route and loop):
-mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
 #   arms of arm_m metres end on a square ring road; each lap: random turn at the crossing, random
 #   way along the ring, back in on the next arm (4 x arm_m per lap)
 
@@ -80,7 +84,7 @@ auth = { username_env = "CTL_USER", password_env = "CTL_PASS" }   # optional; na
 
 [[control.mix_zones]]              # optional, repeatable; needs stations with mobility and pseudonyms
 name = "crossing"
-center = [40.0, -8.0]             # [lat, lon]
+center = [40.208106, -8.4197756]             # [lat, lon]
 radius_m = 40                     # pseudonym change event when a vehicle enters this circle
 stations = [2, 3]                 # default: every station with mobility and pseudonyms
 

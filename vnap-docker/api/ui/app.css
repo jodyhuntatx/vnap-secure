@@ -51,6 +51,8 @@ code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.
 code { padding: 1px 4px; }
 pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .muted { color: var(--muted); }
+.hint { border-bottom: 1px dotted var(--muted); cursor: help; }
+.description { margin: 0 0 10px; white-space: pre-line; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; background: var(--code); }
 .badge.running, .badge.ok, .badge.pass { background: var(--ok-bg); color: var(--ok); }
 .badge.failed, .badge.fail, .badge.bad, .badge.down, .badge.refused { background: var(--bad-bg); color: var(--bad); }

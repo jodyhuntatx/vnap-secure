@@ -238,13 +238,14 @@ class ApiTest(unittest.TestCase):
         r = alice.get(f"/api/runs/{run['id']}/layout")
         self.assertEqual(r.status_code, 200, r.text)
         lay = r.json()
+        self.assertIn("random-turn intersection mix zone", lay["description"])
         names = [s["name"].split("-")[0] for s in lay["stations"]]
         self.assertEqual(names[:2], ["rsu", "obu1"])
         rsu, obu1 = lay["stations"][0], lay["stations"][1]
         self.assertEqual((rsu["station_type"], rsu["mobility"], rsu["pseudonyms"]), (15, {}, False))
         self.assertTrue(obu1["pseudonyms"])
-        self.assertEqual(obu1["mobility"]["crossing"], [40.0, -8.0])
-        self.assertGreater(obu1["start"][1], -8.0)                  # starts on the east arm
+        self.assertEqual(obu1["mobility"]["crossing"], [40.208106, -8.4197756])
+        self.assertGreater(obu1["start"][1], -8.4197756)            # starts on the east arm
         self.assertEqual(len(lay["mix_zones"]), 1)
         self.assertTrue(lay["pki"] and lay["eavesdropper"] and lay["control"])
         self.assertEqual(self.client("bob").get(f"/api/runs/{run['id']}/layout").status_code, 404)
@@ -266,6 +267,15 @@ class ApiTest(unittest.TestCase):
         name = calls[0][calls[0].index("--name") + 1]
         self.assertEqual(calls[1], ["docker", "rm", "-f", name])
         self.assertNotIn("secret", " ".join(calls[0]))              # credentials go by environment only
+
+    def test_login_over_plain_http_is_refused_with_secure_cookies(self):
+        self.app.state.cfg["server"]["cookie_secure"] = True
+        body = {"username": "alice", "password": PASSWORD}
+        r = TestClient(self.app, base_url="http://192.168.1.5").post("/api/auth/login", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("HTTPS", r.json()["detail"])
+        self.assertEqual(TestClient(self.app, base_url="https://sim.example.org").post("/api/auth/login", json=body).status_code, 200)
+        self.assertEqual(TestClient(self.app, base_url="http://localhost").post("/api/auth/login", json=body).status_code, 200)
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 
 MQTT_IMAGE = "eclipse-mosquitto:2"
 DISK_WARN_GB = 2.0
+# Where stations stand unless the scenario says otherwise, and the centre of the example layouts:
+# the crossing of Rua Alexandre Herculano and Rua Venancio Rodrigues, Coimbra (OSM node 149400643).
+ORIGIN = (40.208106, -8.4197756)
 EVENT_KINDS = ("rx", "tx", "control", "pseudonym", "idchange", "pki", "chain", "error")
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_DOWN, EXIT_DEGRADED = 0, 1, 2, 3, 4

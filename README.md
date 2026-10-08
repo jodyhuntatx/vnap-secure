@@ -431,8 +431,9 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
 - **Results:**
   - `/check`: verdict and metrics, kept per run.
   - At stop, the service keeps the containers' logs, the eavesdropper's logs, the status, the
-    scoring (`score.json`: the eavesdropper's links per technique, correct or wrong, and track
-    purity, against the stations' own logs) and the PKI's issue log (digests only, never keys).
+    scoring (`score.json`: the eavesdropper's links per technique, correct or wrong, track
+    purity and the longest chain of pseudonym changes through which it followed one vehicle,
+    against the stations' own logs) and the PKI's issue log (digests only, never keys).
     Download them from `/results`.
 - **Tests:** `cd vnap-docker/api && python3 -m unittest discover -s tests` (21 tests, no docker;
   needs the packages of `requirements.txt`).
@@ -905,7 +906,7 @@ position becomes controllable at runtime:
   (reference position, heading, speed, acceleration, yaw rate) and the GeoNetworking
   position vector of every packet. Updates go to the configured station ID, so a station
   keeps its topic across [ID changes](#pseudonym-change-events).
-- **Payload:** a JSON object `{"lat": 40.0001, "lon": -8.0, "speed": 13.9, "heading": 90}`.
+- **Payload:** a JSON object `{"lat": 40.208206, "lon": -8.4197756, "speed": 13.9, "heading": 90}`.
   - `lat`/`lon` in degrees are required.
   - `speed` in m/s (0–163.82), `heading` in degrees clockwise from north, `alt` in m are optional.
   - Invalid updates are rejected and logged (`[MOBILITY] position update rejected: …`, the first 5).
@@ -937,14 +938,14 @@ position becomes controllable at runtime:
 [[stations]]
 name = "obu1"
 # ...
-mobility = { route = [[40.0, -8.003], [40.0, -7.997]], speed_kmh = 50, start_s = 0, loop = true }
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, start_s = 0, loop = true }
 ```
 
 Move a station by hand (any MQTT client on the control network):
 
 ```bash
 docker run --rm --network vnapctl0 eclipse-mosquitto:2 mosquitto_pub -h pseudo-broker \
-    -t vnap/position/2 -m '{"lat": 40.0005, "lon": -8.0, "speed": 10, "heading": 0}'
+    -t vnap/position/2 -m '{"lat": 40.208606, "lon": -8.4197756, "speed": 10, "heading": 0}'
 ```
 
 Watch the positions in the CAMs the RSU receives:

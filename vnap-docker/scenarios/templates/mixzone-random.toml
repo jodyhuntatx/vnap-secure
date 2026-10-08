@@ -1,7 +1,8 @@
 # A template users may start: no addresses, networks or certificate files (the service assigns them).
 description = "random-turn intersection mix zone with the run's own PKI: four OBUs, identity change in a 40 m zone, 6-12 s silence; eavesdropper with timing and position linking"
 
-# Layout: crossing at 40.0, -8.0 (RSU) with four 150 m roads (arms) ending on a square ring
+# Layout: crossing at 40.208106, -8.4197756 (RSU; Rua Alexandre Herculano x Rua
+# Venancio Rodrigues, Coimbra) with four 150 m roads (arms) ending on a square ring
 # road. Each lap (600 m, 60 s at 36 km/h) a car comes in on one arm, turns left, straight or
 # right at random at the crossing (no U-turns), drives to the end of its exit arm, goes a
 # random way along the ring to the next arm and comes back in on it. Exits and arrivals are
@@ -18,31 +19,31 @@ security = "certs-v3"
 [[stations]]
 name = "rsu"
 station_type = 15
-env = { VANETZA_LATITUDE = "40.0", VANETZA_LONGITUDE = "-8.0" }
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
 
 [[stations]]
 name = "obu1"
 station_type = 5
 pseudonyms = { min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
 
 [[stations]]
 name = "obu2"
 station_type = 5
 pseudonyms = { min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "north", speed_kmh = 36, start_s = 1.5 }
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "north", speed_kmh = 36, start_s = 1.5 }
 
 [[stations]]
 name = "obu3"
 station_type = 5
 pseudonyms = { min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "west", speed_kmh = 36, start_s = 3 }
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "west", speed_kmh = 36, start_s = 3 }
 
 [[stations]]
 name = "obu4"
 station_type = 5
 pseudonyms = { min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
-mobility = { crossing = [40.0, -8.0], arm_m = 150, start_arm = "south", speed_kmh = 36, start_s = 4.5 }
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "south", speed_kmh = 36, start_s = 4.5 }
 
 [pki]
 # defaults: 8 initial certificates per car, a batch of 8 requested at 2 unused
@@ -54,7 +55,7 @@ mobility_rate_hz = 5
 [[control.mix_zones]]
 # the mobility client sends a pseudonym change event to each car entering the zone
 name = "crossing"
-center = [40.0, -8.0]
+center = [40.208106, -8.4197756]
 radius_m = 40
 
 [control.client]

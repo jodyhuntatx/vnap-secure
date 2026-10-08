@@ -109,5 +109,30 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(sc["stations"][0]["pki"]["certificates"], "regular")
 
 
+class ScoringTest(unittest.TestCase):
+    def test_purity_and_longest_followed_chain(self):
+        from vnapsim.scoring import score
+        truth = {"a1": "obu1", "a2": "obu1", "a3": "obu1", "b1": "obu2", "b2": "obu2"}
+
+        def link(track, old, new, evidence="position (12 m)"):
+            return {"event": "pseudonym_change_linked", "track": track, "old": old, "new": new,
+                    "evidence": [evidence], "merged_track": f"T-{new}"}
+        events = [{"event": "new_track", "track": "V1", "identifiers": {"cert": "a1"}},
+                  {"event": "new_track", "track": "T-a2", "identifiers": {"cert": "a2"}},
+                  link("V1", "a1", "a2"),
+                  {"event": "new_track", "track": "T-a3", "identifiers": {"cert": "a3"}},
+                  link("V1", "a2", "a3"),
+                  {"event": "new_track", "track": "T-b1", "identifiers": {"cert": "b1"}},
+                  link("V1", "a3", "b1", "timing (0.4 s)"),          # wrong: obu1 -> obu2
+                  {"event": "new_track", "track": "V2", "identifiers": {"cert": "b2"}}]
+        r = score(truth, events)
+        self.assertEqual((r["links"], r["correct"], r["wrong"]), (3, 2, 1))
+        self.assertEqual(r["by_technique"], {"position": {"correct": 2, "wrong": 0}, "timing": {"correct": 0, "wrong": 1}})
+        v1, v2 = r["tracks"]
+        self.assertEqual((v1["stations"], v1["purity"], v1["followed_changes"]), (["obu1", "obu1", "obu1", "obu2"], 0.75, 2))
+        self.assertEqual((v2["identities"], v2["purity"], v2["followed_changes"]), (1, 1.0, 0))
+        self.assertEqual(r["longest_followed"], {"changes": 2, "station": "obu1", "track": "V1"})
+        self.assertEqual(score(truth, [])["longest_followed"], {"changes": 0, "station": None, "track": None})
+
 if __name__ == "__main__":
     unittest.main()

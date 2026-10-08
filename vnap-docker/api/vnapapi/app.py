@@ -25,7 +25,7 @@ from .runs import RunError, RunManager
 from .security import CSRF_HEADER, ROLES, SESSION_COOKIE, TOKEN_PREFIX, Accounts, check_password_policy
 
 from vnapsim.check import compute_metrics, default_expectations, evaluate  # noqa: E402  (path set by .runs)
-from vnapsim.common import EVENT_KINDS, env_of  # noqa: E402
+from vnapsim.common import EVENT_KINDS, ORIGIN, env_of  # noqa: E402
 from vnapsim.events import collect_events, describe  # noqa: E402
 from vnapsim.schema import SCENARIO_SCHEMA  # noqa: E402
 from vnapsim.status import Simulation, build_status, observer_reports  # noqa: E402
@@ -135,6 +135,10 @@ def create_app(cfg=None, start_workers=True):
         if not accounts.limiter.allow(address(request)):
             db.audit(body.username, "login.rate_limited", None, None, address(request))
             raise HTTPException(429, "too many login attempts; wait a minute")
+        if cfg["server"]["cookie_secure"] and request.url.scheme != "https" and request.url.hostname not in ("localhost", "127.0.0.1"):
+            # the browser would drop the Secure session cookie and every later request would be 401
+            raise HTTPException(400, "this service needs HTTPS: open it through the TLS proxy (api/deploy/Caddyfile), "
+                                     "or set cookie_secure = false in config.toml for a test on a trusted network")
         user, reason = accounts.login(body.username, body.password, address(request))
         if not user:
             db.audit(body.username, "login.failed", None, {"reason": reason}, address(request))
@@ -523,11 +527,11 @@ def create_app(cfg=None, start_workers=True):
     # ------------------------------------------------------------ web UI
     @app.get("/api/ui-config")
     def ui_config():
-        return {"tile_url": cfg["ui"]["tile_url"], "tile_attribution": cfg["ui"]["tile_attribution"]}
+        return {"tile_url": cfg["ui"]["tile_url"], "tile_attribution": cfg["ui"]["tile_attribution"], "origin": list(ORIGIN)}
 
     @app.get("/api/runs/{run_id}/layout")
     def layout(run_id: str, user=Depends(principal)):
-        """Where the stations start and how they move, and the mix zones: for the map."""
+        """The scenario's description, where the stations start and how they move, and the mix zones."""
         run = run_for(user, run_id)
         try:
             sc = load_scenario(run["scenario_file"], run["overrides"], run["instance"] or 0)
@@ -536,13 +540,14 @@ def create_app(cfg=None, start_workers=True):
         stations = []
         for st in sc["stations"]:
             mob = st.get("mobility") or {}
-            start = mob.get("start") or [float(st["env"].get("VANETZA_LATITUDE", 40.0)),
-                                         float(st["env"].get("VANETZA_LONGITUDE", -8.0))]
+            start = mob.get("start") or [float(st["env"].get("VANETZA_LATITUDE", ORIGIN[0])),
+                                         float(st["env"].get("VANETZA_LONGITUDE", ORIGIN[1]))]
             stations.append({"name": st["name"], "station_id": st["station_id"], "station_type": st["station_type"],
                              "start": start, "pseudonyms": bool(st.get("pseudonyms")),
                              "mobility": {k: mob[k] for k in ("route", "loop", "crossing", "arm_m", "speed_kmh") if k in mob}})
         zones = ((sc["control"] or {}).get("mobility") or {}).get("mix_zones", []) if sc["control"] else []
-        return {"stations": stations, "mix_zones": zones, "control": bool(sc["control"]), "pki": bool(sc["pki"]),
+        return {"description": sc["description"], "stations": stations, "mix_zones": zones,
+                "control": bool(sc["control"]), "pki": bool(sc["pki"]),
                 "eavesdropper": bool(sc["eavesdropper"])}
 
     @app.get("/", include_in_schema=False)

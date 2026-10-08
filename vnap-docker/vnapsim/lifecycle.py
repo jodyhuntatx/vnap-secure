@@ -17,7 +17,7 @@ import tomllib
 from datetime import datetime, timezone
 
 from .scenario import load_scenario
-from .common import current_user, CITS_PKI_DIR, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker
+from .common import current_user, CITS_PKI_DIR, ORIGIN, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker
 from .status import Simulation, build_status
 
 
@@ -106,6 +106,9 @@ def station_env(sc, st):
         env["POSITION_CONTROL_BROKER"] = sc["control"]["broker"]["name"]
         if sc["control"]["auth"]:
             secret_names += ["POSITION_CONTROL_USERNAME", "POSITION_CONTROL_PASSWORD"]
+    else:
+        # a fixed position: the scenario's, or ORIGIN instead of the image's built-in 40, -8
+        env["VANETZA_LATITUDE"], env["VANETZA_LONGITUDE"] = str(ORIGIN[0]), str(ORIGIN[1])
     for key in ("aa_cert", "root_cert"):
         if st[key] and (st["at_cert"] or st.get("pseudonyms")):
             env[key.upper()] = st[key]

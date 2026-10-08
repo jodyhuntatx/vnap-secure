@@ -2,7 +2,9 @@
 
 [server]
 data_dir = "data"              # database, user scenarios, collected results
-cookie_secure = true           # session cookie only over HTTPS (false only for http://localhost tests)
+# The session cookie is sent only over HTTPS: browsers drop it on plain http:// (except for
+# localhost), so login is refused there. false only for a test on a trusted network.
+cookie_secure = true
 session_hours = 12
 
 [auth]

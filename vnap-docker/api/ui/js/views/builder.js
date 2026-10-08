@@ -1,10 +1,10 @@
 // Scenario builder: stations, routes, crossings and mix zones in forms and on a map; it
 // writes the scenario as TOML for the same validation and start as scenario text.
 import { clear, h } from "../dom.js";
-import { crossingLayer, makeMap, offset, stationColor, zoneColor } from "./mapview.js";
+import { crossingLayer, getUiConfig, makeMap, offset, stationColor, zoneColor } from "./mapview.js";
 import { startControls } from "./newrun.js";
 
-const CENTER = [40.0, -8.0];
+let CENTER = [40.208106, -8.4197756];   // replaced by the service's origin (ui-config)
 
 function newStation(kind, n) {
   const vehicle = kind === "vehicle";
@@ -60,6 +60,7 @@ export function toToml(m) {
 }
 
 export async function builder(pane, session, editAsText) {
+  CENTER = (await getUiConfig()).origin || CENTER;
   const m = {
     description: "built scenario", signed: true, pki: { initial: 8, refill_at: 2, batch: 8 },
     client: { mode: "manual", interval: 20 }, zones: [{ name: "crossing", center: [...CENTER], radius_m: 40 }],

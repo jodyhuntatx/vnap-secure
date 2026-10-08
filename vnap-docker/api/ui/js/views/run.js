@@ -13,6 +13,7 @@ export async function runView(app, session, runId) {
   const pane = h("div", {});
   app.append(title, tabs, pane);
   let stopTab = () => {};
+  let description = null;   // from the scenario, fetched once by the overview
   const running = () => run.state === "running";
   const needsRunning = () => h("p", { class: "panel muted" }, `This needs a running run (the run is ${run.state}).`);
 
@@ -40,6 +41,9 @@ export async function runView(app, session, runId) {
   async function overview() {
     const box = h("div", {});
     pane.append(box);
+    if (description === null) {
+      try { description = (await get(`/runs/${runId}/layout`)).description || ""; } catch (e) { description = ""; }
+    }
     async function render() {
       clear(box);
       const actions = [];
@@ -49,6 +53,7 @@ export async function runView(app, session, runId) {
         } }, "Stop run"));
       }
       box.append(h("div", { class: "panel" },
+        description ? h("p", { class: "description" }, description) : null,
         table(["Owner", "Instance", "Started", "Time left", "Image", "Seed", "Shared with"], [[
           run.owner, run.instance ?? "", time(run.started_at), running() ? remaining(run.deadline) : (run.stop_reason || ""),
           run.image || "", run.seed ?? "", (run.shared_with || []).join(", ")]]),
@@ -58,7 +63,7 @@ export async function runView(app, session, runId) {
       const s = run.status;
       if (!s) return;
       box.append(h("div", { class: "panel" }, h("h2", {}, "Stations ", badge(s.health)),
-        table(["Station", "ID", "State", "Security", "Pseudonym", "Refill", "Chain"], s.stations.map((st) => {
+        table(["Station", "ID", "State", "Security", "Pseudonym", "Refill", "Cert checks"], s.stations.map((st) => {
           const p = st.pseudonym;
           const rf = p && p.refill;
           const bad = st.chain.filter((c) => !c.ok).length;
@@ -144,6 +149,14 @@ export async function runView(app, session, runId) {
   function eventsTab() {
     if (!running()) { pane.append(needsRunning()); return; }
     const kinds = ["pseudonym", "idchange", "pki", "chain", "error"];
+    const LABELS = { pseudonym: "pseudonym", idchange: "ID change", pki: "refill", chain: "cert check", error: "error" };
+    const HINTS = {
+      pseudonym: "pseudonym certificate changes and control answers",
+      idchange: "identifier changes: MAC/GN address, stationId, ID-LOCK, silent periods",
+      pki: "certificate refill: batch requests to the run's PKI and their installation",
+      chain: "certificate checks: the station verifies a certificate's signature chain up to the root CA before using it",
+      error: "errors in the station logs",
+    };
     const chosen = new Set(kinds);
     const list = h("div", { class: "events" });
     let paused = false;
@@ -155,17 +168,17 @@ export async function runView(app, session, runId) {
         if (paused) return;
         const ev = JSON.parse(msg.data);
         list.prepend(h("div", {}, h("span", { class: "t" }, new Date(ev.t * 1000).toLocaleTimeString()),
-          h("span", { class: "k" }, ev.kind), h("b", {}, ev.station), " ", ev.text));
+          h("span", { class: "k", title: HINTS[ev.kind] || "" }, LABELS[ev.kind] || ev.kind), h("b", {}, ev.station), " ", ev.text));
         while (list.children.length > 500) list.lastChild.remove();
       };
       source.addEventListener("end", () => { source.close(); list.prepend(h("div", { class: "muted" }, "run ended")); });
     }
     pane.append(h("div", { class: "panel" },
       h("div", { class: "row" },
-        kinds.map((k) => h("label", { class: "inline" }, h("input", { type: "checkbox", checked: true, onchange: (e) => {
+        kinds.map((k) => h("label", { class: "inline", title: HINTS[k] }, h("input", { type: "checkbox", checked: true, onchange: (e) => {
           if (e.target.checked) chosen.add(k); else chosen.delete(k);
           connect();
-        } }), k)),
+        } }), LABELS[k])),
         h("button", { type: "button", class: "secondary", onclick: (e) => { paused = !paused; e.target.textContent = paused ? "Resume" : "Pause"; } }, "Pause"),
         h("button", { type: "button", class: "secondary", onclick: () => clear(list) }, "Clear")),
       list));
@@ -259,12 +272,25 @@ export async function runView(app, session, runId) {
   }
 
   function scorePanel(score) {
+    const hint = (text, title) => h("span", { class: "hint", title }, text);
     const techniques = Object.entries(score.by_technique || {});
+    const lf = score.longest_followed;
     return h("div", { class: "panel" }, h("h2", {}, "Eavesdropper against ground truth"),
-      h("p", {}, `${score.links} link(s): ${score.correct} correct, ${score.wrong} wrong`),
-      techniques.length ? table(["Technique", "Correct", "Wrong"], techniques.map(([k, v]) => [k, v.correct, v.wrong])) : null,
-      score.tracks && score.tracks.length ? table(["Track", "Identities", "Purity", "Stations, in order"],
-        score.tracks.map((t) => [t.track, t.identities, `${Math.round(t.purity * 100)} %`, t.stations.join(" → ")])) : null);
+      h("p", {}, hint(`${score.links} link(s)`, "pseudonym changes the eavesdropper linked: it decided that an old and a new pseudonym are the same vehicle"),
+        `: ${score.correct} correct, ${score.wrong} wrong`),
+      lf ? h("p", {}, hint("Longest chain followed", "the most pseudonym changes through which the eavesdropper followed one vehicle without a mistake (consecutive identities of the same vehicle in one track); 0 means it never followed any vehicle through a change"),
+        ": ", lf.changes ? `${lf.changes} pseudonym change(s), ${lf.station} (track ${lf.track})` : "none, no vehicle was followed through a pseudonym change") : null,
+      techniques.length ? table([
+        hint("Technique", "the evidence the eavesdropper used for a link: identifier (an unchanged identifier), position (the new pseudonym appears where the old one went silent) or timing (it appears right after the old one stopped)"),
+        hint("Correct", "links where both pseudonyms really belong to the same vehicle (from the stations' own logs)"),
+        hint("Wrong", "links that joined two different vehicles")],
+        techniques.map(([k, v]) => [k, v.correct, v.wrong])) : null,
+      score.tracks && score.tracks.length ? table([
+        hint("Track", "one vehicle as the eavesdropper sees it: the pseudonyms it believes belong together"),
+        hint("Identities", "pseudonyms in the track; 1 means nothing was linked to it"),
+        hint("Purity", "share of the track's pseudonyms that belong to its most common vehicle. Read it with Identities: many identities at 100 % = a vehicle tracked through its changes (bad for privacy); low purity = different vehicles mixed up (the mix zone worked); 1 identity is always 100 % and means nothing"),
+        hint("Followed", "pseudonym changes through which this track followed one vehicle without a mistake"),
+        hint("Stations, in order", "the real vehicle behind each pseudonym of the track, in the order the eavesdropper added them")],
+        score.tracks.map((t) => [t.track, t.identities, `${Math.round(t.purity * 100)} %`, t.followed_changes ?? "", t.stations.join(" → ")])) : null);
   }
-
 }

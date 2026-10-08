@@ -28,6 +28,15 @@ function loginView() {
     ev.preventDefault();
     try {
       const me = await post("/auth/login", { username: user.value, password: pass.value });
+      try {
+        await get("/auth/me");   // did the browser keep the session cookie?
+      } catch (e) {
+        notice(location.protocol === "https:" ? "Logged in, but the browser did not keep the session cookie." :
+          "Logged in, but the browser dropped the session cookie: it is HTTPS-only (cookie_secure = true) and " +
+          "this page is plain HTTP. Use the HTTPS address, or for a test set cookie_secure = false in config.toml " +
+          "and restart the service.", "error");
+        return;
+      }
       setCsrf(me.csrf_token);
       session.user = me;
       showNav();

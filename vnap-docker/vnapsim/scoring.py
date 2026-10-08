@@ -65,10 +65,22 @@ def score(truth, events):
         if not stations:
             continue
         main = max(set(stations), key=stations.count)
+        # longest stretch of consecutive identities of one vehicle: the pseudonym changes through
+        # which the eavesdropper really followed it
+        best, best_station, run = 0, None, 0
+        for i, st in enumerate(stations):
+            run = run + 1 if i and stations[i - 1] == st else 1
+            if run > best:
+                best, best_station = run, st
         track_list.append({"track": name, "identities": len(stations), "stations": stations,
-                           "main_station": main, "purity": round(stations.count(main) / len(stations), 3)})
+                           "main_station": main, "purity": round(stations.count(main) / len(stations), 3),
+                           "followed_changes": best - 1, "followed_station": best_station})
     correct = sum(1 for link in links if link["correct"])
+    top = max(track_list, key=lambda t: t["followed_changes"], default=None)
+    longest = ({"changes": top["followed_changes"], "station": top["followed_station"], "track": top["track"]}
+               if top else {"changes": 0, "station": None, "track": None})
     return {"links": len(links), "correct": correct, "wrong": len(links) - correct, "by_technique": by_kind,
+            "longest_followed": longest,
             "tracks": sorted(track_list, key=lambda t: int(re.sub(r"\D", "", t["track"]) or 0)), "link_list": links}
 
 
