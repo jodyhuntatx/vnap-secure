@@ -3,6 +3,7 @@
   python3 -m vnapapi.admin create-user <name> [--role admin|user|viewer]   (first admin, or any user)
   python3 -m vnapapi.admin reset-password <name>
   python3 -m vnapapi.admin unlock <name>
+  python3 -m vnapapi.admin reset-totp <name>   (lost authenticator: turns the second factor off)
   python3 -m vnapapi.admin list-users
 
 The password is read from the terminal, or from VNAP_NEW_PASSWORD (scripts), never from argv.
@@ -37,6 +38,7 @@ def main():
     p.add_argument("--role", choices=ROLES, default="user")
     sub.add_parser("reset-password").add_argument("username")
     sub.add_parser("unlock").add_argument("username")
+    sub.add_parser("reset-totp").add_argument("username")
     sub.add_parser("list-users")
     args = ap.parse_args()
 
@@ -55,9 +57,15 @@ def main():
         elif args.cmd == "unlock":
             db.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE username = ?", (args.username,))
             db.audit("vnapapi.admin", "user.unlocked", args.username)
+        elif args.cmd == "reset-totp":
+            if not db.one("SELECT id FROM users WHERE username = ?", (args.username,)):
+                sys.exit("no such user")
+            accounts.totp_disable(args.username)
+            accounts.revoke_sessions(args.username)
+            db.audit("vnapapi.admin", "user.totp_reset", args.username)
         else:
-            for u in db.query("SELECT username, role, disabled FROM users ORDER BY username"):
-                print(f"{u['username']:24} {u['role']:7} {'disabled' if u['disabled'] else ''}")
+            for u in db.query("SELECT username, role, disabled, totp_enabled FROM users ORDER BY username"):
+                print(f"{u['username']:24} {u['role']:7} {'TOTP' if u['totp_enabled'] else '    '} {'disabled' if u['disabled'] else ''}")
     except ValueError as e:
         sys.exit(str(e))
 

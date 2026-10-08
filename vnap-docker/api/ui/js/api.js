@@ -4,10 +4,11 @@
 let csrf = null;
 
 export class ApiError extends Error {
-  constructor(status, message, errors) {
+  constructor(status, message, errors, data) {
     super(message);
     this.status = status;
     this.errors = errors || [];   // field-level validation errors: {path, message, text}
+    this.data = data || {};       // the whole error body (e.g. totp_required)
   }
 }
 
@@ -32,7 +33,7 @@ export async function api(method, path, body) {
   if (!response.ok) {
     let message = (data && (data.detail || data.error)) || response.statusText;
     if (Array.isArray(message)) message = message.map((d) => d.msg || JSON.stringify(d)).join("; ");
-    throw new ApiError(response.status, String(message), data && data.errors);
+    throw new ApiError(response.status, String(message), data && data.errors, data);
   }
   return data;
 }

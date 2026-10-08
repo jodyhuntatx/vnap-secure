@@ -1,5 +1,5 @@
-"""Accounts and authentication: Argon2id passwords, sessions with CSRF tokens, API tokens,
-login rate limiting and account lockout."""
+"""Accounts and authentication: Argon2id passwords, optional TOTP second factor with recovery
+codes, sessions with CSRF tokens, API tokens, login rate limiting and account lockout."""
 
 import collections
 import hashlib
@@ -11,11 +11,14 @@ import time
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
+from . import totp
+
 ROLES = ("admin", "user", "viewer")
 SESSION_COOKIE = "vnap_session"
 CSRF_HEADER = "X-CSRF-Token"
 TOKEN_PREFIX = "vnap_"
 MIN_PASSWORD = 12
+TOTP_REQUIRED = "a TOTP code (or a recovery code) is required"
 
 _hasher = PasswordHasher()  # Argon2id with the library's current recommended parameters
 
@@ -76,6 +79,8 @@ class Accounts:
         self.limiter = LoginLimiter(cfg["auth"]["login_attempts_per_minute"])
         # a fixed hash to verify against for unknown users, so timing does not reveal who exists
         self._dummy = _hasher.hash(secrets.token_urlsafe(16))
+        self.box = totp.SecretBox(cfg["auth"]["totp_key_file"])
+        self.issuer = cfg["auth"]["totp_issuer"]
 
     # ------------------------------------------------------------ users
     def create_user(self, username, password, role, created_by=None):
@@ -97,8 +102,16 @@ class Accounts:
         self.db.execute("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = ?)", (username,))
 
     # ------------------------------------------------------------ login
-    def login(self, username, password, address):
-        """Returns (user, None) or (None, reason). Locks the account after repeated failures."""
+    def _failed(self, user):
+        failed = user["failed_logins"] + 1
+        locked = time.time() + 60 * self.cfg["auth"]["lockout_minutes"] if failed >= self.cfg["auth"]["max_failed_logins"] else 0
+        self.db.execute("UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?",
+                        (0 if locked else failed, locked, user["id"]))
+
+    def login(self, username, password, address, code=None, second_factor=True):
+        """Returns (user, None) or (None, reason); reason TOTP_REQUIRED means the password was right
+        and a code is missing. A wrong password or a wrong code count as failed logins, and
+        repeated failures lock the account. On success user["second_factor"] says what was used."""
         user = self.db.one("SELECT * FROM users WHERE username = ?", (username,))
         if user is None:
             verify_password(self._dummy, password or "")
@@ -106,17 +119,90 @@ class Accounts:
         if user["locked_until"] > time.time():
             return None, "account locked after repeated failed logins; try again later"
         if not verify_password(user["password_hash"], password or ""):
-            failed = user["failed_logins"] + 1
-            locked = time.time() + 60 * self.cfg["auth"]["lockout_minutes"] if failed >= self.cfg["auth"]["max_failed_logins"] else 0
-            self.db.execute("UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?",
-                            (0 if locked else failed, locked, user["id"]))
+            self._failed(user)
             return None, "invalid username or password"
         if user["disabled"]:
             return None, "account disabled"
+        user["second_factor"] = None
+        if second_factor and user["totp_enabled"]:
+            if not code:
+                return None, TOTP_REQUIRED
+            used = self.check_second_factor(user, code)
+            if not used:
+                self._failed(user)
+                return None, "invalid TOTP or recovery code"
+            user["second_factor"] = used
         if _hasher.check_needs_rehash(user["password_hash"]):
             self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (_hasher.hash(password), user["id"]))
         self.db.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?", (user["id"],))
         return user, None
+
+    # ------------------------------------------------------------ TOTP
+    def _context(self, user):
+        return f"totp:{user['id']}"   # a sealed secret only opens for its own user
+
+    def check_second_factor(self, user, code):
+        """'totp' or 'recovery' when the code is valid (a recovery code is then used up), else None."""
+        code = (code or "").strip()
+        secret = self.box.open(user["totp_secret"], self._context(user))
+        if secret and code.replace(" ", "").isdigit():
+            step = totp.match(secret, code, user["totp_last_step"])
+            if step is None:
+                return None
+            # the step only moves forward: the same code cannot log in twice
+            with self.db.lock:
+                done = self.db.conn.execute("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?",
+                                            (step, user["id"], step)).rowcount
+            return "totp" if done else None
+        with self.db.lock:
+            done = self.db.conn.execute("UPDATE totp_recovery SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
+                                        (time.time(), user["id"], totp.recovery_digest(code))).rowcount
+        return "recovery" if done else None
+
+    def totp_status(self, user):
+        left = self.db.one("SELECT COUNT(*) AS n FROM totp_recovery WHERE user_id = ? AND used_at IS NULL", (user["id"],))["n"]
+        return {"enabled": bool(user["totp_enabled"]), "recovery_codes_left": left if user["totp_enabled"] else 0}
+
+    def totp_setup(self, user):
+        """A new secret, pending until confirmed with a code from the app (the current one stays valid)."""
+        secret = totp.new_secret()
+        self.db.execute("UPDATE users SET totp_pending = ? WHERE id = ?", (self.box.seal(secret, self._context(user)), user["id"]))
+        uri = totp.otpauth_uri(secret, user["username"], self.issuer)
+        return {"secret": secret, "uri": uri, "qr_svg": totp.qr_svg(uri)}
+
+    def totp_enable(self, user, code):
+        """Confirms the pending secret with a code; returns the new recovery codes (shown once)."""
+        row = self.db.one("SELECT * FROM users WHERE id = ?", (user["id"],))
+        secret = self.box.open(row["totp_pending"], self._context(row))
+        if not secret:
+            raise ValueError("no TOTP setup in progress: start the setup first")
+        step = totp.match(secret, code)
+        if step is None:
+            raise ValueError("the code does not match: check the time on the device and try the next code")
+        codes, digests = totp.new_recovery_codes()
+        with self.db.lock:
+            self.db.conn.execute("UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_enabled = 1, "
+                                 "totp_last_step = ? WHERE id = ?", (step, user["id"]))
+            self.db.conn.execute("DELETE FROM totp_recovery WHERE user_id = ?", (user["id"],))
+            self.db.conn.executemany("INSERT INTO totp_recovery (user_id, code_hash) VALUES (?, ?)",
+                                     [(user["id"], d) for d in digests])
+        return codes
+
+    def new_recovery_codes(self, user):
+        codes, digests = totp.new_recovery_codes()
+        with self.db.lock:
+            self.db.conn.execute("DELETE FROM totp_recovery WHERE user_id = ?", (user["id"],))
+            self.db.conn.executemany("INSERT INTO totp_recovery (user_id, code_hash) VALUES (?, ?)",
+                                     [(user["id"], d) for d in digests])
+        return codes
+
+    def totp_disable(self, username):
+        """Turns the second factor off (the user's own choice, or an admin reset for a lost device)."""
+        with self.db.lock:
+            self.db.conn.execute("UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_enabled = 0, "
+                                 "totp_last_step = 0 WHERE username = ?", (username,))
+            self.db.conn.execute("DELETE FROM totp_recovery WHERE user_id = (SELECT id FROM users WHERE username = ?)",
+                                 (username,))
 
     def new_session(self, user, address):
         token, csrf = new_token(), new_token()

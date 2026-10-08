@@ -11,6 +11,17 @@ session_hours = 12
 max_failed_logins = 5          # then the account is locked for lockout_minutes
 lockout_minutes = 15
 login_attempts_per_minute = 10 # per client address
+# Optional TOTP second factor (each user turns it on under Account). The TOTP secrets are
+# encrypted with this key, created on first use and kept OUTSIDE data_dir, so it is not in the
+# backups: keep a copy of it somewhere safe. Without it, every user's TOTP must be reset.
+totp_issuer = "vnap-secure"    # the name authenticator apps show
+totp_key_file = "secrets/totp.key"
+
+# python3 -m vnapapi.backup create (deploy/vnap-backup.timer runs it daily): database, results and
+# user scenarios in one checksummed archive; the oldest beyond `keep` are deleted
+[backup]
+dir = "backups"
+keep = 14
 
 # per role: runs at the same time, longest run (stopped automatically), space for kept results
 [limits.user]

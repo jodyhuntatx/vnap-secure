@@ -51,6 +51,8 @@ code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.
 code { padding: 1px 4px; }
 pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .muted { color: var(--muted); }
+.qr { display: block; width: 200px; height: 200px; margin: 6px 0 10px; background: #fff; border-radius: 6px; }
+.codes { font-size: 1rem; letter-spacing: 0.05em; }
 .hint { border-bottom: 1px dotted var(--muted); cursor: help; }
 .description { margin: 0 0 10px; white-space: pre-line; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; background: var(--code); }
@@ -79,4 +81,4 @@ pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .dot.rsu { background: var(--rsu); } .dot.car { background: var(--car); } .dot.zone { background: var(--zone); }
 .station-label { background: var(--panel); color: var(--text); border: 1px solid var(--line); font-size: 11px; }
-.hidden { display: none; }
+.hidden, [hidden] { display: none !important; }

@@ -20,14 +20,16 @@ function showNav() {
 function loginView() {
   const user = h("input", { name: "username", autocomplete: "username", required: true });
   const pass = h("input", { name: "password", type: "password", autocomplete: "current-password", required: true });
+  const code = h("input", { name: "totp", inputmode: "numeric", autocomplete: "one-time-code", maxlength: 16 });
+  const codeLabel = h("label", { hidden: true }, "Code from your authenticator app (or a recovery code)", code);
   const form = h("form", { class: "panel" },
     h("h1", {}, "Log in"),
-    h("div", { class: "row" }, h("label", {}, "Username", user), h("label", {}, "Password", pass),
+    h("div", { class: "row" }, h("label", {}, "Username", user), h("label", {}, "Password", pass), codeLabel,
       h("button", { type: "submit" }, "Log in")));
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
-      const me = await post("/auth/login", { username: user.value, password: pass.value });
+      const me = await post("/auth/login", { username: user.value, password: pass.value, totp_code: code.value.trim() || undefined });
       try {
         await get("/auth/me");   // did the browser keep the session cookie?
       } catch (e) {
@@ -44,6 +46,13 @@ function loginView() {
       location.hash = "#/runs";
       route();
     } catch (e) {
+      if (e.data.totp_required) {        // the password was right: ask for the second factor
+        codeLabel.hidden = false;
+        code.focus();
+        notice("Enter the code from your authenticator app.");
+        return;
+      }
+      code.value = "";
       notice(e.message, "error");
     }
   });

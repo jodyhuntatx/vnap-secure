@@ -18,11 +18,12 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from . import backup as backups
 from .config import load_config
 from .control import ControlError, publish, read_retained, request as mqtt_request
 from .db import Database
 from .runs import RunError, RunManager
-from .security import CSRF_HEADER, ROLES, SESSION_COOKIE, TOKEN_PREFIX, Accounts, check_password_policy
+from .security import CSRF_HEADER, ROLES, SESSION_COOKIE, TOKEN_PREFIX, TOTP_REQUIRED, Accounts, check_password_policy
 
 from vnapsim.check import compute_metrics, default_expectations, evaluate  # noqa: E402  (path set by .runs)
 from vnapsim.common import EVENT_KINDS, ORIGIN, env_of  # noqa: E402
@@ -97,6 +98,12 @@ def create_app(cfg=None, start_workers=True):
             raise HTTPException(403, f"missing or wrong {CSRF_HEADER} header")
         return user
 
+    def session_user(user=Depends(principal)):
+        """Account security settings change only in an interactive session, never with an API token."""
+        if "token_id" in user:
+            raise HTTPException(403, "use a login session for this, not an API token")
+        return user
+
     def admin(user=Depends(principal)):
         if user["role"] != "admin":
             raise HTTPException(403, "admins only")
@@ -104,7 +111,7 @@ def create_app(cfg=None, start_workers=True):
 
     def public_user(u):
         return {k: u[k] for k in ("username", "role", "disabled", "created_at", "created_by") if k in u} | \
-            {"locked": u.get("locked_until", 0) > time.time()}
+            {"locked": u.get("locked_until", 0) > time.time(), "totp": bool(u.get("totp_enabled"))}
 
     def run_for(user, run_id, write=False):
         run = runs.get(run_id)
@@ -129,6 +136,7 @@ def create_app(cfg=None, start_workers=True):
     class Login(BaseModel):
         username: str = Field(max_length=64)
         password: str = Field(max_length=1024)
+        totp_code: Optional[str] = Field(None, max_length=32)   # TOTP or recovery code, when the account has one
 
     @app.post("/api/auth/login")
     def login(body: Login, request: Request, response: Response):
@@ -139,14 +147,19 @@ def create_app(cfg=None, start_workers=True):
             # the browser would drop the Secure session cookie and every later request would be 401
             raise HTTPException(400, "this service needs HTTPS: open it through the TLS proxy (api/deploy/Caddyfile), "
                                      "or set cookie_secure = false in config.toml for a test on a trusted network")
-        user, reason = accounts.login(body.username, body.password, address(request))
+        user, reason = accounts.login(body.username, body.password, address(request), body.totp_code)
+        if reason == TOTP_REQUIRED:
+            # the password was right: the client asks for the second factor and sends both again
+            return JSONResponse({"detail": reason, "totp_required": True}, status_code=401)
         if not user:
             db.audit(body.username, "login.failed", None, {"reason": reason}, address(request))
             raise HTTPException(401, reason)
         token, csrf = accounts.new_session(user, address(request))
         response.set_cookie(SESSION_COOKIE, token, httponly=True, secure=cfg["server"]["cookie_secure"], samesite="strict",
                             max_age=3600 * cfg["server"]["session_hours"], path="/")
-        audit(user, "login", request)
+        audit(user, "login", request, None, {"second_factor": user["second_factor"]} if user["second_factor"] else None)
+        if user["second_factor"] == "recovery":
+            audit(user, "totp.recovery_code_used", request, user["username"])
         return {"username": user["username"], "role": user["role"], "csrf_token": csrf}
 
     @app.post("/api/auth/logout")
@@ -167,7 +180,7 @@ def create_app(cfg=None, start_workers=True):
 
     @app.post("/api/auth/password")
     def change_password(body: PasswordChange, request: Request, user=Depends(principal)):
-        if not accounts.login(user["username"], body.current_password, address(request))[0]:
+        if not accounts.login(user["username"], body.current_password, address(request), second_factor=False)[0]:
             raise HTTPException(403, "current password is wrong")
         try:
             accounts.set_password(user["username"], body.new_password)
@@ -175,6 +188,66 @@ def create_app(cfg=None, start_workers=True):
             raise HTTPException(400, str(e))
         audit(user, "password.changed", request, user["username"])
         return {"ok": True, "note": "all sessions ended; log in again"}
+
+    # ------------------------------------------------------------ TOTP (optional second factor)
+    class TotpSetup(BaseModel):
+        password: str = Field(max_length=1024)
+
+    class TotpCode(BaseModel):
+        code: str = Field(max_length=32)
+
+    class TotpConfirm(BaseModel):
+        password: str = Field(max_length=1024)
+        code: str = Field(max_length=32)
+
+    def confirm_password(user, password, request):
+        if not accounts.login(user["username"], password, address(request), second_factor=False)[0]:
+            raise HTTPException(403, "password is wrong")
+
+    def confirm_code(user, code):
+        row = db.one("SELECT * FROM users WHERE id = ?", (user["id"],))
+        if not accounts.check_second_factor(row, code):
+            raise HTTPException(403, "TOTP or recovery code is wrong")
+
+    @app.get("/api/auth/totp")
+    def totp_status(user=Depends(principal)):
+        return accounts.totp_status(db.one("SELECT * FROM users WHERE id = ?", (user["id"],)))
+
+    @app.post("/api/auth/totp/setup")
+    def totp_setup(body: TotpSetup, request: Request, user=Depends(session_user)):
+        """A new secret for the authenticator app (QR code and text); active only after /enable."""
+        confirm_password(user, body.password, request)
+        return accounts.totp_setup(user)
+
+    @app.post("/api/auth/totp/enable")
+    def totp_enable(body: TotpCode, request: Request, user=Depends(session_user)):
+        try:
+            codes = accounts.totp_enable(user, body.code)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        audit(user, "totp.enabled", request, user["username"])
+        return {"enabled": True, "recovery_codes": codes,
+                "note": "each recovery code logs in once in place of a TOTP code; store them safely, they are not shown again"}
+
+    @app.post("/api/auth/totp/recovery-codes")
+    def totp_recovery_codes(body: TotpConfirm, request: Request, user=Depends(session_user)):
+        """New recovery codes (the old ones stop working)."""
+        if not user["totp_enabled"]:
+            raise HTTPException(400, "TOTP is not enabled")
+        confirm_password(user, body.password, request)
+        confirm_code(user, body.code)
+        audit(user, "totp.recovery_codes_renewed", request, user["username"])
+        return {"recovery_codes": accounts.new_recovery_codes(user)}
+
+    @app.post("/api/auth/totp/disable")
+    def totp_disable(body: TotpConfirm, request: Request, user=Depends(session_user)):
+        if not user["totp_enabled"]:
+            raise HTTPException(400, "TOTP is not enabled")
+        confirm_password(user, body.password, request)
+        confirm_code(user, body.code)
+        accounts.totp_disable(user["username"])
+        audit(user, "totp.disabled", request, user["username"])
+        return {"enabled": False}
 
     # ------------------------------------------------------------ users (admin)
     class NewUser(BaseModel):
@@ -199,6 +272,7 @@ def create_app(cfg=None, start_workers=True):
         role: Optional[str] = None
         disabled: Optional[bool] = None
         unlock: Optional[bool] = None
+        reset_totp: Optional[bool] = None   # for a lost authenticator: the user logs in with the password alone
 
     @app.patch("/api/users/{username}")
     def change_user(username: str, body: UserChange, request: Request, user=Depends(admin)):
@@ -217,6 +291,9 @@ def create_app(cfg=None, start_workers=True):
                 accounts.revoke_sessions(username)
         if body.unlock:
             db.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?", (target["id"],))
+        if body.reset_totp:
+            accounts.totp_disable(username)
+            accounts.revoke_sessions(username)
         audit(user, "user.changed", request, username, body.model_dump(exclude_none=True))
         return public_user(db.one("SELECT * FROM users WHERE username = ?", (username,)))
 
@@ -512,6 +589,23 @@ def create_app(cfg=None, start_workers=True):
         if name not in runs.results(run_id):   # only listed files: no path traversal
             raise HTTPException(404, "no such result")
         return FileResponse(os.path.join(runs.results_dir, run_id, name), filename=f"{run_id}-{name}")
+
+    # ------------------------------------------------------------ backups (admin)
+    @app.get("/api/backups")
+    def list_backups(user=Depends(admin)):
+        """Archives in [backup] dir, newest first (download them on the server, not through the API)."""
+        return [{k: a[k] for k in ("name", "bytes", "created_at")} for a in backups.archives(cfg["backup"]["dir"])]
+
+    @app.post("/api/backups", status_code=201)
+    def create_backup(request: Request, user=Depends(admin)):
+        try:
+            path = backups.create(cfg)
+            manifest = backups.verify(path)
+        except backups.BackupError as e:
+            raise HTTPException(500, f"backup failed: {e}")
+        name = os.path.basename(path)
+        audit(user, "backup.created", request, name, {"files": len(manifest["files"]), "bytes": os.path.getsize(path)})
+        return {"name": name, "bytes": os.path.getsize(path), "files": len(manifest["files"]), "counts": manifest["counts"]}
 
     # ------------------------------------------------------------ audit, health
     @app.get("/api/audit")

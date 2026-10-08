@@ -1,0 +1,11 @@
+# Daily backup at 03:15 (and at the next boot if the VM was off then).
+[Unit]
+Description=Daily backup of the vnap-secure simulation service
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

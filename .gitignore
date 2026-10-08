@@ -4,3 +4,5 @@ __pycache__/
 vnap-docker/api/data/
 vnap-docker/api/.deps/
 vnap-docker/api/.venv/
+vnap-docker/api/secrets/
+vnap-docker/api/backups/

@@ -3,6 +3,7 @@ dependencies of requirements.txt on PYTHONPATH). Docker-facing functions are rep
 scenario loading and validation are real."""
 import os
 import sys
+import shutil
 import tempfile
 import time
 import unittest
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import vnapapi.runs as runs_module  # noqa: E402
 from vnapapi.app import create_app  # noqa: E402
 from vnapapi.config import load_config  # noqa: E402
+from vnapapi import backup, totp  # noqa: E402
 from vnapsim.scenario import load_scenario  # noqa: E402
 
 PASSWORD = "correct-horse-battery"
@@ -25,7 +27,10 @@ PASSWORD = "correct-horse-battery"
 class ApiTest(unittest.TestCase):
     def setUp(self):
         cfg = load_config()
-        cfg["server"]["data_dir"] = tempfile.mkdtemp()
+        self.tmp = tempfile.mkdtemp()
+        cfg["server"]["data_dir"] = os.path.join(self.tmp, "data")
+        cfg["auth"]["totp_key_file"] = os.path.join(self.tmp, "secrets", "totp.key")
+        cfg["backup"]["dir"] = os.path.join(self.tmp, "backups")
         cfg["server"]["cookie_secure"] = False
         cfg["auth"]["login_attempts_per_minute"] = 100
         cfg["limits"]["user"]["concurrent_runs"] = 1
@@ -34,6 +39,10 @@ class ApiTest(unittest.TestCase):
         for name, role in (("root", "admin"), ("alice", "user"), ("bob", "user"), ("vera", "viewer")):
             self.accounts.create_user(name, PASSWORD, role)
         self.up_calls = []
+
+    def tearDown(self):
+        self.app.state.db.conn.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def client(self, user):
         c = TestClient(self.app)
@@ -276,6 +285,150 @@ class ApiTest(unittest.TestCase):
         self.assertIn("HTTPS", r.json()["detail"])
         self.assertEqual(TestClient(self.app, base_url="https://sim.example.org").post("/api/auth/login", json=body).status_code, 200)
         self.assertEqual(TestClient(self.app, base_url="http://localhost").post("/api/auth/login", json=body).status_code, 200)
+
+    # ------------------------------------------------------------ TOTP
+    def test_totp_codes_follow_rfc6238(self):
+        secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"      # ASCII "12345678901234567890" (RFC 6238 test key)
+        self.assertEqual(totp.code_at(secret, 59 // 30, digits=8), "94287082")
+        self.assertEqual(totp.code_at(secret, 1111111109 // 30, digits=8), "07081804")
+        self.assertEqual(totp.match(secret, "081804", now=1111111109), 1111111109 // 30)
+        self.assertEqual(totp.match(secret, "081804", now=1111111109 + 30), 1111111109 // 30)   # one step of drift
+        self.assertIsNone(totp.match(secret, "081804", now=1111111109 + 90))
+        self.assertIsNone(totp.match(secret, "081804", last_step=1111111109 // 30, now=1111111109))  # used once
+
+    def enable_totp(self, client):
+        setup = client.post("/api/auth/totp/setup", json={"password": PASSWORD})
+        self.assertEqual(setup.status_code, 200, setup.text)
+        secret = setup.json()["secret"]
+        self.assertTrue(setup.json()["uri"].startswith("otpauth://totp/vnap-secure%3Aalice?secret="))
+        self.assertIn("<svg", setup.json()["qr_svg"])
+        self.assertEqual(client.post("/api/auth/totp/enable", json={"code": "000000" if totp.code_at(secret, totp.current_step()) != "000000" else "111111"}).status_code, 400)
+        r = client.post("/api/auth/totp/enable", json={"code": totp.code_at(secret, totp.current_step())})
+        self.assertEqual(r.status_code, 200, r.text)
+        return secret, r.json()["recovery_codes"]
+
+    def test_totp_login(self):
+        alice = self.client("alice")
+        secret, recovery = self.enable_totp(alice)
+        self.assertEqual(len(recovery), 10)
+        row = self.db.one("SELECT * FROM users WHERE username = 'alice'")
+        self.assertTrue(row["totp_secret"].startswith("v1:"))
+        self.assertNotIn(secret, row["totp_secret"])                                  # encrypted at rest
+        self.assertNotIn(recovery[0], str(self.db.query("SELECT * FROM totp_recovery")))  # only digests
+        self.assertIsNone(self.accounts.box.open(row["totp_secret"], "totp:999"))    # bound to the user
+
+        c = TestClient(self.app)
+        body = {"username": "alice", "password": PASSWORD}
+        r = c.post("/api/auth/login", json=body)
+        self.assertEqual((r.status_code, r.json().get("totp_required")), (401, True))
+        self.assertNotIn("vnap_session", r.cookies)
+        self.assertEqual(c.post("/api/auth/login", json={**body, "totp_code": "12345"}).status_code, 401)
+        # the code used to enable TOTP cannot log in again (same time step)
+        self.assertEqual(c.post("/api/auth/login", json={**body, "totp_code": totp.code_at(secret, totp.current_step())}).status_code, 401)
+        self.db.execute("UPDATE users SET totp_last_step = totp_last_step - 2, failed_logins = 0 WHERE username = 'alice'")
+        r = c.post("/api/auth/login", json={**body, "totp_code": totp.code_at(secret, totp.current_step())})
+        self.assertEqual(r.status_code, 200, r.text)
+        # a recovery code works once
+        self.assertEqual(TestClient(self.app).post("/api/auth/login", json={**body, "totp_code": recovery[0]}).status_code, 200)
+        self.assertEqual(TestClient(self.app).post("/api/auth/login", json={**body, "totp_code": recovery[0]}).status_code, 401)
+        self.assertEqual(alice.get("/api/auth/totp").json(), {"enabled": True, "recovery_codes_left": 9})
+        actions = [a["action"] for a in self.db.query("SELECT action FROM audit WHERE username = 'alice'")]
+        self.assertIn("totp.enabled", actions)
+        self.assertIn("totp.recovery_code_used", actions)
+
+    def test_wrong_totp_codes_lock_the_account(self):
+        secret, _ = self.enable_totp(self.client("alice"))
+        body = {"username": "alice", "password": PASSWORD, "totp_code": "000000" if totp.code_at(secret, totp.current_step()) != "000000" else "111111"}
+        for _ in range(self.app.state.cfg["auth"]["max_failed_logins"]):
+            TestClient(self.app).post("/api/auth/login", json=body)
+        r = TestClient(self.app).post("/api/auth/login", json={**body, "totp_code": totp.code_at(secret, totp.current_step() + 1)})
+        self.assertIn("locked", r.json()["detail"])
+
+    def test_totp_disable_and_admin_reset(self):
+        alice = self.client("alice")
+        secret, recovery = self.enable_totp(alice)
+        token = alice.post("/api/tokens", json={"name": "t"}).json()["token"]
+        bearer = TestClient(self.app, headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(bearer.post("/api/auth/totp/disable", json={"password": PASSWORD, "code": recovery[0]}).status_code, 403)
+        self.assertEqual(bearer.get("/api/runs").status_code, 200)                    # tokens need no second factor
+        self.assertEqual(alice.post("/api/auth/totp/disable", json={"password": "wrong-password-x", "code": recovery[0]}).status_code, 403)
+        self.assertEqual(alice.post("/api/auth/totp/disable", json={"password": PASSWORD, "code": recovery[0]}).status_code, 200)
+        self.assertEqual(self.client("alice").get("/api/auth/totp").json()["enabled"], False)   # password alone again
+
+        self.enable_totp(self.client("alice"))
+        root = self.client("root")
+        self.assertTrue(next(u for u in root.get("/api/users").json() if u["username"] == "alice")["totp"])
+        self.assertEqual(root.patch("/api/users/alice", json={"reset_totp": True}).status_code, 200)
+        self.assertEqual(alice.get("/api/auth/me").status_code, 401)                  # sessions ended
+        self.assertEqual(self.client("alice").get("/api/auth/totp").json()["enabled"], False)
+
+    def test_database_migration_adds_totp_columns(self):
+        import sqlite3
+        from vnapapi.db import Database
+        path = os.path.join(self.tmp, "old.db")
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, "
+                    "role TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, failed_logins INTEGER NOT NULL DEFAULT 0, "
+                    "locked_until REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL, created_by TEXT)")
+        con.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES ('old', 'x', 'user', 0)")
+        con.commit()
+        con.close()
+        row = Database(path).one("SELECT * FROM users WHERE username = 'old'")
+        self.assertEqual((row["totp_enabled"], row["totp_last_step"], row["totp_secret"]), (0, 0, None))
+
+    # ------------------------------------------------------------ backups
+    def test_backup_create_verify_restore(self):
+        cfg = self.app.state.cfg
+        alice = self.client("alice")
+        with open(os.path.join(runs_module.TEMPLATE_DIR, "pki-refill.toml")) as f:
+            run = alice.post("/api/runs", json={"scenario_text": f.read()}).json()
+        res = os.path.join(self.runs.results_dir, run["id"])
+        os.makedirs(res)
+        with open(os.path.join(res, "score.json"), "w") as f:
+            f.write('{"links": 3}')
+        root = self.client("root")
+        self.assertEqual(alice.post("/api/backups").status_code, 403)
+        r = root.post("/api/backups")
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertEqual(r.json()["counts"]["runs"], 1)
+        listed = root.get("/api/backups").json()
+        self.assertEqual(listed[0]["name"], r.json()["name"])
+        path = os.path.join(cfg["backup"]["dir"], listed[0]["name"])
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        manifest = backup.verify(path)
+        self.assertIn(f"results/{run['id']}/score.json", manifest["files"])
+        self.assertIn(f"scenarios/{run['id']}.toml", manifest["files"])
+
+        # restore into another data directory: data back, active run marked, scenario path followed
+        other = {**cfg, "server": {**cfg["server"], "data_dir": os.path.join(self.tmp, "restored")}}
+        result = backup.restore(other, path)
+        self.assertEqual(result["runs_marked_failed"], 1)                           # it was queued
+        import sqlite3
+        con = sqlite3.connect(os.path.join(self.tmp, "restored", "vnapapi.db"))
+        state, scenario_file = con.execute("SELECT state, scenario_file FROM runs").fetchone()
+        self.assertEqual(state, "failed")
+        self.assertEqual(scenario_file, os.path.join(self.tmp, "restored", "scenarios", f"{run['id']}.toml"))
+        self.assertTrue(os.path.isfile(scenario_file))
+        with open(os.path.join(self.tmp, "restored", "results", run["id"], "score.json")) as f:
+            self.assertEqual(f.read(), '{"links": 3}')
+        with self.assertRaises(backup.BackupError):                                # not over existing data
+            backup.restore(other, path)
+        self.assertIsNotNone(backup.restore(other, path, force=True)["previous_data"])
+
+    def test_backup_tampering_and_pruning(self):
+        import gzip
+        cfg = self.app.state.cfg
+        paths = [backup.create(cfg, keep=2) for _ in range(3)]
+        self.assertEqual([a["path"] for a in backup.archives(cfg["backup"]["dir"])], paths[:0:-1])   # newest two kept
+        with gzip.open(paths[-1]) as f:
+            raw = bytearray(f.read())
+        i = raw.index(b"SQLite format 3")
+        raw[i + 200] ^= 0xFF                                                        # flip a byte of the database
+        bad = os.path.join(self.tmp, "bad.tar.gz")
+        with gzip.open(bad, "wb") as f:
+            f.write(bytes(raw))
+        with self.assertRaisesRegex(backup.BackupError, "checksum mismatch: vnapapi.db"):
+            backup.verify(bad)
 
 if __name__ == "__main__":
     unittest.main()

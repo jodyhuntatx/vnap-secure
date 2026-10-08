@@ -1,4 +1,4 @@
-"""SQLite storage: users, sessions, API tokens, runs, shares, checks, audit log."""
+"""SQLite storage: users (with TOTP), sessions, API tokens, runs, shares, checks, audit log."""
 
 import json
 import os
@@ -11,7 +11,11 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'user', 'viewer')), disabled INTEGER NOT NULL DEFAULT 0,
     failed_logins INTEGER NOT NULL DEFAULT 0, locked_until REAL NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL, created_by TEXT);
+    created_at REAL NOT NULL, created_by TEXT,
+    totp_secret TEXT, totp_pending TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_last_step INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS totp_recovery (
+    id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL, used_at REAL);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     csrf TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, address TEXT);
@@ -46,8 +50,23 @@ class Database:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.lock = threading.RLock()
         with self.lock:
+            self._migrate()
             self.conn.executescript(SCHEMA)
         os.chmod(path, 0o600)
+
+    # columns added after the first release: (table, column, definition)
+    MIGRATIONS = [
+        ("users", "totp_secret", "TEXT"),
+        ("users", "totp_pending", "TEXT"),
+        ("users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "totp_last_step", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+
+    def _migrate(self):
+        tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        for table, column, definition in self.MIGRATIONS:
+            if table in tables and column not in {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def query(self, sql, args=()):
         with self.lock:

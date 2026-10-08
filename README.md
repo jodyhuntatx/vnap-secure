@@ -386,7 +386,7 @@ are.
 
 ## Simulation service (API)
 
-`vnap-docker/api/` is the HTTP API and web UI of the multi-user simulation service (phases 7 and 8 of
+`vnap-docker/api/` is the HTTP API and web UI of the multi-user simulation service (phases 7 to 9 of
 `Specs/VNAP-Secure-Simulation-Service-PRD.pdf`). It drives simulations through the same
 `vnapsim` package as `vnapctl`. Users reach it only over HTTPS through a reverse proxy; the
 service account is the only one with access to docker.
@@ -412,6 +412,7 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
   - API tokens (`Authorization: Bearer vnap_...`) for automation, revocable. Sessions and
     tokens are stored only as SHA-256 digests.
   - Repeated failed logins lock the account; login attempts are rate-limited per address.
+  - Optional TOTP second factor per user, with recovery codes (see Hardening below).
   - Security-relevant actions go to the audit log (`/api/audit`, admins).
 - **Runs:**
   - Users start templates (`scenarios/templates/`) or their own scenario text, with
@@ -435,7 +436,7 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
     purity and the longest chain of pseudonym changes through which it followed one vehicle,
     against the stations' own logs) and the PKI's issue log (digests only, never keys).
     Download them from `/results`.
-- **Tests:** `cd vnap-docker/api && python3 -m unittest discover -s tests` (21 tests, no docker;
+- **Tests:** `cd vnap-docker/api && python3 -m unittest discover -s tests` (29 tests, no docker;
   needs the packages of `requirements.txt`).
 
 ### Web UI
@@ -468,9 +469,10 @@ JavaScript modules (`api/ui/`), with no build step and no third-party code excep
   - *Results*: run a check (extra expectations allowed) and see earlier checks. After the
     stop, download the collected files and see the eavesdropper's score against ground
     truth.
-- **Account:** change password; create and revoke API tokens (a new token is shown once).
-- **Admin:** create users, change roles, disable, unlock, reset passwords; the audit log,
-  filtered by user.
+- **Account:** change password; turn the TOTP second factor on (QR code) or off, new recovery
+  codes; create and revoke API tokens (a new token is shown once).
+- **Admin:** create users, change roles, disable, unlock, reset passwords, reset a user's
+  TOTP; list backups and back up now; the audit log, filtered by user.
 
 Security: a strict Content-Security-Policy (scripts and styles only from the service, no
 inline code; images also from the map tile server), `frame-ancestors 'none'`, no referrer.
@@ -478,6 +480,49 @@ Text is only ever inserted as text, never as HTML. The session cookie and CSRF t
 the API's. Map tiles come from `[ui] tile_url` in `config.toml` (OpenStreetMap by default).
 For an installation without internet access, set it to an internal tile server, or to `""`
 for no background map.
+
+
+### Hardening (phase 9)
+
+Phase 9 of the PRD lists backups, TOTP and an MCP endpoint for automation. The MCP endpoint is
+not implemented yet; scripts use the HTTP API with API tokens.
+
+**TOTP second factor** (optional, per user; RFC 6238: 6 digits, 30 s, SHA-1, as authenticator
+apps expect):
+- A user turns it on under Account: password, then scan the QR code (or type the key) and
+  confirm with a code. Ten one-time recovery codes are shown once; new ones can be made later.
+- From then on a login needs the password and a code. A wrong code counts as a failed login
+  (lockout as for passwords), and a code is accepted only once (no replay within its 30 s).
+- Turning it off needs the password and a code. For a lost phone without recovery codes, an
+  admin resets it (Admin page, or `python3 -m vnapapi.admin reset-totp <name>` on the server);
+  the user's sessions end and the password alone works again.
+- TOTP is managed only from a login session, not with an API token. API tokens are not
+  affected by TOTP: they are for automation and are revocable.
+- The TOTP secrets must be stored reversibly; they are encrypted with AES-256-GCM under
+  `[auth] totp_key_file` (`api/secrets/totp.key`, created on first use, mode 0600), which is
+  outside the data directory and so not in the backups. Keep a copy of the key file somewhere
+  safe: without it every user's TOTP has to be reset. Recovery codes are stored as digests.
+
+**Backups** (`api/backup.sh`, i.e. `python3 -m vnapapi.backup`):
+
+```bash
+cd vnap-docker/api
+./backup.sh create               # database (consistent online snapshot), results, user scenarios
+./backup.sh list                 # archives in [backup] dir, newest first
+./backup.sh verify <archive>     # every file against the manifest, database integrity
+systemctl stop vnap-api && ./backup.sh restore <archive> --force && systemctl start vnap-api
+```
+
+- An archive is `backups/vnap-backup-<UTC time>.tar.gz` (mode 0600) with a manifest of
+  SHA-256 digests. The oldest beyond `[backup] keep` (14) are deleted.
+- `deploy/vnap-backup.timer` runs `create` daily at 03:15 as the service account; admins can
+  also click "Back up now" on the Admin page.
+- Not in a backup: the TOTP key (see above) and the runs' PKI keys (they exist only while a
+  run does). An archive does contain password hashes and the audit log: copy it off the VM
+  only encrypted (e.g. `age`, `gpg`, or an encrypted rclone remote).
+- `restore` verifies the archive first, keeps the current data directory as
+  `data.before-restore-<time>`, follows a change of data directory (e.g. another VM), and marks
+  runs that were active at backup time as failed (their containers are not in a backup).
 
 ## Monitor messages between stations
 
