@@ -62,7 +62,7 @@ The whole picture, with networks and trust boundaries, is in [docs/architecture.
 
 ## Requirements
 
-- **An Ubuntu VM** (24.04; development uses VMware on a Mac). Vanetza-NAP has file names that
+- **An Ubuntu VM** (24.04; development used VMware on a Mac). Vanetza-NAP has file names that
   differ only by case, so it cannot be built on a case-insensitive file system.
 - **Docker, git, make, python3 ≥ 3.11** in the VM.
 - **About 10 GB of free disk** for the first image build.
@@ -132,6 +132,11 @@ Mac). Set `VNAP_API_HOST=127.0.0.1` to listen on the VM only.
 In production the service runs as a dedicated account under systemd, behind Caddy for TLS
 (`service/deploy/`). See [docs/operations/service-deployment.md](docs/operations/service-deployment.md),
 then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
+
+<img src="docs/images/VnapOverview.png" alt="Vnap UI Overview" width="200" height="200">
+<img src="docs/images/VnapMap.png" alt="Vnap UI Map" width="200" height="200">
+<img src="docs/images/VnapEvents.png" alt="Vnap UI Events" width="200" height="200">
+<img src="docs/images/VnapResults.png" alt="Vnap UI Results" width="200" height="200">
 
 ## Operate
 
