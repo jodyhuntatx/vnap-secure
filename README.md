@@ -133,10 +133,16 @@ In production the service runs as a dedicated account under systemd, behind Cadd
 (`service/deploy/`). See [docs/operations/service-deployment.md](docs/operations/service-deployment.md),
 then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 
-<img src="docs/images/VnapOverview.png" alt="Vnap UI Overview" width="200" height="200">
-<img src="docs/images/VnapMaps.png" alt="Vnap UI Map" width="200" height="200">
-<img src="docs/images/VnapEvents.png" alt="Vnap UI Events" width="200" height="200">
-<img src="docs/images/VnapResults.png" alt="Vnap UI Results" width="200" height="200">
+<table>
+  <tr>
+    <td width="50%"><a href="docs/images/VnapOverview.png"><img src="docs/images/VnapOverview.png" alt="Vnap UI Overview" width="100%"></a><br><sub>Overview</sub></td>
+    <td width="50%"><a href="docs/images/VnapMaps.png"><img src="docs/images/VnapMaps.png" alt="Vnap UI Map" width="100%"></a><br><sub>Map</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/images/VnapEvents.png"><img src="docs/images/VnapEvents.png" alt="Vnap UI Events" width="100%"></a><br><sub>Events</sub></td>
+    <td width="50%"><a href="docs/images/VnapResults.png"><img src="docs/images/VnapResults.png" alt="Vnap UI Results" width="100%"></a><br><sub>Results</sub></td>
+  </tr>
+</table>
 
 ## Operate
 
