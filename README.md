@@ -156,7 +156,7 @@ then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 ## Tests
 
 ```bash
-make test        # vnapsim and service unit tests, web UI syntax, patch diffs current, documentation links
+make test        # vnapsim and service unit tests, web UI syntax, OpenAPI spec and patch diffs current, documentation links
 ```
 
 None of these need a running simulation. Changes that affect running stations are checked
@@ -169,7 +169,7 @@ docs.
 |---|---|
 | Setup | [installation](docs/installation.md) · [build](docs/build.md) · [architecture](docs/architecture.md) · [certificates](docs/certificates.md) |
 | Operations | [vnapctl](docs/operations/vnapctl.md) · [service deployment](docs/operations/service-deployment.md) · [web UI](docs/operations/web-ui.md) · [backup and restore](docs/operations/backup-restore.md) · [monitoring](docs/operations/monitoring.md) · [troubleshooting](docs/operations/troubleshooting.md) |
-| Reference | [scenario format](docs/reference/scenario-format.md) · [configuration](docs/reference/configuration.md) · [container environment](docs/reference/container-environment.md) · [control channels](docs/reference/control-channels.md) · [API](docs/reference/api.md) |
+| Reference | [scenario format](docs/reference/scenario-format.md) · [configuration](docs/reference/configuration.md) · [container environment](docs/reference/container-environment.md) · [control channels](docs/reference/control-channels.md) · [API](docs/reference/api.md) ([OpenAPI](docs/reference/openapi.json)) |
 | How it works | [security and chain verification](docs/functional/security-and-chain-verification.md) · [pseudonym change](docs/functional/pseudonym-change.md) · [certificate refill](docs/functional/certificate-refill.md) · [vehicle movement](docs/functional/vehicle-movement.md) · [eavesdropper and scoring](docs/functional/eavesdropper-and-scoring.md) |
 | Patch set | [patch documentation](docs/patches/README.md) |
 | Results | [test summaries](results/README.md) |

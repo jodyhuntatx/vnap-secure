@@ -20,6 +20,12 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-09: OpenAPI description in the repository
+
+`docs/reference/openapi.json`: the API's OpenAPI 3.1 description, as the service serves it at
+`/api/openapi.json`. `make openapi` regenerates it (`python3 -m vnapapi.openapi`), and
+`make test` checks that it is current.
+
 ## 2026-10-09: repository reorganization
 
 Implements `Specs/VNAP-Secure-Repository-Reorganization-Plan.docx` (decisions D1–D9).

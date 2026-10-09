@@ -1,7 +1,13 @@
 # API
 
-The service's HTTP API. The OpenAPI description at `/api/docs` (and `/api/openapi.json`) is
-authoritative for request and response bodies; this page gives the overview.
+The service's HTTP API. The OpenAPI 3.1 description is authoritative for request and response
+bodies; this page gives the overview.
+
+- **In the repository:** [`openapi.json`](openapi.json), for reading API changes in diffs or
+  generating clients without a running service.
+- **From the running service:** `/api/openapi.json`, with an interactive view at `/api/docs`.
+- **Keeping the file current:** after changing the API, run `make openapi`. `make test` fails
+  when the file no longer matches the code.
 
 ## Authentication
 
