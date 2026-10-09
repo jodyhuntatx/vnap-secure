@@ -134,7 +134,7 @@ In production the service runs as a dedicated account under systemd, behind Cadd
 then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 
 <img src="docs/images/VnapOverview.png" alt="Vnap UI Overview" width="200" height="200">
-<img src="docs/images/VnapMap.png" alt="Vnap UI Map" width="200" height="200">
+<img src="docs/images/VnapMaps.png" alt="Vnap UI Map" width="200" height="200">
 <img src="docs/images/VnapEvents.png" alt="Vnap UI Events" width="200" height="200">
 <img src="docs/images/VnapResults.png" alt="Vnap UI Results" width="200" height="200">
 
