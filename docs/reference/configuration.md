@@ -27,7 +27,9 @@ Read at start (`VNAP_API_CONFIG` names another file). Relative paths are relativ
 
 Environment:
 - **`VNAP_API_HOST`, `VNAP_API_PORT`:** the listen address for `run.sh` (default
-  `127.0.0.1:8080`).
+  `0.0.0.0:8080`, all interfaces). All interfaces are required for forwarding port 8080 from
+  the VM to the host. `127.0.0.1` listens on the VM only, e.g. behind Caddy in production
+  ([service deployment](../operations/service-deployment.md#production)).
 - **`VNAP_API_CONFIG`:** another configuration file.
 - **`VNAP_SIM_DIR`:** where `vnapsim` is (default `../sim`).
 - **`CITS_PKI_DIR`:** another C-ITS-PKI ([architecture](../architecture.md#dependency-on-c-its-pki)).

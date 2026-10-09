@@ -122,8 +122,12 @@ Other scenarios to try:
 ```bash
 cd service
 python3 -m vnapapi.admin create-user root --role admin   # first admin (password asked, or VNAP_NEW_PASSWORD)
-./run.sh                                                 # 127.0.0.1:8080, web UI at /ui/, API docs at /api/docs
+./run.sh                                                 # 0.0.0.0:8080, web UI at /ui/, API docs at /api/docs
 ```
+
+The service listens on all interfaces (`0.0.0.0`) by default. This is required when port 8080
+is forwarded from the VM to the host (e.g. to open the UI at `http://localhost:8080` on a
+Mac). Set `VNAP_API_HOST=127.0.0.1` to listen on the VM only.
 
 In production the service runs as a dedicated account under systemd, behind Caddy for TLS
 (`service/deploy/`). See [docs/operations/service-deployment.md](docs/operations/service-deployment.md),

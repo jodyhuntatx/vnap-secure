@@ -10,12 +10,14 @@ service account is the only one with access to Docker.
 ```bash
 cd service
 python3 -m vnapapi.admin create-user root --role admin   # first admin (password asked, or VNAP_NEW_PASSWORD)
-./run.sh                                                 # 127.0.0.1:8080: web UI at /ui/, OpenAPI at /api/docs
+./run.sh                                                 # 0.0.0.0:8080: web UI at /ui/, OpenAPI at /api/docs
 ```
 
 - **Dependencies:** `run.sh` installs `requirements.txt` into `service/.venv` (or `.deps`
   without python3-venv) and installs again whenever `requirements.txt` changes.
-- **Listen address:** `VNAP_API_HOST` and `VNAP_API_PORT` change it.
+- **Listen address:** all interfaces (`0.0.0.0`) by default. This is required when port 8080
+  is forwarded from the VM to the host, e.g. to open the UI at `http://localhost:8080` on a
+  Mac. `VNAP_API_HOST=127.0.0.1` listens on the VM only; `VNAP_API_PORT` changes the port.
 - **Plain HTTP:** with the default `cookie_secure = true`, the browser keeps the session
   cookie only over HTTPS or on `http://localhost`. Safari and other WebKit browsers drop it
   even on localhost. Login over plain HTTP from another host is refused with an explanation.
@@ -38,6 +40,10 @@ sudo -u vnap sh -c 'cd /home/vnap/vnap-secure/service && .venv/bin/python -m vna
   the docker group, with `NoNewPrivileges`, `ProtectSystem=full` and `UMask=0077`.
 - **TLS:** `deploy/Caddyfile` terminates TLS (automatic certificates) and forwards to
   `127.0.0.1:8080`. Open only 443, and 80 for the certificate challenge.
+- **Port 8080:** the service listens on all interfaces by default, so in production either
+  block 8080 from outside (firewall), or bind it to localhost. For the latter, add
+  `Environment=VNAP_API_HOST=127.0.0.1` to `vnap-api.service`, so users reach it only through
+  Caddy.
 - **Station images:** the station image must exist on the VM (`make image` as `vnap`, or
   `docker load`). Users may choose only the images listed in `sim/policy.toml`.
 - **Upgrade:**
