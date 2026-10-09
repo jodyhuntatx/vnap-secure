@@ -1,0 +1,75 @@
+--- a/tools/socktap/dds.cpp
++++ b/tools/socktap/dds.cpp
+@@ -1,6 +1,7 @@
+ #include "dds.hpp"
+ #include "pubsub.hpp"
+ #include <map>
++#include <mutex>
+ 
+ using namespace boost::asio;
+ 
+@@ -53,6 +54,17 @@
+ std::map<std::string, std::unique_ptr<DDSPublisher<JSONMessage, JSONMessagePubSubType>>> json_dds_publishers;
+ std::map<std::string, std::unique_ptr<DDSPublisher<EncodedITSMessage, EncodedITSMessagePubSubType>>> encoded_dds_publishers;
+ std::map<std::string, std::unique_ptr<DDSSubscriber>> dds_subscribers;
++// the maps are filled at setup and read by the publishing threads; entries are never replaced
++// or removed while running, so pointers taken under the lock stay valid
++static std::mutex dds_maps_mutex;
++
++template<typename Map>
++static typename Map::mapped_type::pointer find_publisher(Map& publishers, const std::string& topic)
++{
++    std::lock_guard<std::mutex> lock(dds_maps_mutex);
++    auto found = publishers.find(topic); // find(): operator[] would insert a null publisher
++    return found != publishers.end() ? found->second.get() : nullptr;
++}
+ 
+ void sig_handler(int sig) {
+     json_dds_publishers.clear();
+@@ -94,7 +106,9 @@
+     jsonMessage->topic(topic);
+     jsonMessage->message(message);
+     jsonMessage->datetime(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+-    json_dds_publishers[topic]->publish(std::move(jsonMessage));
++    if (auto* publisher = find_publisher(json_dds_publishers, topic)) {
++        publisher->publish(std::move(jsonMessage));
++    }
+ }
+ 
+ void Dds::publish(string topic, const std::vector<uint8_t>& payload, int16_t rssi, bool newInfo, int16_t packetSize, int32_t stationID, int32_t receiverID, int16_t receiverType, double timestamp, string test) {
+@@ -109,7 +123,9 @@
+     encodedITSMessage->receiverType(eprosima::fastcdr::optional<int16_t>(receiverType));
+     encodedITSMessage->timestamp(eprosima::fastcdr::optional<double>(timestamp));
+     encodedITSMessage->test(eprosima::fastcdr::optional<string>(test));
+-    encoded_dds_publishers[topic]->publish(std::move(encodedITSMessage));
++    if (auto* publisher = find_publisher(encoded_dds_publishers, topic)) {
++        publisher->publish(std::move(encodedITSMessage));
++    }
+ }
+ 
+ void Dds::subscribe(string topic) {
+@@ -120,8 +136,9 @@
+         std::make_unique<DDSSubscriber>(listener_, encodedTypeSupport);
+     std::string enc_topic = topic + "_enc";
+     ptr_enc.get()->init(participantName, domain_id, enc_topic, "EncodedITSMessage", TOPIC_QOS_DEFAULT);
+-    dds_subscribers[topic] = std::move(ptr);
+-    dds_subscribers[topic + "_enc"] = std::move(ptr_enc);
++    std::lock_guard<std::mutex> lock(dds_maps_mutex);
++    dds_subscribers.emplace(topic, std::move(ptr));
++    dds_subscribers.emplace(topic + "_enc", std::move(ptr_enc));
+ }
+ 
+ void Dds::provison_publisher(string topic) {
+@@ -132,8 +149,10 @@
+         std::make_unique<DDSPublisher<EncodedITSMessage, EncodedITSMessagePubSubType>>(encodedTypeSupport);
+     std::string enc_topic = topic + "_enc";
+     ptr_enc.get()->init(participantName, domain_id, enc_topic, "EncodedITSMessage", TOPIC_QOS_DEFAULT);
+-    json_dds_publishers[topic] = std::move(ptr);
+-    encoded_dds_publishers[topic] = std::move(ptr_enc);
++    std::lock_guard<std::mutex> lock(dds_maps_mutex);
++    // keep an existing publisher: another thread may be publishing through it
++    json_dds_publishers.emplace(topic, std::move(ptr));
++    encoded_dds_publishers.emplace(topic, std::move(ptr_enc));
+ }
+ 
+ void Dds::from_dds_thread() {

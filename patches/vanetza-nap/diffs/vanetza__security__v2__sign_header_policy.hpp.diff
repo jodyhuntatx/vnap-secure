@@ -1,0 +1,28 @@
+--- a/vanetza/security/v2/sign_header_policy.hpp
++++ b/vanetza/security/v2/sign_header_policy.hpp
+@@ -5,6 +5,7 @@
+ #include <vanetza/common/runtime.hpp>
+ #include <vanetza/security/hashed_id.hpp>
+ #include <vanetza/security/v2/header_field.hpp>
++#include <mutex>
+ #include <set>
+ 
+ namespace vanetza
+@@ -62,6 +63,9 @@
+ 
+ /**
+  * DefaultSignHeaderPolicy implements the default behaviour specified by ETSI TS 103 097 V1.2.1
++ *
++ * Thread-safe: socktap verifies received packets on several reception threads, which record
++ * unknown certificates here while CAMs are signed on the timer thread.
+  */
+ class DefaultSignHeaderPolicy : public SignHeaderPolicy
+ {
+@@ -80,6 +84,7 @@
+     std::set<HashedId3> m_unknown_certificates;
+     bool m_cert_requested;
+     bool m_chain_requested;
++    std::mutex m_mutex; // guards all members above that change after construction
+ };
+ 
+ } // namespace v2

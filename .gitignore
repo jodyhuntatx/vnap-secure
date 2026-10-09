@@ -1,8 +1,8 @@
 __pycache__/
 *.pyc
 ~$*
-vnap-docker/api/data/
-vnap-docker/api/.deps/
-vnap-docker/api/.venv/
-vnap-docker/api/secrets/
-vnap-docker/api/backups/
+service/data/
+service/.deps/
+service/.venv/
+service/secrets/
+service/backups/

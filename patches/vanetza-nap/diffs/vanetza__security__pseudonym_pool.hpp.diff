@@ -1,0 +1,154 @@
+--- /dev/null
++++ b/vanetza/security/pseudonym_pool.hpp
+@@ -0,0 +1,151 @@
++#pragma once
++#include <boost/optional/optional.hpp>
++#include <cstddef>
++#include <memory>
++#include <mutex>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace vanetza
++{
++namespace security
++{
++
++/**
++ * \brief Pool of pseudonyms (authorization tickets with keys) shared by the v2 and v3 providers
++ *
++ * Entries are allocated individually and never removed, so a reference returned by current()
++ * stays valid while the pool grows (add() may run while other threads sign). One mutex guards
++ * the entry list, the used flags and the current index.
++ *
++ * Without no-reuse the next pseudonym is the following entry, wrapping around (fixed pools).
++ * With no-reuse (certificate refill) every entry is used at most once: the next pseudonym is
++ * an unused one, and with none left a change is refused until a batch is added.
++ */
++template<typename T>
++class PseudonymPool
++{
++public:
++    explicit PseudonymPool(std::vector<T> items)
++    {
++        if (items.empty()) {
++            throw std::invalid_argument("pseudonym pool must not be empty");
++        }
++        append(std::move(items));
++        m_used[0] = true;
++    }
++
++    const T& current() const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        return *m_items[m_current];
++    }
++
++    const T& at(std::size_t index) const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        return *m_items.at(index);
++    }
++
++    std::size_t current_index() const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        return m_current;
++    }
++
++    std::size_t size() const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        return m_items.size();
++    }
++
++    std::size_t unused() const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        std::size_t n = 0;
++        for (bool used : m_used) {
++            n += used ? 0 : 1;
++        }
++        return n;
++    }
++
++    void set_no_reuse(bool no_reuse)
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        m_no_reuse = no_reuse;
++    }
++
++    /**
++     * Pseudonym to change to: the given index, or the next one by the pool's rule
++     * \param error set if there is none
++     */
++    boost::optional<std::size_t> select(boost::optional<std::size_t> index, std::string& error) const
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        const std::size_t n = m_items.size();
++        if (index) {
++            if (*index >= n) {
++                error = "index out of range";
++            } else if (*index == m_current) {
++                error = "pseudonym already in use";
++            } else if (m_no_reuse && m_used[*index]) {
++                error = "pseudonym already used (no reuse with certificate refill)";
++            } else {
++                return index;
++            }
++            return boost::none;
++        }
++        if (!m_no_reuse) {
++            const std::size_t next = (m_current + 1) % n;
++            if (next == m_current) {
++                error = "pseudonym already in use";
++                return boost::none;
++            }
++            return next;
++        }
++        // first unused entry after the current one, then from the start
++        for (std::size_t step = 1; step < n; ++step) {
++            const std::size_t candidate = (m_current + step) % n;
++            if (!m_used[candidate]) {
++                return candidate;
++            }
++        }
++        error = "no unused pseudonym left (waiting for a certificate batch)";
++        return boost::none;
++    }
++
++    void switch_to(std::size_t index)
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        m_current = index;
++        m_used.at(index) = true;
++    }
++
++    /** Add pseudonyms (unused); returns the index of the first one */
++    std::size_t add(std::vector<T> items)
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        const std::size_t first = m_items.size();
++        append(std::move(items));
++        return first;
++    }
++
++private:
++    void append(std::vector<T> items)
++    {
++        for (auto& item : items) {
++            m_items.emplace_back(new T(std::move(item)));
++            m_used.push_back(false);
++        }
++    }
++
++    mutable std::mutex m_mutex;
++    std::vector<std::unique_ptr<const T>> m_items;
++    std::vector<bool> m_used;
++    std::size_t m_current = 0;
++    bool m_no_reuse = false;
++};
++
++} // namespace security
++} // namespace vanetza

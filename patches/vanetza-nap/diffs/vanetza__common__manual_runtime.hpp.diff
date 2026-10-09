@@ -1,0 +1,30 @@
+--- a/vanetza/common/manual_runtime.hpp
++++ b/vanetza/common/manual_runtime.hpp
+@@ -6,6 +6,7 @@
+ #include <boost/multi_index/hashed_index.hpp>
+ #include <boost/multi_index/member.hpp>
+ #include <boost/multi_index/ordered_index.hpp>
++#include <atomic>
+ 
+ namespace vanetza
+ {
+@@ -13,6 +14,10 @@
+ /**
+  * ManualRuntime is a manually triggered Runtime implementation.
+  * Ensure that time progress is triggered monotonically!
++ *
++ * now() may be called from any thread while another thread triggers time progress (socktap
++ * reads the clock on its reception threads). Scheduling, cancelling and triggering are not
++ * thread-safe and need external synchronization.
+  */
+ class ManualRuntime : public Runtime
+ {
+@@ -92,7 +97,7 @@
+ 
+     void trigger();
+ 
+-    Clock::time_point m_now;
++    std::atomic<Clock::time_point> m_now { Clock::time_point {} };
+     queue_type m_queue;
+ };
+ 

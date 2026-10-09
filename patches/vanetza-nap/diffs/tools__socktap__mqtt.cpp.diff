@@ -1,0 +1,44 @@
+--- a/tools/socktap/mqtt.cpp
++++ b/tools/socktap/mqtt.cpp
+@@ -67,7 +67,10 @@
+ }
+ 
+ bool Mqtt::subscribe(string topic) {
+-    this->subscribers[topic] = 1;
++    {
++        std::lock_guard<std::mutex> lock(subscribers_mtx);
++        this->subscribers[topic] = 1;
++    }
+     int answer = mosquittopp::subscribe(nullptr, topic.c_str());
+     return answer == MOSQ_ERR_SUCCESS;
+ }
+@@ -77,7 +80,8 @@
+ }
+ 
+ void Mqtt::on_message(const struct mosquitto_message *message) {
+-    string payload = string(static_cast<char *>(message->payload));
++    // the payload is not NUL-terminated
++    string payload = message->payload ? string(static_cast<const char *>(message->payload), message->payloadlen) : string();
+     string topic = string(message->topic);
+ 
+     this->pubsub->on_message(topic, payload, 1);
+@@ -90,11 +94,17 @@
+ void Mqtt::on_connect(int rc) {
+     if ( rc == 0 ) {
+         cout << TAG << "connected with server" << endl;
+-        if (this->subscribers.size() > 0) {
++        // (re)subscribe all topics; copy them first, subscribe() may run concurrently
++        std::vector<string> topics;
++        {
++            std::lock_guard<std::mutex> lock(subscribers_mtx);
+             for ( const auto &sub : this->subscribers ) {
+-                this->subscribe(sub.first);
++                topics.push_back(sub.first);
+             }
+         }
++        for (const auto& topic : topics) {
++            mosquittopp::subscribe(nullptr, topic.c_str());
++        }
+     } else {
+         cout << TAG << "impossible to connect with server(" << rc << ")" << endl;
+     }

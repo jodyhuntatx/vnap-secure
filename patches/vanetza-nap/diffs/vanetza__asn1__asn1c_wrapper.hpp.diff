@@ -1,0 +1,22 @@
+--- a/vanetza/asn1/asn1c_wrapper.hpp
++++ b/vanetza/asn1/asn1c_wrapper.hpp
+@@ -4,6 +4,7 @@
+ #include <vanetza/asn1/support/asn_system.h>
+ #include <vanetza/asn1/support/constr_TYPE.h>
+ #include <vanetza/common/byte_buffer.hpp>
++#include <cassert>
+ #include <cstddef>
+ #include <string>
+ #include <utility>
+@@ -147,8 +148,10 @@
+      */
+     void swap(asn1c_wrapper_common& other) noexcept
+     {
++        // m_type refers to a global type descriptor shared by all wrappers of T: swapping it
++        // would copy descriptor contents (a write to global state racing with other threads)
++        assert(&m_type == &other.m_type);
+         std::swap(m_struct, other.m_struct);
+-        std::swap(m_type, other.m_type);
+     }
+ 
+ protected:

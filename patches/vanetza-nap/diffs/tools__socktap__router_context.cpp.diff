@@ -1,0 +1,201 @@
+--- a/tools/socktap/router_context.cpp
++++ b/tools/socktap/router_context.cpp
+@@ -16,11 +16,18 @@
+ #include <condition_variable>
+ #include <deque>
+ #include <algorithm>
++#include <future>
++#include <random>
+ 
+ using namespace vanetza;
+ using namespace std::chrono;
+ 
+ std::vector<std::unique_ptr<vanetza::geonet::Router>> routers;
++// trigger (runtime and lock) of each router, same index as routers
++static std::vector<TimeTrigger*> router_triggers;
++// released by RouterContext::start(): worker threads must not run before setup is complete
++static std::promise<void> start_promise;
++static std::shared_future<void> start_signal = start_promise.get_future().share();
+ 
+ typedef struct queued_processing {
+     std::shared_ptr<const vanetza::btp::DataIndication> indication; 
+@@ -140,10 +147,15 @@
+ 
+         reception_tq = new reception_thread_queue();
+         processing_tq = new processing_thread_queue();
++        // no reallocation while worker threads index these vectors
++        routers.reserve(num_threads + 1);
++        router_triggers.reserve(num_threads + 1);
+         for(int i = 0; i < num_threads; i++) {
+             reception_threads.push_back(std::thread(packet_reception_thread, i));
+-            std::unique_ptr<vanetza::geonet::Router> ptr = std::make_unique<vanetza::geonet::Router>(dccp->get_trigger(reception_threads[i].get_id()).runtime(), mib_);
++            TimeTrigger& router_trigger = dccp->get_trigger(reception_threads[i].get_id());
++            std::unique_ptr<vanetza::geonet::Router> ptr = std::make_unique<vanetza::geonet::Router>(router_trigger.runtime(), mib_);
+             routers.push_back(std::move(ptr));
++            router_triggers.push_back(&router_trigger);
+             routers[i]->packet_dropped = std::bind(&RouterContext::log_packet_drop, this, std::placeholders::_1);
+             routers[i]->set_address(mib_.itsGnLocalGnAddr);
+             routers[i]->set_transport_handler(geonet::UpperProtocol::BTP_B, &dispatcher_);
+@@ -154,10 +166,15 @@
+         }
+         std::unique_ptr<vanetza::geonet::Router> ptr = std::make_unique<vanetza::geonet::Router>(trigger_.runtime(), mib_);
+         routers.push_back(std::move(ptr));
++        router_triggers.push_back(&trigger_);
+         routers[num_threads]->packet_dropped = std::bind(&RouterContext::log_packet_drop, this, std::placeholders::_1);
+         routers[num_threads]->set_address(mib_.itsGnLocalGnAddr);
+         routers[num_threads]->set_transport_handler(geonet::UpperProtocol::BTP_B, &dispatcher_);
+         routers[num_threads]->set_security_entity(security_entity_);
++        {
++            std::lock_guard<std::mutex> lock(own_mac_mutex_);
++            own_mac_ = mib_.itsGnLocalGnAddr.mid();
++        }
+ 
+         update_position_vector();
+         dccp->get_trigger().schedule();
+@@ -179,7 +196,7 @@
+ 
+ void RouterContext::indicate(CohesivePacket&& packet, const EthernetHeader& hdr)
+ {
+-    if ((!ignore_own_messages || hdr.source != mib_.itsGnLocalGnAddr.mid()) && hdr.type == access::ethertype::GeoNetworking) {
++    if ((!ignore_own_messages || hdr.source != own_mac()) && hdr.type == access::ethertype::GeoNetworking) {
+         auto sharedHdr = std::make_shared<const EthernetHeader>(hdr);
+         queued_reception qr{std::make_unique<CohesivePacket>(std::move(packet)), sharedHdr};
+         reception_tq->push(std::make_unique<queued_reception>(std::move(qr)));
+@@ -187,15 +204,103 @@
+ }
+ 
+ void packet_reception_thread(int i) {
++    wait_for_start();
++    TimeTrigger& trigger = *router_triggers[i];
+     while (true) {
+         std::unique_ptr<queued_reception> qr = reception_tq->pop();
+         const double time_queue = (double) duration_cast< microseconds >(system_clock::now().time_since_epoch()).count() / 1000000.0;
+         qr->packet.get()->time_queue = time_queue;
+         std::unique_ptr<PacketVariant> up { new PacketVariant(*std::move(qr->packet)) };
+-        dccp->get_trigger().schedule(); // ensure the clock is up-to-date for the security entity
++        // the router's timers run on the io_context thread and PubSub may send through this
++        // router: all of them hold the router's lock
++        std::lock_guard<std::recursive_mutex> lock(trigger.mutex());
++        trigger.schedule(); // ensure the clock is up-to-date for the security entity
+         routers[i]->indicate(std::move(up), qr->hdr->source, qr->hdr->destination);
+-        dccp->get_trigger().schedule(); // schedule packet forwarding
++        trigger.schedule(); // schedule packet forwarding
++    }
++}
++
++vanetza::MacAddress RouterContext::own_mac()
++{
++    std::lock_guard<std::mutex> lock(own_mac_mutex_);
++    return own_mac_;
++}
++
++void RouterContext::set_id_change_silence(std::chrono::milliseconds min, std::chrono::milliseconds max)
++{
++    silence_min_ = min;
++    silence_max_ = std::max(min, max);
++}
++
++void RouterContext::subscribe_id_changes(vanetza::security::IdChangeService& service)
++{
++    id_change_subscription_.reset(new IdChangeSubscription(service,
++        [this](vanetza::security::IdChangeService::Command command, const vanetza::security::IdChangeService::Id& id,
++               const vanetza::ByteBuffer&) { return on_id_change(command, id); },
++        "network and transport layer"));
++}
++
++bool RouterContext::on_id_change(vanetza::security::IdChangeService::Command command,
++    const vanetza::security::IdChangeService::Id& id)
++{
++    using Command = vanetza::security::IdChangeService::Command;
++    switch (command) {
++        case Command::Prepare:
++            // TS 102 723-8 clause 6.3.1.3: no messages with old identifiers between PREPARE and
++            // COMMIT. Holding every router's lock stops reception, forwarding, beacons and
++            // PubSub sends until COMMIT or ABORT (the security entity always sends one of them).
++            for (int i = 0; i < num_threads + 1; ++i) {
++                id_change_locks_.emplace_back(get_router_mutex(i));
++            }
++            id_change_mac_ = derive_mac_address(id);
++            return true;
++        case Command::Commit: {
++            vanetza::MacAddress previous;
++            for (int i = 0; i < num_threads + 1; ++i) {
++                geonet::Address address = routers[i]->get_local_position_vector().gn_addr;
++                previous = address.mid();
++                address.mid(id_change_mac_);
++                routers[i]->set_address(address);
++            }
++            {
++                std::lock_guard<std::mutex> lock(own_mac_mutex_);
++                own_mac_ = id_change_mac_;
++            }
++            std::cerr << "[IDCHANGE] network: GN address MID / MAC " << previous << " -> " << id_change_mac_
++                      << " (id " << to_hex(id) << ")" << std::endl;
++            if (silence_max_.count() > 0 && dccp) {
++                // random silent period: the new identity does not appear right where the old one
++                // stopped (TR 103 415 4.1.4); started before the routers are released
++                static std::mt19937 random_gen { std::random_device {}() };
++                std::uniform_int_distribution<long> dist(silence_min_.count(), silence_max_.count());
++                const std::chrono::milliseconds silence { dist(random_gen) };
++                dccp->silence_for(silence);
++                std::cerr << "[IDCHANGE] silent period " << silence.count() << " ms" << std::endl;
++            }
++            id_change_locks_.clear();
++            return true;
++        }
++        case Command::Abort:
++        case Command::Dereg:
++            id_change_locks_.clear();
++            return true;
+     }
++    return true;
++}
++
++void RouterContext::start()
++{
++    start_promise.set_value();
++}
++
++void wait_for_start()
++{
++    start_signal.wait();
++}
++
++std::recursive_mutex& get_router_mutex(int i)
++{
++    return router_triggers[i]->mutex();
+ }
+ 
+ void RouterContext::enable(Application* app)
+@@ -240,14 +345,21 @@
+ 
+ void RouterContext::update_position_vector()
+ {
++    const auto position = positioning_.position_fix();
+     for(int i = 0; i < num_threads + 1; i++) {
+-        routers[i]->update_position(positioning_.position_fix());
++        std::lock_guard<std::recursive_mutex> lock(get_router_mutex(i));
++        routers[i]->update_position(position);
+     }
+     vanetza::Runtime::Callback callback = [this](vanetza::Clock::time_point) { this->update_position_vector(); };
+     vanetza::Clock::duration next = std::chrono::seconds(1);
+     dccp->get_trigger().runtime().schedule(next, callback);
+     dccp->get_trigger().schedule();
+-    update_packet_flow(routers[0]->get_local_position_vector());
++    geonet::LongPositionVector lpv;
++    {
++        std::lock_guard<std::recursive_mutex> lock(get_router_mutex(0));
++        lpv = routers[0]->get_local_position_vector();
++    }
++    update_packet_flow(lpv);
+ }
+ 
+ void RouterContext::update_packet_flow(const geonet::LongPositionVector& lpv)
+@@ -267,6 +379,7 @@
+ }
+ 
+ void packet_processing_thread(){
++    wait_for_start(); // applications map and port handlers are filled by enable()
+     while(true) {
+         std::unique_ptr<queued_processing> qp = processing_tq->pop();
+         applications[qp->indication->destination_port.get()]->indicate(*std::move(qp->indication), std::move(qp->packet));

@@ -1,0 +1,34 @@
+--- a/vanetza/security/CMakeLists.txt
++++ b/vanetza/security/CMakeLists.txt
+@@ -9,6 +9,7 @@
+     encap_service.cpp
+     hashed_id.cpp
+     hmac.cpp
++    id_change_service.cpp
+     key_type.cpp
+     peer_request_tracker.cpp
+     secured_message.cpp
+@@ -30,6 +31,7 @@
+     v2/null_certificate_validator.cpp
+     v2/payload.cpp
+     v2/persistence.cpp
++    v2/pseudonym_certificate_provider.cpp
+     v2/public_key.cpp
+     v2/recipient_info.cpp
+     v2/region.cpp
+@@ -51,6 +53,7 @@
+     v3/boost_geometry.cpp
+     v3/certificate.cpp
+     v3/certificate_cache.cpp
++    v3/certificate_chain.cpp
+     v3/certificate_validator.cpp
+     v3/distance.cpp
+     v3/geometry.cpp
+@@ -62,6 +65,7 @@
+     v3/sign_header_policy.cpp
+     v3/static_certificate_provider.cpp
+     v3/persistence.cpp
++    v3/pseudonym_certificate_provider.cpp
+     v3/trust_store.cpp
+     v3/validity_restriction.cpp
+ )

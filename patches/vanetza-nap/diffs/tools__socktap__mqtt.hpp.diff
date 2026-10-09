@@ -1,0 +1,18 @@
+--- a/tools/socktap/mqtt.hpp
++++ b/tools/socktap/mqtt.hpp
+@@ -8,6 +8,7 @@
+ #include <vector>
+ #include "time_trigger.hpp"
+ #include <map>  
++#include <mutex>
+ 
+ #define TAG "mqtt.cpp: "
+ 
+@@ -25,6 +26,7 @@
+     string host;
+     int port;
+     map<string, int> subscribers;
++    std::mutex subscribers_mtx; // subscribe() runs on app threads, on_connect() on the mosquitto loop thread
+     PubSub* pubsub;
+ 
+     /**

@@ -1,0 +1,111 @@
+--- a/tools/socktap/main.cpp
++++ b/tools/socktap/main.cpp
+@@ -15,6 +15,10 @@
+ #include "link_layer.hpp"
+ #include "positioning.hpp"
+ #include "router_context.hpp"
++#include "id_change.hpp"
++#include "mobility.hpp"
++#include "pki_channel.hpp"
++#include "pseudonym_channel.hpp"
+ #include "security.hpp"
+ #include "time_trigger.hpp"
+ #include "config.hpp"
+@@ -44,6 +48,9 @@
+     ;
+     add_positioning_options(options);
+     add_security_options(options);
++    add_pseudonym_channel_options(options);
++    add_pki_channel_options(options);
++    add_position_channel_options(options);
+     add_link_layer_options(options);
+ 
+ 
+@@ -165,11 +172,18 @@
+             std::cerr << "Requested positioning method is not available\n";
+             return 1;
+         }
++        // position updates on the control channel move the station (vnap-secure mobility)
++        auto position_channel = create_position_channel(vm, positioning.get(), trigger.runtime(), config_s.station_id);
+ 
+         auto security = create_security_entity(vm, trigger.runtime(), *positioning, config_s);
+         if (security) {
+             mib.itsGnSecurity = true;
+         }
++        // pseudonym change events arrive on their own MQTT channel, not with the application messages
++        auto pseudonym_channel = create_pseudonym_channel(vm, pseudonym_control(security.get()), trigger, config_s.station_id);
++        // certificate refill from the run's PKI service, on the same broker
++        auto pki_channel = create_pki_channel(vm, pseudonym_control(security.get()),
++            pseudonym_batch_loader(security.get()), trigger, config_s.station_id);
+ 
+         metrics_t metrics_s = {};
+ 
+@@ -201,6 +215,49 @@
+ 
+         RouterContext context(mib, trigger, *positioning, security.get(), config_s.ignore_own_messages, config_s.ignore_rsu_messages, num_threads, io_context);
+         context.set_link_layer(link_layer.get());
++
++        // ID change notification (ETSI TS 102 723-8/-9): with a pseudonym pool, the network
++        // and transport layer (GN address, MAC) and the facilities layer (CAM stationId)
++        // change their identifiers together with the authorization ticket
++        set_own_station_id(config_s.station_id);
++        std::unique_ptr<IdChangeSubscription> facilities_id_change;
++        if (auto* control = pseudonym_control(security.get())) {
++            const std::string scope = vm["pseudonym-id-change"].as<std::string>();
++            if (scope == "full") {
++                const int silent_min = vm["pseudonym-silent-min"].as<int>();
++                const int silent_max = vm["pseudonym-silent-max"].as<int>();
++                if (silent_min < 0 || silent_max < 0) {
++                    throw std::runtime_error("--pseudonym-silent-min/-max must not be negative");
++                }
++                context.set_id_change_silence(std::chrono::milliseconds(silent_min), std::chrono::milliseconds(silent_max));
++                if (silent_max > 0) {
++                    std::cerr << "[IDCHANGE] silent period after each ID change: " << silent_min << " to "
++                              << std::max(silent_min, silent_max) << " ms" << std::endl;
++                }
++                context.subscribe_id_changes(control->id_changes());
++                auto pending = std::make_shared<std::uint32_t>(0);
++                facilities_id_change.reset(new IdChangeSubscription(control->id_changes(),
++                    [pending](security::IdChangeService::Command command, const security::IdChangeService::Id& id,
++                              const ByteBuffer&) {
++                        using Command = security::IdChangeService::Command;
++                        if (command == Command::Prepare) {
++                            *pending = derive_station_id(id);
++                        } else if (command == Command::Commit) {
++                            std::cerr << "[IDCHANGE] facilities: stationId " << own_station_id() << " -> " << *pending
++                                      << " (id " << to_hex(id) << ")" << std::endl;
++                            set_own_station_id(*pending);
++                        }
++                        return true;
++                    }, "facilities layer"));
++                std::cerr << "[IDCHANGE] subscribed: network and transport layer, facilities layer "
++                          << "(GN address, MAC and stationId change with the pseudonym)" << std::endl;
++            } else if (scope == "certificate") {
++                std::cerr << "[IDCHANGE] pseudonym changes replace only the certificate "
++                          << "(--pseudonym-id-change certificate)" << std::endl;
++            } else {
++                throw std::runtime_error("--pseudonym-id-change must be 'full' or 'certificate'");
++            }
++        }
+         context.require_position_fix(vm.count("require-gnss-fix") > 0);
+ 
+         std::mutex prom_mtx; 
+@@ -214,6 +271,10 @@
+                 new CamApplication(*positioning, context.get_dccp().get_trigger().runtime(), pubsub, config_s, metrics_s, get_router(num_threads), 1, prom_mtx)
+             };
+             cam_app->set_interval(std::chrono::milliseconds(config_s.cam.periodicity));
++            if (facilities_id_change) {
++                // full ID change: the CAM timing must not carry over to the new identity
++                cam_app->rephase_on_id_change(pseudonym_control(security.get())->id_changes());
++            }
+             apps.emplace("cam", std::move(cam_app));
+         }
+ 
+@@ -321,6 +382,7 @@
+             std::cout << "Enable application '" << app.first << "'...\n";
+             context.enable(app.second.get());
+         }
++        context.start(); // worker threads wait for routers and applications to be ready
+ 
+         io_context.run();
+     } catch (PositioningException& e) {

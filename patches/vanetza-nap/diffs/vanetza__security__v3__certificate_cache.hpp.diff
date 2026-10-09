@@ -1,0 +1,47 @@
+--- a/vanetza/security/v3/certificate_cache.hpp
++++ b/vanetza/security/v3/certificate_cache.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ #include <vanetza/security/hashed_id.hpp>
+ #include <vanetza/security/v3/certificate.hpp>
++#include <mutex>
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+@@ -14,6 +15,11 @@
+ /**
+  * CertificateCache stores validated v1.3.1 certificates for later lookup.
+  * Required for checking messages' signatures containing only a certificate digest.
++ *
++ * Thread-safe: socktap stores and announces certificates from several reception threads
++ * while other threads look them up. Stored certificates are never removed or modified, so
++ * pointers returned by lookup() stay valid for the lifetime of the cache. Removing entries
++ * (e.g. expiry) would need a different lookup interface, such as returning copies.
+  */
+ class CertificateCache
+ {
+@@ -32,7 +38,7 @@
+      */
+     void store(Certificate cert);
+ 
+-    size_t size() const { return m_storage.size(); }
++    size_t size() const;
+ 
+     /**
+      * Announce a station with a given certificate digest.
+@@ -51,12 +57,14 @@
+ 
+ private:
+     using CertificateMap = std::unordered_map<HashedId8, Certificate>;
+-    using ShortDigestMap = std::unordered_map<HashedId3, CertificateMap::iterator>;
++    // element pointers stay valid across rehashing, iterators do not
++    using ShortDigestMap = std::unordered_map<HashedId3, const Certificate*>;
+ 
+     // TODO add bounded capacity and automatic removal of expired certificates
+     CertificateMap m_storage;
+     ShortDigestMap m_short_digests;
+     std::unordered_set<HashedId8> m_digests;
++    mutable std::mutex m_mutex;
+ };
+ 
+ } // namespace v3

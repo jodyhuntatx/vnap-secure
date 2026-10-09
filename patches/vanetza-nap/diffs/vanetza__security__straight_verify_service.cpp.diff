@@ -1,0 +1,50 @@
+--- a/vanetza/security/straight_verify_service.cpp
++++ b/vanetza/security/straight_verify_service.cpp
+@@ -13,6 +13,7 @@
+ #include <vanetza/security/v3/asn1_conversions.hpp>
+ #include <vanetza/security/v3/asn1_types.hpp>
+ #include <vanetza/security/v3/certificate_cache.hpp>
++#include <vanetza/security/v3/certificate_chain.hpp>
+ #include <vanetza/security/v3/certificate_provider.hpp>
+ #include <vanetza/security/v3/certificate_validator.hpp>
+ #include <vanetza/security/v3/hash.hpp>
+@@ -106,6 +107,15 @@
+     m_context_v3.m_sign_policy = policy;
+ }
+ 
++void StraightVerifyService::use_trust_store(const v3::CertificateCache* trust_store)
++{
++    if (trust_store) {
++        m_context_v3.m_chain_verifier = std::make_shared<v3::CertificateChainVerifier>(m_backend, *trust_store);
++    } else {
++        m_context_v3.m_chain_verifier.reset();
++    }
++}
++
+ VerifyConfirm StraightVerifyService::verify(const VerifyRequest& request)
+ {
+     struct visitor : public boost::static_visitor<VerifyConfirm>
+@@ -501,6 +511,23 @@
+             return confirm;
+         }
+     }
++
++    // check AT certificate's chain up to a trusted root CA
++    if (m_context_v3.m_chain_verifier) {
++        CertificateValidity chain_validity = m_context_v3.m_chain_verifier->verify(*certificate, m_context_v3.m_cert_cache, m_runtime.now());
++        if (!chain_validity) {
++            if (chain_validity.reason() == CertificateInvalidReason::Unknown_Signer) {
++                auto unknown_aa = v3::CertificateView { certificate }.issuer_digest();
++                if (unknown_aa && m_context_v3.m_sign_policy) {
++                    // request unknown AA certificate, it may arrive via P2PCD
++                    m_context_v3.m_sign_policy->request_unrecognized_certificate(*unknown_aa);
++                }
++            }
++            confirm.report = VerificationReport::Invalid_Certificate;
++            confirm.certificate_validity = chain_validity;
++            return confirm;
++        }
++    }
+ 
+     boost::optional<HashedId8> aa_digest;
+     switch (certificate->issuer.present)

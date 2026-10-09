@@ -1,0 +1,75 @@
+--- a/vanetza/security/backend_cryptopp.cpp
++++ b/vanetza/security/backend_cryptopp.cpp
+@@ -193,7 +193,11 @@
+     // calculate signature
+     Ecdsa256::Signer signer(private_key);
+     ByteBuffer signature(signer.MaxSignatureLength(), 0x00);
+-    auto signature_length = signer.SignMessage(m_prng, data.data(), data.size(), signature.data());
++    std::size_t signature_length;
++    {
++        std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
++        signature_length = signer.SignMessage(m_prng, data.data(), data.size(), signature.data());
++    }
+     signature.resize(signature_length);
+ 
+     auto signature_delimiter = signature.begin();
+@@ -235,7 +239,11 @@
+     {
+         // calculate signature
+         ByteBuffer signature(signer->MaxSignatureLength(), 0x00);
+-        auto signature_length = signer->SignMessage(m_prng, digest.data(), digest.size(), signature.data());
++        std::size_t signature_length;
++        {
++            std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
++            signature_length = signer->SignMessage(m_prng, digest.data(), digest.size(), signature.data());
++        }
+         signature.resize(signature_length);
+ 
+         auto signature_delimiter = signature.begin();
+@@ -274,7 +282,13 @@
+     boost::optional<InternalPublicKey> internal_pub_key = convert_public_key(public_key);
+     if (!internal_pub_key) {
+         return false;
+-    } else if (!internal_pub_key->Validate(m_prng, 3)) {
++    }
++    bool pub_key_valid;
++    {
++        std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
++        pub_key_valid = internal_pub_key->Validate(m_prng, 3);
++    }
++    if (!pub_key_valid) {
+         return false;
+     }
+ 
+@@ -385,6 +399,7 @@
+ {
+     CryptoPP::OID oid(CryptoPP::ASN1::secp256r1());
+     Ecdsa256::PrivateKey private_key;
++    std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
+     private_key.Initialize(m_prng, oid);
+     assert(private_key.Validate(m_prng, 3));
+     return private_key;
+@@ -394,7 +409,10 @@
+ {
+     Ecdsa256::PublicKey public_key;
+     private_key.MakePublicKey(public_key);
+-    assert(public_key.Validate(m_prng, 3));
++    {
++        std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
++        assert(public_key.Validate(m_prng, 3));
++    }
+     return public_key;
+ }
+ 
+@@ -406,7 +424,10 @@
+ 
+     Ecdsa256::PublicKey pub;
+     pub.Initialize(CryptoPP::ASN1::secp256r1(), q);
+-    assert(pub.Validate(m_prng, 3));
++    {
++        std::lock_guard<std::mutex> prng_lock(m_prng_mutex);
++        assert(pub.Validate(m_prng, 3));
++    }
+     return pub;
+ }
+ 

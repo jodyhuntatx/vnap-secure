@@ -1,0 +1,20 @@
+--- a/vanetza/security/backend_cryptopp.hpp
++++ b/vanetza/security/backend_cryptopp.hpp
+@@ -5,6 +5,7 @@
+ #include <cryptopp/eccrypto.h>
+ #include <cryptopp/osrng.h>
+ #include <cryptopp/sha.h>
++#include <mutex>
+ 
+ namespace vanetza
+ {
+@@ -65,6 +66,9 @@
+     Ecdsa256::PrivateKey internal_private_key(const ecdsa256::PrivateKey&);
+ 
+     CryptoPP::AutoSeededRandomPool m_prng;
++    // AutoSeededRandomPool is not thread-safe; one backend is shared by all router
++    // threads (signing + concurrent verification), so every m_prng use takes this lock
++    std::mutex m_prng_mutex;
+ };
+ 
+ } // namespace security

@@ -1,0 +1,40 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -4,6 +4,9 @@
+ 
+ ENV TZ=Europe/Lisbon
+ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
++# bullseye reached EOL 2026-08-31 and deb.debian.org/debian-security now 404s on pool files;
++# use the snapshot sources the base image ships (commented out) instead
++RUN sed -i -e 's|^deb |# deb |' -e 's|^# deb http://snapshot|deb [check-valid-until=no] http://snapshot|' /etc/apt/sources.list
+ RUN printf "deb http://archive.debian.org/debian-archive/debian bullseye-backports main non-free\ndeb-src http://archive.debian.org/debian-archive/debian bullseye-backports main non-free\n" > /etc/apt/sources.list.d/backports.list
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+     build-essential \
+@@ -93,13 +96,18 @@
+ COPY . /vanetza
+ WORKDIR /vanetza
+ RUN rm -f CMakeCache.txt
+-RUN cmake . -DBUILD_SOCKTAP=ON
++RUN cmake . -DBUILD_SOCKTAP=ON -DBUILD_CERTIFY=ON
+ RUN cmake --build . --target socktap -j $(nproc)
+ RUN cp /vanetza/bin/socktap /usr/local/bin/socktap
++RUN cmake --build . --target certify -j $(nproc)
++RUN cp /vanetza/bin/certify /usr/local/bin/certify
+ 
+ FROM debian:bullseye-slim AS final
+ ENV TZ=Europe/Lisbon
+ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
++# bullseye reached EOL 2026-08-31 and deb.debian.org/debian-security now 404s on pool files;
++# use the snapshot sources the base image ships (commented out) instead
++RUN sed -i -e 's|^deb |# deb |' -e 's|^# deb http://snapshot|deb [check-valid-until=no] http://snapshot|' /etc/apt/sources.list
+ #RUN printf "deb http://httpredir.debian.org/debian buster-backports main non-free\ndeb-src http://httpredir.debian.org/debian buster-backports main non-free\n" > /etc/apt/sources.list.d/backports.list
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+     mosquitto \
+@@ -135,6 +143,7 @@
+ WORKDIR /
+ ENV EMBEDDED_MOSQUITTO_PORT=1883
+ COPY --from=build /vanetza/bin/socktap /usr/local/bin/socktap
++COPY --from=build /vanetza/bin/certify /usr/local/bin/certify
+ COPY --from=build /vanetza/tools/socktap/config.ini /config.ini
+ COPY --from=build /vanetza/tools/socktap/zenoh_config.json5 /zenoh_config.json5
+ COPY --from=build /vanetza/entrypoint.sh /entrypoint.sh

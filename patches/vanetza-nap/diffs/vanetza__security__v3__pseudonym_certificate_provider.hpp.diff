@@ -1,0 +1,85 @@
+--- /dev/null
++++ b/vanetza/security/v3/pseudonym_certificate_provider.hpp
+@@ -0,0 +1,82 @@
++#pragma once
++#include <vanetza/security/private_key.hpp>
++#include <vanetza/security/pseudonym_control.hpp>
++#include <vanetza/security/pseudonym_pool.hpp>
++#include <vanetza/security/v3/certificate_provider.hpp>
++#include <vanetza/security/v3/secured_message.hpp>  // sign_header_policy.hpp is not self-contained
++#include <vanetza/security/v3/sign_header_policy.hpp>
++#include <atomic>
++#include <cstddef>
++#include <vector>
++
++namespace vanetza
++{
++namespace security
++{
++namespace v3
++{
++
++/**
++ * \brief Certificate provider simulating an OBU pseudonym change scheme (TS 103 097 v1.3.1 / IEEE 1609.2)
++ *
++ * Holds a pool of pre-provisioned authorization tickets (issued by external tooling, e.g. a
++ * butterfly batch from a PKI) and changes to another one only when change_pseudonym() is
++ * called, i.e. on an external pseudonym change event. After each change the sign header
++ * policy is asked to include the full new certificate in the next message, so receivers
++ * learn it immediately.
++ *
++ * change_pseudonym() must be serialized with signing, see PseudonymControl. socktap runs it
++ * under the TimeTrigger mutex that also guards all runtime callbacks (e.g. CAM transmission).
++ *
++ * \note Changing only the certificate does not make consecutive pseudonyms unlinkable:
++ * lower-layer identifiers (MAC address, GeoNetworking address) are not changed by this class.
++ */
++class PseudonymCertificateProvider : public BaseCertificateProvider, public PseudonymControl
++{
++public:
++    /** One pre-provisioned pseudonym: an authorization ticket and its private key */
++    struct Pseudonym
++    {
++        Certificate certificate;
++        PrivateKey private_key;
++    };
++
++    /**
++     * \param pool pseudonyms of the pool (must not be empty), index 0 is used first
++     *
++     * AA/root certificates go into cache(), as for StaticCertificateProvider.
++     */
++    explicit PseudonymCertificateProvider(std::vector<Pseudonym> pool);
++
++    /** Policy to notify after a change (e.g. set once the security entity is built) */
++    void set_sign_header_policy(SignHeaderPolicy* policy) { m_sign_header_policy = policy; }
++
++    const Certificate& own_certificate() override;
++    const PrivateKey& own_private_key() override;
++
++    Result change_pseudonym(boost::optional<std::size_t> index) override;
++    std::size_t current_pseudonym() const override { return m_pool.current_index(); }
++    std::size_t pseudonym_pool_size() const override { return m_pool.size(); }
++    std::size_t unused_pseudonyms() const override { return m_pool.unused(); }
++    void enable_refill(std::size_t threshold, std::function<void(std::size_t)> low) override;
++    IdChangeService& id_changes() override { return m_id_changes; }
++
++    /**
++     * Add pseudonyms to the pool (e.g. a certificate batch from the PKI), usable right away
++     * \return number of pseudonyms the pool has now
++     */
++    std::size_t add_pseudonyms(std::vector<Pseudonym> pseudonyms);
++
++private:
++    void check_refill();
++
++    PseudonymPool<Pseudonym> m_pool;
++    std::size_t m_refill_threshold = 0;
++    std::function<void(std::size_t)> m_refill_low;
++    SignHeaderPolicy* m_sign_header_policy = nullptr;
++    IdChangeService m_id_changes; // last member: destroyed (DEREG) first
++};
++
++} // namespace v3
++} // namespace security
++} // namespace vanetza

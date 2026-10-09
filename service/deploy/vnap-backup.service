@@ -1,0 +1,15 @@
+# One backup of the API's data (database, results, user scenarios); started by vnap-backup.timer.
+#   cp vnap-backup.service vnap-backup.timer /etc/systemd/system/ && systemctl enable --now vnap-backup.timer
+[Unit]
+Description=vnap-secure simulation service: backup
+
+[Service]
+Type=oneshot
+User=vnap
+Group=vnap
+WorkingDirectory=/home/vnap/vnap-secure/service
+ExecStart=/home/vnap/vnap-secure/service/backup.sh create
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+UMask=0077

@@ -1,0 +1,27 @@
+--- a/tools/socktap/raw_socket_link.cpp
++++ b/tools/socktap/raw_socket_link.cpp
+@@ -69,6 +69,7 @@
+ 
+ void RawSocketLink::indicate(IndicationCallback callback)
+ {
++    std::lock_guard<std::mutex> lock(callback_mtx_);
+     callback_ = callback;
+ }
+ 
+@@ -120,8 +121,14 @@
+                 packet.chan_tx_time = s.chan_tx_time;
+             }
+ 
+-            if (callback_) {
+-                callback_(std::move(packet), *eth);
++            IndicationCallback callback;
++            {
++                // also makes everything set up before indicate() visible to this thread
++                std::lock_guard<std::mutex> lock(callback_mtx_);
++                callback = callback_;
++            }
++            if (callback) {
++                callback(std::move(packet), *eth);
+             }
+         }
+     }

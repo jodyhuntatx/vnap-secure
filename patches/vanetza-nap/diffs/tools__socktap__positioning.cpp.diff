@@ -1,0 +1,27 @@
+--- a/tools/socktap/positioning.cpp
++++ b/tools/socktap/positioning.cpp
+@@ -1,5 +1,5 @@
+ #include "positioning.hpp"
+-#include <vanetza/common/stored_position_provider.hpp>
++#include "mobility.hpp"
+ 
+ #ifdef SOCKTAP_WITH_GPSD
+ #   include "gps_position_provider.hpp"
+@@ -20,15 +20,14 @@
+         });
+ #endif
+     } else {
+-        std::unique_ptr<StoredPositionProvider> stored { new StoredPositionProvider() };
+         PositionFix fix;
+         fix.timestamp = runtime.now();
+         fix.latitude = config_s.latitude * units::degree;
+         fix.longitude = config_s.longitude * units::degree;
+         fix.confidence.semi_major = 1 * units::si::meter;
+         fix.confidence.semi_minor = fix.confidence.semi_major;
+-        stored->position_fix(fix);
+-        positioning = std::move(stored);
++        // starts at the configured position; --position-control-broker can move it at runtime
++        positioning.reset(new ControlledPositionProvider(fix));
+     }
+ 
+     return positioning;

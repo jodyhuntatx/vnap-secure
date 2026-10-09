@@ -1,0 +1,18 @@
+--- a/tools/socktap/CMakeLists.txt
++++ b/tools/socktap/CMakeLists.txt
+@@ -42,10 +42,15 @@
+     ${APPLICATIONS_SRC}
+     dcc_passthrough.cpp
+     ethernet_device.cpp
++    id_change.hpp id_change.cpp
++    mobility.hpp mobility.cpp
+     link_layer.cpp
+     main.cpp
+     multi_link.cpp
+     positioning.cpp
++    bke.hpp bke.cpp
++    pki_channel.hpp pki_channel.cpp
++    pseudonym_channel.hpp pseudonym_channel.cpp
+     rssi_reader.cpp
+     raw_socket_link.cpp
+     router_context.cpp

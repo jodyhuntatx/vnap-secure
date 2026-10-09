@@ -1,0 +1,40 @@
+--- a/vanetza/security/v2/certificate_cache.hpp
++++ b/vanetza/security/v2/certificate_cache.hpp
+@@ -7,6 +7,7 @@
+ #include <boost/heap/binomial_heap.hpp>
+ #include <list>
+ #include <map>
++#include <mutex>
+ 
+ namespace vanetza
+ {
+@@ -18,6 +19,9 @@
+ /**
+  * CertificateCache remembers validated certificates for some time.
+  * This is necessary for certificate lookup when only its digest is known.
++ *
++ * Thread-safe: socktap inserts and looks up certificates from several reception threads.
++ * Lookups also modify the cache (expired entries are dropped, found entries refreshed).
+  */
+ class CertificateCache
+ {
+@@ -44,7 +48,7 @@
+      * Number of currently stored certificates
+      * \return cache size
+      */
+-    std::size_t size() const { return m_certificates.size(); }
++    std::size_t size() const;
+ 
+ private:
+     struct CachedCertificate;
+@@ -67,7 +71,10 @@
+     const Runtime& m_runtime;
+     heap_type m_expiries;
+     map_type m_certificates;
++    mutable std::mutex m_mutex; // guards m_expiries and m_certificates
+ 
++    // callers hold m_mutex
++    std::list<Certificate> lookup_locked(const HashedId8& id, SubjectType type);
+     void drop_expired();
+     bool is_expired(const Expiry&) const;
+     void refresh(heap_type::handle_type&, Clock::duration);

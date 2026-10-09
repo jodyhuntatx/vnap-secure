@@ -1,0 +1,36 @@
+--- a/vanetza/security/v3/sign_header_policy.cpp
++++ b/vanetza/security/v3/sign_header_policy.cpp
+@@ -51,6 +51,7 @@
+ 
+ void DefaultSignHeaderPolicy::prepare_header(const SignRequest& request, SecuredMessage& secured_message)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     const auto now = m_runtime.now();
+     secured_message.set_its_aid(request.its_aid);
+     secured_message.set_generation_time(vanetza::security::v2::convert_time64(now));
+@@ -111,21 +112,25 @@
+ 
+ void DefaultSignHeaderPolicy::request_unrecognized_certificate(HashedId8 id)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_outgoing_requests.add_request(truncate(id));
+ }
+ 
+ void DefaultSignHeaderPolicy::request_certificate()
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_cert_requested = true;
+ }
+ 
+ void DefaultSignHeaderPolicy::enqueue_p2p_request(HashedId3 id)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_incoming_requests.add_request(id);
+ }
+ 
+ void DefaultSignHeaderPolicy::discard_p2p_request(HashedId3 id)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_incoming_requests.discard_request(id);
+ }
+ 

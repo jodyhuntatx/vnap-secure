@@ -1,0 +1,25 @@
+--- a/vanetza/security/v2/default_certificate_validator.cpp
++++ b/vanetza/security/v2/default_certificate_validator.cpp
+@@ -111,8 +111,9 @@
+     auto certificate_assurance = certificate.get_attribute<SubjectAttributeType::Assurance_Level>();
+     auto signer_assurance = signer.get_attribute<SubjectAttributeType::Assurance_Level>();
+ 
++    // Assurance_Level is optional. Only enforce ordering when both certs carry it.
+     if (!certificate_assurance || !signer_assurance) {
+-        return false;
++        return true;
+     }
+ 
+     // See TS 103 096-2 v1.3.1, section 5.2.7.11 + 5.3.5.17 and following
+@@ -179,9 +180,8 @@
+         return CertificateInvalidReason::Broken_Time_Period;
+     }
+ 
+-    if (!certificate.get_attribute<SubjectAttributeType::Assurance_Level>()) {
+-        return CertificateInvalidReason::Missing_Subject_Assurance;
+-    }
++    // Assurance_Level is optional; C-ITS-PKI-generated certs omit it so we do not
++    // hard-reject here. Consistency with the signer is checked in check_consistency.
+ 
+     SubjectType subject_type = certificate.subject_info.subject_type;
+ 

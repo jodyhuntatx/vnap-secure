@@ -1,0 +1,35 @@
+--- a/vanetza/security/v2/certificate_cache.cpp
++++ b/vanetza/security/v2/certificate_cache.cpp
+@@ -14,10 +14,11 @@
+ 
+ void CertificateCache::insert(const Certificate& certificate)
+ {
+-    const HashedId8 id = calculate_hash(certificate);
++    const HashedId8 id = calculate_hash(certificate); // outside the lock: encoding and hashing
++    std::lock_guard<std::mutex> lock(m_mutex);
+ 
+     // this may drop expired entries and extend some's lifetime
+-    std::list<Certificate> certs = lookup(id, certificate.subject_info.subject_type);
++    std::list<Certificate> certs = lookup_locked(id, certificate.subject_info.subject_type);
+ 
+     // TODO: implement equality comparison for Certificate
+     if (certs.size()) {
+@@ -54,6 +55,18 @@
+ 
+ std::list<Certificate> CertificateCache::lookup(const HashedId8& id, SubjectType type)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
++    return lookup_locked(id, type);
++}
++
++std::size_t CertificateCache::size() const
++{
++    std::lock_guard<std::mutex> lock(m_mutex);
++    return m_certificates.size();
++}
++
++std::list<Certificate> CertificateCache::lookup_locked(const HashedId8& id, SubjectType type)
++{
+     drop_expired();
+ 
+     using iterator = std::multimap<HashedId8, CachedCertificate>::iterator;

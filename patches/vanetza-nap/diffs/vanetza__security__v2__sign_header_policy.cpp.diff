@@ -1,0 +1,30 @@
+--- a/vanetza/security/v2/sign_header_policy.cpp
++++ b/vanetza/security/v2/sign_header_policy.cpp
+@@ -20,6 +20,7 @@
+ 
+ std::list<HeaderField> DefaultSignHeaderPolicy::prepare_header(const SignRequest& request, CertificateProvider& certificate_provider)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     std::list<HeaderField> header_fields;
+ 
+     header_fields.push_back(convert_time64(m_runtime.now()));
+@@ -81,16 +82,19 @@
+ 
+ void DefaultSignHeaderPolicy::request_unrecognized_certificate(HashedId8 id)
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_unknown_certificates.insert(truncate(id));
+ }
+ 
+ void DefaultSignHeaderPolicy::request_certificate()
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_cert_requested = true;
+ }
+ 
+ void DefaultSignHeaderPolicy::request_certificate_chain()
+ {
++    std::lock_guard<std::mutex> lock(m_mutex);
+     m_chain_requested = true;
+ }
+ 

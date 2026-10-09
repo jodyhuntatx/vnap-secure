@@ -1,0 +1,105 @@
+--- a/tools/socktap/rssi_reader.cpp
++++ b/tools/socktap/rssi_reader.cpp
+@@ -3,6 +3,12 @@
+ #define _XOPEN_SOURCE 700
+ #define ETH_ALEN 6
+ 
++#include <mutex>
++
++// rssi, mcs, timeout and survey are written by the RSSI thread (netlink callbacks, expiry)
++// and read by the link-layer receive thread for every packet. The lock is held only while
++// copying values in or out, never while waiting for netlink replies.
++static std::mutex rssi_mutex;
+ std::map<std::string, int> rssi;
+ std::map<std::string, int> mcs;
+ std::map<std::string, double> timeout;
+@@ -177,20 +183,27 @@
+   */
+ 
+   std::string mac(((Neighbour*)arg)->mac_address);
+-  rssi[mac] = ((Neighbour*)arg)->signal;
++  const int signal = ((Neighbour*)arg)->signal;
+ 
+   double station_mcs = ((Neighbour*)arg)->txrate;
+-  if (station_mcs <= 3.0) mcs[mac] = 1;
+-  else if (station_mcs <= 4.5) mcs[mac] = 2;
+-  else if (station_mcs <= 6.0) mcs[mac] = 3;
+-  else if (station_mcs <= 9.0) mcs[mac] = 4;
+-  else if (station_mcs <= 12.0) mcs[mac] = 5;
+-  else if (station_mcs <= 18.0) mcs[mac] = 6;
+-  else if (station_mcs <= 24.0) mcs[mac] = 7;
+-  else if (station_mcs <= 27.0) mcs[mac] = 8;
+-  else mcs[mac] = -1;
++  int station_mcs_index;
++  if (station_mcs <= 3.0) station_mcs_index = 1;
++  else if (station_mcs <= 4.5) station_mcs_index = 2;
++  else if (station_mcs <= 6.0) station_mcs_index = 3;
++  else if (station_mcs <= 9.0) station_mcs_index = 4;
++  else if (station_mcs <= 12.0) station_mcs_index = 5;
++  else if (station_mcs <= 18.0) station_mcs_index = 6;
++  else if (station_mcs <= 24.0) station_mcs_index = 7;
++  else if (station_mcs <= 27.0) station_mcs_index = 8;
++  else station_mcs_index = -1;
+ 
+-  timeout[mac] = (double) std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::system_clock::now().time_since_epoch()).count() / 1000000.0;
++  const double now = (double) std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::system_clock::now().time_since_epoch()).count() / 1000000.0;
++  {
++    std::lock_guard<std::mutex> lock(rssi_mutex);
++    rssi[mac] = signal;
++    mcs[mac] = station_mcs_index;
++    timeout[mac] = now;
++  }
+ 
+   return NL_SKIP;
+ }
+@@ -215,6 +228,7 @@
+ 	}
+ 
+   if(sinfo[NL80211_SURVEY_INFO_IN_USE]) {
++    std::lock_guard<std::mutex> lock(rssi_mutex);
+     ((Survey*)arg)->frequency = nla_get_u32(sinfo[NL80211_SURVEY_INFO_FREQUENCY]);
+     if (sinfo[NL80211_SURVEY_INFO_NOISE]) ((Survey*)arg)->noise = (int8_t)nla_get_u8(sinfo[NL80211_SURVEY_INFO_NOISE]);
+     else ((Survey*)arg)->noise = -1;
+@@ -318,7 +332,10 @@
+   survey_policy.pol[NL80211_SURVEY_INFO_FREQUENCY].type = NLA_U32;
+   survey_policy.pol[NL80211_SURVEY_INFO_NOISE].type = NLA_U8;
+ 
+-  survey.frequency = -1;
++  {
++    std::lock_guard<std::mutex> lock(rssi_mutex);
++    survey.frequency = -1;
++  }
+ 
+   printf("Initializing netlink 802.11\n");
+   nl.id = initNl80211(&nl, &w, &survey);
+@@ -335,6 +352,7 @@
+     if(i == 100) {
+       i = 0;
+       const double time_now = (double) std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::system_clock::now().time_since_epoch()).count() / 1000000.0;
++      std::lock_guard<std::mutex> lock(rssi_mutex);
+       auto it = timeout.begin();
+       while (it != timeout.end()) {
+           if (time_now - it->second >= 1) {
+@@ -362,16 +380,17 @@
+ }
+ 
+ int get_rssi(std::string mac) {
+-  if(rssi.count(mac)) {
+-      return rssi[mac];
+-  }
+-  return 1;
++  std::lock_guard<std::mutex> lock(rssi_mutex);
++  auto found = rssi.find(mac);
++  return found != rssi.end() ? found->second : 1;
+ }
+ 
+ std::map<std::string, int> get_mcs() {
++  std::lock_guard<std::mutex> lock(rssi_mutex);
+   return mcs;
+ }
+ 
+ Survey get_survey() {
++  std::lock_guard<std::mutex> lock(rssi_mutex);
+   return survey;
+ }
+\ No newline at end of file

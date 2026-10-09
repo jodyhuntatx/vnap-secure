@@ -1,0 +1,119 @@
+--- a/tools/socktap/pubsub.cpp
++++ b/tools/socktap/pubsub.cpp
+@@ -1,4 +1,5 @@
+ #include "pubsub.hpp"
++#include <mutex>
+ 
+ using namespace std::chrono;
+ using namespace rapidjson;
+@@ -56,6 +57,18 @@
+ transmission_thread_queue* transmission_tq;
+ std::vector<std::thread> transmission_threads;
+ static std::unordered_map<std::string, int> topic_priority_lookup;
++// guards topic_priority_lookup and subscribers: written by subscribe() on the main thread,
++// read by MQTT/Zenoh/DDS callback threads and the transmission threads
++static std::mutex subscribers_mutex;
++// a boost::asio socket must not be used by several threads at once (processing threads publish)
++static std::mutex udp_mutex;
++
++static int topic_priority(const std::string& topic)
++{
++    std::lock_guard<std::mutex> lock(subscribers_mutex);
++    auto found = topic_priority_lookup.find(topic); // find(): operator[] would insert
++    return found != topic_priority_lookup.end() ? found->second : 0;
++}
+ 
+ 
+ PubSub::PubSub(config_t config_, int num_threads_, std::mutex& prom_mtx_) :
+@@ -186,20 +199,23 @@
+     const double time_reception = (double) duration_cast< microseconds >(system_clock::now().time_since_epoch()).count() / 1000000.0;
+     std::vector<uint8_t> emptyVector;
+     queued_transmission qt{topic, message, emptyVector, false, time_reception, ""};    
+-    transmission_tq->push(std::make_unique<queued_transmission>(std::move(qt)), topic_priority_lookup[topic] + (3 * priority));
++    transmission_tq->push(std::make_unique<queued_transmission>(std::move(qt)), topic_priority(topic) + (3 * priority));
+ }
+ 
+ void PubSub::on_message(std::string topic, const std::vector<uint8_t>& message, int priority, std::string test) {
+     const double time_reception = (double) duration_cast< microseconds >(system_clock::now().time_since_epoch()).count() / 1000000.0;
+     queued_transmission qt{topic, "", message, true, time_reception, test};
+-    transmission_tq->push(std::make_unique<queued_transmission>(std::move(qt)), topic_priority_lookup[topic] + (3 * priority));
++    transmission_tq->push(std::make_unique<queued_transmission>(std::move(qt)), topic_priority(topic) + (3 * priority));
+ }
+ 
+ void PubSub::subscribe(message_config_t message_config, PubSub_application* app) {
+     std::string topic = message_config.topic_in;
+-    subscribers[topic] = app;
+-    subscribers[topic + "_enc"] = app;
+-    topic_priority_lookup[topic] = app->priority;
++    {
++        std::lock_guard<std::mutex> lock(subscribers_mutex);
++        subscribers[topic] = app;
++        subscribers[topic + "_enc"] = app;
++        topic_priority_lookup[topic] = app->priority;
++    }
+     if(message_config.dds_enabled && this->config.dds_enabled) {
+         this->dds->subscribe(topic);
+         this->dds->provison_publisher(message_config.topic_out);
+@@ -209,8 +225,11 @@
+         this->local_mqtt->subscribe(topic);
+         if(this->remote_mqtt != NULL) {
+             std::string remote_topic = this->config.remote_mqtt_prefix + std::to_string(this->config.station_id) + "/" + topic;
+-            subscribers[remote_topic] = app;
+-            topic_priority_lookup[remote_topic] = app->priority;
++            {
++                std::lock_guard<std::mutex> lock(subscribers_mutex);
++                subscribers[remote_topic] = app;
++                topic_priority_lookup[remote_topic] = app->priority;
++            }
+             this->remote_mqtt->subscribe(remote_topic);
+         }
+     }
+@@ -243,9 +262,12 @@
+ }
+ 
+ void PubSub::manual_subscribe(message_config_t message_config, std::string topic, PubSub_application* app) {
+-    subscribers[topic] = app;
+-    subscribers[topic + "_enc"] = app;
+-    topic_priority_lookup[topic] = app->priority;
++    {
++        std::lock_guard<std::mutex> lock(subscribers_mutex);
++        subscribers[topic] = app;
++        subscribers[topic + "_enc"] = app;
++        topic_priority_lookup[topic] = app->priority;
++    }
+     if(message_config.dds_enabled && this->config.dds_enabled)  this->dds->subscribe(topic);
+     if(message_config.mqtt_enabled) {
+         this->local_mqtt->subscribe(topic);
+@@ -276,6 +298,7 @@
+     const char* messageJSON = fullBuffer.GetString();
+ 
+     if(message_config.udp_out_port != 0) {
++        std::lock_guard<std::mutex> lock(udp_mutex);
+         udp_socket->send_to(boost::asio::buffer(messageJSON, strlen(messageJSON)), *remote_endpoint, 0, *err);
+     }
+     const double time_full_udp = (double) duration_cast< microseconds >(system_clock::now().time_since_epoch()).count() / 1000000.0;
+@@ -356,11 +379,21 @@
+ }
+ 
+ void message_transmission_thread(int i) {
++    wait_for_start(); // routers and subscribing applications are set up before start()
+     while (true){
+         std::unique_ptr<queued_transmission> qt = transmission_tq->pop();
+-        auto it = subscribers.find(qt->topic);
+-        if (it != subscribers.end() && it->second != nullptr) {
+-            it->second->on_message(qt->topic, qt->message, qt->payload, qt->is_encoded, qt->time_reception, qt->test, get_router(i));
++        PubSub_application* app = nullptr;
++        {
++            std::lock_guard<std::mutex> lock(subscribers_mutex);
++            auto it = subscribers.find(qt->topic);
++            if (it != subscribers.end()) {
++                app = it->second;
++            }
++        }
++        if (app != nullptr) {
++            // routers[i] is also used by reception thread i and the router's timers
++            std::lock_guard<std::recursive_mutex> lock(get_router_mutex(i));
++            app->on_message(qt->topic, qt->message, qt->payload, qt->is_encoded, qt->time_reception, qt->test, get_router(i));
+         } else {
+             std::cerr << "message_transmission_thread: no subscriber for topic '" << qt->topic << "'" << std::endl;
+         }

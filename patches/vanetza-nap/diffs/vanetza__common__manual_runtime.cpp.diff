@@ -1,0 +1,54 @@
+--- a/vanetza/common/manual_runtime.cpp
++++ b/vanetza/common/manual_runtime.cpp
+@@ -15,7 +15,7 @@
+ 
+ void ManualRuntime::schedule(Clock::duration d, const Callback& cb, const void* scope)
+ {
+-    schedule(m_now + d, cb, scope);
++    schedule(m_now.load() + d, cb, scope);
+ }
+ 
+ void ManualRuntime::cancel(const void* scope)
+@@ -37,20 +37,20 @@
+ 
+ Clock::time_point ManualRuntime::now() const
+ {
+-    return m_now;
++    return m_now.load();
+ }
+ 
+ void ManualRuntime::trigger(Clock::time_point tp)
+ {
+     // require monotonic clock
+-    assert(tp >= m_now);
+-    m_now = tp;
++    assert(tp >= m_now.load());
++    m_now.store(tp);
+     trigger();
+ }
+ 
+ void ManualRuntime::trigger(Clock::duration d)
+ {
+-    m_now += d;
++    m_now.store(m_now.load() + d); // only the triggering thread writes
+     trigger();
+ }
+ 
+@@ -60,7 +60,7 @@
+     while (!m_queue.empty()) {
+         auto top = m_queue.get<by_deadline>().begin();
+         const auto deadline = top->deadline; // copy of deadline on purpose (erase before callback)
+-        if (deadline <= m_now) {
++        if (deadline <= m_now.load()) {
+             Callback cb = top->callback;
+             m_queue.get<by_deadline>().erase(top);
+             // callback invocation has to be last action because it might modify runtime
+@@ -73,7 +73,7 @@
+ 
+ void ManualRuntime::reset(Clock::time_point tp)
+ {
+-    m_now = tp;
++    m_now.store(tp);
+     queue_type queue;
+     swap(queue, m_queue);
+ 

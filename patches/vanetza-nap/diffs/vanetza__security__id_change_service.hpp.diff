@@ -1,0 +1,141 @@
+--- /dev/null
++++ b/vanetza/security/id_change_service.hpp
+@@ -0,0 +1,138 @@
++#pragma once
++#include <vanetza/common/byte_buffer.hpp>
++#include <array>
++#include <chrono>
++#include <cstdint>
++#include <functional>
++#include <map>
++#include <mutex>
++#include <string>
++
++namespace vanetza
++{
++namespace security
++{
++
++/**
++ * \brief ID change notification service of the security entity
++ *
++ * Implements the identity management services of ETSI TS 102 723-8 (SN-SAP, network and
++ * transport layer) and ETSI TS 102 723-9 (SF-SAP, facilities layer), clauses 5.2.5 to 5.2.10
++ * and 6.3: IDCHANGE-SUBSCRIBE, IDCHANGE-EVENT, IDCHANGE-UNSUBSCRIBE, IDCHANGE-TRIGGER,
++ * ID-LOCK and ID-UNLOCK.
++ *
++ * Every component using an identifier (GeoNetworking address, MAC address, station ID, ...)
++ * subscribes with a hook function. An ID change is a two-phase commit (clause 6.3.1.3):
++ * PREPARE is sent to all subscribers; if all acknowledge, the security entity switches its
++ * own identity (authorization ticket) and sends COMMIT; otherwise ABORT is sent to every
++ * subscriber that received PREPARE and nothing changes. Subscribers shall not send messages
++ * with their old identifiers between PREPARE and COMMIT (or ABORT).
++ *
++ * Hooks are called synchronously from the thread performing the change, without the internal
++ * lock held, so hooks may call back into this service (e.g. lock(), trigger()). Thread-safe.
++ * A subscriber must unsubscribe before it is destroyed (or outlive the service): the
++ * destructor sends DEREG to all remaining subscribers.
++ */
++class IdChangeService
++{
++public:
++    /** Id-change phase, TS 102 723-8 Table 12 */
++    enum class Command { Prepare, Commit, Abort, Dereg };
++
++    /** The 8-octet "Id to be set" (here: HashedId8 of the new authorization ticket) */
++    using Id = std::array<uint8_t, 8>;
++
++    /**
++     * Hook function (clause 6.3.1.2): returns the response's return_code, i.e. whether the
++     * subscriber acknowledges the command. Only PREPARE may be refused.
++     */
++    using Hook = std::function<bool(Command, const Id&, const ByteBuffer& subscriber_data)>;
++
++    using Subscription = std::uint64_t; /*!< handle of IDCHANGE-SUBSCRIBE.confirm */
++    using LockHandle = std::uint64_t;   /*!< handle of ID-LOCK.confirm */
++
++    /** Outcome of change() */
++    struct Result
++    {
++        bool committed = false;
++        std::string error; /*!< reason if not committed */
++    };
++
++    /** Called by trigger() to ask the security entity for an ID change (IDCHANGE-TRIGGER) */
++    using TriggerHandler = std::function<void()>;
++
++    IdChangeService() = default;
++    IdChangeService(const IdChangeService&) = delete;
++    IdChangeService& operator=(const IdChangeService&) = delete;
++    ~IdChangeService();
++
++    /**
++     * IDCHANGE-SUBSCRIBE (clause 5.2.5)
++     * \param hook called on every ID change event
++     * \param name subscriber name for log and error messages (not part of the standard)
++     * \param subscriber_data passed to the hook on every call
++     * \return subscription handle
++     */
++    Subscription subscribe(Hook hook, std::string name, ByteBuffer subscriber_data = {});
++
++    /** IDCHANGE-UNSUBSCRIBE (clause 5.2.7) */
++    void unsubscribe(Subscription);
++
++    /**
++     * IDCHANGE-TRIGGER (clause 5.2.8): ask the security entity to change its ID. This does not
++     * change the ID immediately; the security entity runs the two-phase commit when it decides to.
++     */
++    void trigger();
++
++    /** Set by the security entity: what trigger() asks it to do */
++    void set_trigger_handler(TriggerHandler handler);
++
++    /**
++     * ID-LOCK (clause 5.2.9): no ID change for duration seconds (0..255) or until unlocked
++     * \return lock handle for unlock()
++     */
++    LockHandle lock(unsigned duration_s);
++
++    /** ID-UNLOCK (clause 5.2.10) */
++    void unlock(LockHandle);
++
++    /** True while any ID lock is active (expired locks are dropped) */
++    bool locked();
++
++    /** Seconds until the last active lock expires (0 if unlocked) */
++    double locked_for();
++
++    /**
++     * Run the two-phase commit for an ID change (used by the security entity)
++     * \param id new identifier sent with every event
++     * \param switch_identity switches the security entity's own identity between PREPARE and
++     *        COMMIT; returns false to abort
++     */
++    Result change(const Id& id, const std::function<bool()>& switch_identity);
++
++    /** Deregister all subscribers (DEREG event), e.g. when the security entity shuts down */
++    void deregister_all();
++
++    std::size_t subscribers() const;
++
++private:
++    struct Subscriber
++    {
++        Hook hook;
++        std::string name;
++        ByteBuffer data;
++    };
++
++    mutable std::mutex m_mutex;
++    std::map<Subscription, Subscriber> m_subscribers;
++    using LockClock = std::chrono::steady_clock; // lock durations are wall-clock seconds
++    std::map<LockHandle, LockClock::time_point> m_locks; // handle -> expiry
++    Subscription m_next_subscription = 1;
++    LockHandle m_next_lock = 1;
++    TriggerHandler m_trigger;
++};
++
++const char* to_string(IdChangeService::Command);
++
++} // namespace security
++} // namespace vanetza

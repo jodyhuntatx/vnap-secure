@@ -1,0 +1,4 @@
+# Upstream vanetza-nap that the patch set in modified/ applies to (read by scripts/build/*.sh).
+URL=https://github.com/nap-it/vanetza-nap.git
+BRANCH=release2-main
+COMMIT=241438fd80be68d848a2b4cc1d624f16119aa408

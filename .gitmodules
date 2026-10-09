@@ -1,0 +1,3 @@
+[submodule "external/C-ITS-PKI"]
+	path = external/C-ITS-PKI
+	url = ../C-ITS-PKI.git

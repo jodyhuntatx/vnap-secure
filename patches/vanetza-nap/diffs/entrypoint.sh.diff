@@ -1,0 +1,145 @@
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -22,17 +22,29 @@
+     echo "No global board config file found. Skipping config update process"
+ fi
+ 
+-IP_ADDR=$(ip -f inet addr show eth0 | awk '/inet / {print $2}')
+-GW_ADDR=$(ip r | awk '/default / {print $3}')
++# V2X link interface: eth0 by default. A container attached to several networks (e.g. a
++# separate control network) cannot rely on docker naming the V2X network eth0, so
++# VANETZA_BRIDGE_IP selects the interface carrying that address (vnap-secure).
++LINK_IF=eth0
++if [ -n "$VANETZA_BRIDGE_IP" ]; then
++    LINK_IF=$(ip -o -4 addr show | awk -v want="$VANETZA_BRIDGE_IP" '{ split($4, a, "/"); if (a[1] == want) { print $2; exit } }')
++    if [ -z "$LINK_IF" ]; then
++        echo "No interface has address $VANETZA_BRIDGE_IP (VANETZA_BRIDGE_IP)."
++        exit 1
++    fi
++fi
++IP_ADDR=$(ip -f inet addr show $LINK_IF | awk '/inet / {print $2}')
++# only the default route via the link interface is lost when its address moves to the bridge
++GW_ADDR=$(ip r | awk -v d="$LINK_IF" '/^default / && $5 == d {print $3}')
+ BR_ID=br0
+ 
+ if [ -n "$SUPPORT_MAC_BLOCKING" ] && [ $SUPPORT_MAC_BLOCKING = true ] ; then
+     brctl addbr $BR_ID
+     ip a a $IP_ADDR dev $BR_ID
+-    ip a d  $IP_ADDR dev eth0
+-    brctl addif $BR_ID eth0
++    ip a d  $IP_ADDR dev $LINK_IF
++    brctl addif $BR_ID $LINK_IF
+     ip link set $BR_ID up
+-    ip r a default via $GW_ADDR
++    [ -n "$GW_ADDR" ] && ip r a default via $GW_ADDR
+ fi
+ 
+ printf '#!/bin/sh\nebtables -A INPUT -s $1 -j DROP;' > /bin/block
+@@ -46,4 +58,106 @@
+     sleep 2
+ fi
+ 
+-/usr/local/bin/socktap -c /config.ini
++# Security mode dispatch on $SECURITY (vnap-secure):
++#   unset      -> socktap with config.ini settings (security=none by default)
++#   certs      -> static AT cert/key; AA via --certificate-chain, root via --trusted-certificate
++#   pseudonyms -> pseudonym pool: PSEUDO_CERT_0/PSEUDO_KEY_0, PSEUDO_CERT_1/PSEUDO_KEY_1, ...
++#                 (consecutive pairs from index 0), changed on events from the control channel:
++#                 PSEUDO_CONTROL_BROKER (MQTT broker host, required for changes), PSEUDO_CONTROL_PORT
++#                 (1883), PSEUDO_CONTROL_TOPIC (default vnap/pseudonym/<station id>),
++#                 PSEUDO_CONTROL_USERNAME/PSEUDO_CONTROL_PASSWORD, PSEUDO_MIN_INTERVAL (ms, 1000),
++#                 PSEUDO_ID_CHANGE (full: GN address, MAC and stationId change with the certificate
++#                 via the ETSI ID change notification; certificate: only the certificate; default full),
++#                 PSEUDO_SILENT_MIN_MS/PSEUDO_SILENT_MAX_MS (random radio silence after each full ID
++#                 change, ETSI TR 103 415 4.1.4; default 0 = off),
++#                 PKI_REFILL_AT (request a certificate batch from the run's PKI service at this many
++#                 unused pseudonyms; unset/0 = fixed pool that wraps around), PKI_BATCH_SIZE (8),
++#                 PKI_TOPIC (default vnap/pki/<station id>); refill uses the control broker;
++#                 PKI_CATERPILLAR_KEY/PKI_EXPANSION_KEY: the vehicle's butterfly keys, so the station
++#                 derives its certificates' private keys itself (the PKI then never knows them)
++# release2 selects the security entity from VANETZA_SECURITY (config.ini "security"),
++# not --security. The existing vnap-certs are all v2 (TS 103 097 v1.2.1), hence the
++# certs-v2 default; set VANETZA_SECURITY=certs-v3 explicitly for v3 certificates.
++# Mobility (vnap-secure): POSITION_CONTROL_BROKER (MQTT broker), POSITION_CONTROL_PORT (1883),
++# POSITION_CONTROL_TOPIC (default vnap/position/<station id>), POSITION_CONTROL_USERNAME and
++# POSITION_CONTROL_PASSWORD (read by socktap from the environment) move the station at runtime.
++# These options start the positional parameters, which every mode below passes to socktap.
++set --
++if [ -n "$POSITION_CONTROL_BROKER" ]; then
++    set -- --position-control-broker "$POSITION_CONTROL_BROKER" --position-control-port "${POSITION_CONTROL_PORT:-1883}"
++    [ -n "$POSITION_CONTROL_TOPIC" ] && set -- "$@" --position-control-topic "$POSITION_CONTROL_TOPIC"
++    [ -n "$POSITION_CONTROL_USERNAME" ] && set -- "$@" --position-control-username "$POSITION_CONTROL_USERNAME"
++fi
++
++if [ -n "$SECURITY" ]; then
++    case $SECURITY in
++        certs)
++            export VANETZA_SECURITY=${VANETZA_SECURITY:-certs-v2}
++            echo "Running with $VANETZA_SECURITY, no pseudonym rotation..."
++            set -x
++            /usr/local/bin/socktap \
++                --config /config.ini \
++                "$@" \
++                --certificate $AT_CERT \
++                --certificate-key $AT_KEY \
++                --certificate-chain $AA_CERT \
++                --trusted-certificate $ROOT_CERT
++            set +x
++            ;;
++        pseudonyms)
++            export VANETZA_SECURITY=${VANETZA_SECURITY:-certs-v2}
++            # POSIX sh (dash): collect PSEUDO_CERT_<i>/PSEUDO_KEY_<i> pairs into the positional parameters
++            # (appended to the mobility options set above)
++            i=0
++            while true; do
++                eval "cert=\${PSEUDO_CERT_$i:-}"
++                eval "key=\${PSEUDO_KEY_$i:-}"
++                [ -n "$cert" ] || break
++                if [ -z "$key" ]; then
++                    echo "PSEUDO_CERT_$i is set but PSEUDO_KEY_$i is not."
++                    exit 1
++                fi
++                set -- "$@" --pseudonym-certificate "$cert" --pseudonym-certificate-key "$key"
++                i=$((i + 1))
++            done
++            if [ $i -eq 0 ]; then
++                echo "SECURITY=pseudonyms needs at least PSEUDO_CERT_0 and PSEUDO_KEY_0."
++                exit 1
++            fi
++            if [ -n "$PSEUDO_CONTROL_BROKER" ]; then
++                set -- "$@" --pseudonym-control-broker "$PSEUDO_CONTROL_BROKER" \
++                    --pseudonym-control-port "${PSEUDO_CONTROL_PORT:-1883}" \
++                    --pseudonym-min-interval "${PSEUDO_MIN_INTERVAL:-1000}"
++                [ -n "$PSEUDO_CONTROL_TOPIC" ] && set -- "$@" --pseudonym-control-topic "$PSEUDO_CONTROL_TOPIC"
++                [ -n "$PSEUDO_CONTROL_USERNAME" ] && set -- "$@" --pseudonym-control-username "$PSEUDO_CONTROL_USERNAME"
++                # PSEUDO_CONTROL_PASSWORD is read by socktap from the environment (kept out of argv and set -x)
++                if [ "${PKI_REFILL_AT:-0}" -gt 0 ]; then
++                    set -- "$@" --pki-refill-at "$PKI_REFILL_AT" --pki-batch-size "${PKI_BATCH_SIZE:-8}"
++                    [ -n "$PKI_TOPIC" ] && set -- "$@" --pki-topic "$PKI_TOPIC"
++                    [ -n "$PKI_CATERPILLAR_KEY" ] && set -- "$@" --pki-caterpillar-key "$PKI_CATERPILLAR_KEY" \
++                        --pki-expansion-key "$PKI_EXPANSION_KEY"
++                fi
++            else
++                echo "PSEUDO_CONTROL_BROKER is not set: the pseudonym will not change."
++            fi
++            set -- "$@" --pseudonym-id-change "${PSEUDO_ID_CHANGE:-full}" \
++                --pseudonym-silent-min "${PSEUDO_SILENT_MIN_MS:-0}" --pseudonym-silent-max "${PSEUDO_SILENT_MAX_MS:-0}"
++            echo "Running with $VANETZA_SECURITY, pseudonym pool of $i certificate(s)..."
++            set -x
++            /usr/local/bin/socktap \
++                --config /config.ini \
++                "$@" \
++                --certificate-chain $AA_CERT \
++                --trusted-certificate $ROOT_CERT
++            set +x
++            ;;
++        *)
++            echo "Invalid value $SECURITY for SECURITY env var."
++            echo "Valid values are 'certs' or 'pseudonyms'."
++            exit 1
++            ;;
++    esac
++else
++    echo "Running with security from config.ini/VANETZA_SECURITY."
++    /usr/local/bin/socktap -c /config.ini "$@"
++fi
