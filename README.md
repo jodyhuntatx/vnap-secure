@@ -84,7 +84,6 @@ covered in [docs/installation.md](docs/installation.md).
 ```bash
 make image          # fetch vanetza-nap at patches/vanetza-nap/BASE into ~/vanetza-nap, apply the patches, build vnap:latest
 docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep pseudonym-control   # patched?
-make msgcheck       # optional: the offline message checker vnap:msgcheck
 ```
 
 - **Time:** the first build takes about 20 minutes; later builds reuse cached layers.

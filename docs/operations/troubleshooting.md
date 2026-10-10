@@ -35,7 +35,7 @@ Signed or encrypted message files (e.g. from C-ITS-PKI) can be checked with Vane
 security code:
 
 ```bash
-make msgcheck                                    # builds vnap:msgcheck (after make image)
+make msgcheck                                    # builds vnap:msgcheck (after make image - takes ~20 minutes)
 docker run --rm -v DIR:/w vnap:msgcheck v3 /w/msg /w/at.cert /w/aa.cert /w/root_ca.cert
 docker run --rm -v DIR:/w vnap:msgcheck decode-v3 /w/msg.enc
 ```
@@ -48,7 +48,7 @@ docker run --rm -v DIR:/w vnap:msgcheck decode-v3 /w/msg.enc
 |---|---|
 | `up`: "C-ITS-PKI not found … git submodule update --init" | the submodule is not initialised: `make submodule` |
 | `make image`: "does not contain the base commit" | `VANETZA_NAP_DIR` holds another vanetza-nap history: check out the base there, or use an empty directory |
-| Image build stops with "no space left on device" | the first build needs about 10 GB of build cache; grow the disk ([installation](../installation.md#1-prepare-the-vm)) or remove unused images |
+| Image build stops with "no space left on device" | the first build needs about 10 GB of build cache; grow the disk ([installation](../installation.md#2-prepare-the-vm)) or remove unused images |
 | Docker cannot read a build context or file on `/mnt/hgfs` | snap-confined Docker: use the provided scripts (they stream contexts on stdin) and keep mounts under `$HOME` |
 | `up` refuses: "already running", "name in use" | another run uses the instance: `--instance auto`, or `down` the other run |
 | `down` refuses: "started by …" | the run belongs to another account; `--force` if you are sure |

@@ -10,6 +10,11 @@
 # BASE, or the 'jodyhuntatx' branch that carries the same patches as commits); anything else is
 # refused rather than reset. The tree must be on the VM's own file system: vanetza-nap has file
 # names that differ only by case, and snap-confined Docker reads only the real $HOME.
+
+if [[ "$(which docker)" == "" ]]; then
+  echo "Docker not installed - installing..."
+  "$(dirname "$0")/docker-install.sh"
+fi
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 PATCHES=$REPO/patches/vanetza-nap

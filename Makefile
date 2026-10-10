@@ -4,13 +4,15 @@
 #   make pki-image     per-run PKI image (vnapctl also builds it on demand)
 #   make msgcheck      offline message checker vnap:msgcheck (after make image)
 #   make test          all tests that need no simulation: sim, service, UI syntax, OpenAPI, diffs, docs
+#   make service-deps  the service's virtualenv service/.venv with requirements.txt (make test runs it first)
 #   make diffs         regenerate patches/vanetza-nap/diffs/ after editing the patch set
 #   make openapi       regenerate docs/reference/openapi.json after changing the API
 #   make submodule     fetch C-ITS-PKI (external/C-ITS-PKI) at the pinned commit
 # Variables: IMAGE (default vnap:latest), VANETZA_NAP_DIR (default ~/vanetza-nap), CITS_PKI_DIR.
 
 SHELL := /bin/bash
-SERVICE_PY := $(shell [ -x service/.venv/bin/python ] && echo .venv/bin/python || echo "PYTHONPATH=.deps python3")
+# expanded when a recipe runs, so after service-deps has created the virtualenv
+SERVICE_PY = $(shell [ -x service/.venv/bin/python ] && echo .venv/bin/python || echo "PYTHONPATH=.deps python3")
 
 .PHONY: image origs pki-image msgcheck test test-sim test-service service-deps test-ui openapi openapi-check diffs diffs-check docs-check submodule
 
@@ -32,14 +34,16 @@ test-sim:
 	cd sim && python3 -m unittest discover -s tests
 
 # needs the packages of service/requirements.txt: installed into service/.venv (or service/.deps)
-# the same way service/run.sh does, whenever requirements.txt changed
+# the same way service/run.sh does, whenever requirements.txt changed. A virtualenv without pip
+# (made while python3-venv was missing) is created again.
 test-service: service-deps
 	cd service && $(SERVICE_PY) -m unittest discover -s tests
 
 service-deps:
-	@cd service && if [ -x .venv/bin/python ] || python3 -m venv .venv 2>/dev/null; then \
+	@cd service && if .venv/bin/python -m pip --version >/dev/null 2>&1 || python3 -m venv --clear .venv 2>/dev/null; then \
 	  [ .venv/.installed -nt requirements.txt ] || { .venv/bin/python -m pip install -q -r requirements.txt && touch .venv/.installed; }; \
 	else \
+	  rm -rf .venv; \
 	  [ .deps/.installed -nt requirements.txt ] || { python3 -m pip install -q --target .deps -r requirements.txt && touch .deps/.installed; }; \
 	fi
 

@@ -58,7 +58,7 @@ environment:
 | Variable | Default | Used by |
 |---|---|---|
 | `IMAGE` | `vnap:latest` | `scripts/build/docker-build.sh` |
-| `VANETZA_NAP_DIR` | `~/vanetza-nap` | build, `make msgcheck`, `sync-vnap-dist.sh` |
+| `VANETZA_NAP_DIR` | `~/vanetza-nap` | build, `make msgcheck` |
 | `NO_BUILD` | unset | `1`: prepare the vanetza-nap sources only |
 | `VM_IP`, `VM_USER`, `SSH_KEY`, `VM_REPO` | `172.16.93.134`, `demo`, `~/.ssh/id_jody_git`, `/home/demo/COIMBRA/vnap-secure` | `scripts/vm/*.sh` (on the host) |
 | `OUTPUT_DIR` | `/vnap-certs/certify` | `scripts/certs/gen-certify.sh` |
