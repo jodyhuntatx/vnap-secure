@@ -26,7 +26,7 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
     Pick a station, then click the map to move it.
   - *Events*: the live event stream, filtered by kind (pseudonym, ID change, refill,
     certificate check, error), with pause. Hover a kind for its meaning.
-  - *Control*: change pseudonym, ID change trigger, lock and unlock, with each station's answer.
+  - *Control*: ID change trigger, lock and unlock, with each station's answer.
   - *Results*: run a check (extra expectations allowed) and see earlier checks. After the stop,
     download the collected files and see the eavesdropper's score against ground truth; the
     headings explain each column on hover.

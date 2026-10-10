@@ -211,8 +211,7 @@ export async function runView(app, session, runId) {
     }
     pane.append(h("div", { class: "panel" },
       table(["Station", ""], stations.map((s) => [s.name, h("div", { class: "row" },
-        h("button", { type: "button", onclick: () => send(s.name, { action: "change" }) }, "Change pseudonym"),
-        h("button", { type: "button", class: "secondary", onclick: () => send(s.name, { action: "trigger" }) }, "ID change trigger"),
+        h("button", { type: "button", onclick: () => send(s.name, { action: "trigger" }) }, "ID change trigger"),
         h("button", { type: "button", class: "secondary", onclick: () => send(s.name, { action: "lock", duration: 30 }) }, "Lock 30 s"),
         h("button", { type: "button", class: "secondary", onclick: () => {
           if (!handles[s.name]) { notice("no lock taken from this page", "error"); return; }
