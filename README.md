@@ -121,7 +121,7 @@ Other scenarios to try:
 
 ```bash
 cd ${VNAP_HOME}/service
-python3 -m vnapapi.admin create-user root --role admin   # first admin (password asked, or VNAP_NEW_PASSWORD)
+./create-admin.sh                                        # first admin (password asked, or VNAP_NEW_PASSWORD)
 ./run.sh                                                 # 0.0.0.0:8080, web UI at /ui/, API docs at /api/docs
 ```
 

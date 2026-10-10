@@ -21,21 +21,28 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
 - **Plain HTTP:** with the default `cookie_secure = true`, the browser keeps the session
   cookie only over HTTPS or on `http://localhost`. Safari and other WebKit browsers drop it
   even on localhost. Login over plain HTTP from another host is refused with an explanation.
-  For a test on a trusted network, set `cookie_secure = false`.
+  For a test on a trusted network, set `cookie_secure = false`. For HTTPS in a development
+  VM, see [HTTPS from the host](#https-from-the-host).
 
 ## Production
 
-On the VM, as root:
+On the VM:
 
 ```bash
-useradd --system --create-home --groups docker vnap
+sudo useradd --system --create-home --groups docker vnap
 sudo -u vnap git clone --recurse-submodules <vnap-secure URL> /home/vnap/vnap-secure
-cp /home/vnap/vnap-secure/service/deploy/vnap-api.service /etc/systemd/system/
-cp /home/vnap/vnap-secure/service/deploy/vnap-backup.{service,timer} /etc/systemd/system/
-systemctl enable --now vnap-api vnap-backup.timer
+sudo -u vnap make -C /home/vnap/vnap-secure service-deps   # service/.venv with the packages of requirements.txt
+sudo cp /home/vnap/vnap-secure/service/deploy/vnap-api.service /etc/systemd/system/
+sudo cp /home/vnap/vnap-secure/service/deploy/vnap-backup.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now vnap-api vnap-backup.timer
 sudo -u vnap sh -c 'cd /home/vnap/vnap-secure/service && .venv/bin/python -m vnapapi.admin create-user root --role admin'
 ```
 
+- **Virtual environment:** `make service-deps` creates `service/.venv` and installs
+  `requirements.txt` into it, as `vnap`, before the service first starts. It needs `make` and
+  `python3.12-venv` (see [installation](../installation.md#1-install-the-prerequisite-packages)).
+  The `create-user` step uses `.venv/bin/python`, so the packages must be in place by then;
+  `run.sh` would also install them on first start, but only while the service is starting.
 - **Service account:** `vnap-api.service` runs `service/run.sh` as `vnap`, the only member of
   the docker group, with `NoNewPrivileges`, `ProtectSystem=full` and `UMask=0077`.
 - **TLS:** `deploy/Caddyfile` terminates TLS (automatic certificates) and forwards to
@@ -55,10 +62,42 @@ sudo -u vnap sh -c 'cd /home/vnap/vnap-secure/service && .venv/bin/python -m vna
 
   Dependencies reinstall on start when `requirements.txt` changed, and the database schema
   is upgraded in place.
-- **Moving from the old layout** (before 2026-10-09 the service was in
-  `vnap-docker/api/`): stop the service, pull, then copy the unit files again, since their
-  paths changed to `service/`. Move `vnap-docker/api/{data,secrets,backups}` to `service/` if
-  they did not move with the checkout, then start.
+
+## HTTPS from the host
+
+The service speaks plain HTTP only. To reach it over HTTPS from the host of a development VM
+(e.g. because Safari drops the session cookie on `http://localhost`), put Caddy in front of it
+in the VM, with a certificate from Caddy's own local CA:
+
+```bash
+sudo apt install -y caddy
+sudo cp /home/vnap/vnap-secure/service/deploy/Caddyfile.local /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+```
+
+1. **Forward a port** from the host to the VM's 8443, e.g. host port 48443, in the same way as
+   the forward to 8080.
+2. **Keep `cookie_secure = true`** in `service/config.toml`; after changing it,
+   `sudo systemctl restart vnap-api`.
+3. **Open `https://localhost:48443`** on the host. The certificate is issued for `localhost`,
+   so the name matches whatever the host port is.
+
+- **Certificate warning:** the browser does not know Caddy's local CA. Accept the warning, or
+  trust the CA on the host. Copy
+  `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt` from the VM, then on a
+  Mac:
+
+  ```bash
+  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain root.crt
+  ```
+
+- **"Invalid HTTP request received"** in the service's log means a browser spoke HTTPS to the
+  plain HTTP port (`https://` on the forward to 8080). Use `http://` there, or the HTTPS port.
+- **Only through Caddy:** add `Environment=VNAP_API_HOST=127.0.0.1` to `vnap-api.service` and
+  remove the forward to 8080.
+- **Not for the internet:** this certificate is trusted only where the local CA is installed.
+  A public deployment uses `deploy/Caddyfile` with a host name, as in
+  [Production](#production).
 
 ## Configuration
 

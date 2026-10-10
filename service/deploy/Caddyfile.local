@@ -1,0 +1,7 @@
+# Caddy for HTTPS from the development host (not for the internet): TLS on 8443 with a
+# certificate for "localhost" from Caddy's own local CA, forwarding to the API on localhost.
+# Forward a host port to the VM's 8443 and open https://localhost:<host port>.
+https://localhost:8443 {
+    tls internal
+    reverse_proxy 127.0.0.1:8080
+}
