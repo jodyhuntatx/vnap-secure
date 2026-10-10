@@ -18,11 +18,13 @@ python3 -m vnapapi.admin create-user root --role admin   # first admin (password
 - **Listen address:** all interfaces (`0.0.0.0`) by default. This is required when port 8080
   is forwarded from the VM to the host, e.g. to open the UI at `http://localhost:8080` on a
   Mac. `VNAP_API_HOST=127.0.0.1` listens on the VM only; `VNAP_API_PORT` changes the port.
-- **Plain HTTP:** with the default `cookie_secure = true`, the browser keeps the session
-  cookie only over HTTPS or on `http://localhost`. Safari and other WebKit browsers drop it
-  even on localhost. Login over plain HTTP from another host is refused with an explanation.
-  For a test on a trusted network, set `cookie_secure = false`. For HTTPS in a development
-  VM, see [HTTPS from the host](#https-from-the-host).
+- **Plain HTTP:** the repository's `config.toml` sets `cookie_secure = false`, **for testing
+  only**: the session cookie is then also sent over plain HTTP, so login works in every
+  browser, including Safari and DuckDuckGo. With `cookie_secure = true` the browser keeps the
+  cookie only over HTTPS or on `http://localhost` (Safari and other WebKit browsers drop it
+  even there), and login over plain HTTP from another host is refused with an explanation.
+  A production deployment must set `true` (see [Production](#production)). For HTTPS in a
+  development VM, see [HTTPS from the host](#https-from-the-host).
 
 ## Production
 
@@ -32,6 +34,7 @@ On the VM:
 sudo useradd --system --create-home --groups docker vnap
 sudo -u vnap git clone --recurse-submodules <vnap-secure URL> /home/vnap/vnap-secure
 sudo -u vnap make -C /home/vnap/vnap-secure service-deps   # service/.venv with the packages of requirements.txt
+sudo -u vnap sed -i 's/^cookie_secure = false/cookie_secure = true/' /home/vnap/vnap-secure/service/config.toml   # production: HTTPS-only session cookie
 sudo cp /home/vnap/vnap-secure/service/deploy/vnap-api.service /etc/systemd/system/
 sudo cp /home/vnap/vnap-secure/service/deploy/vnap-backup.{service,timer} /etc/systemd/system/
 sudo systemctl enable --now vnap-api vnap-backup.timer
@@ -43,6 +46,9 @@ sudo -u vnap sh -c 'cd /home/vnap/vnap-secure/service && .venv/bin/python -m vna
   `python3.12-venv` (see [installation](../installation.md#1-install-the-prerequisite-packages)).
   The `create-user` step uses `.venv/bin/python`, so the packages must be in place by then;
   `run.sh` would also install them on first start, but only while the service is starting.
+- **`cookie_secure = true`:** the repository's `service/config.toml` has `false`, for testing
+  only. The `sed` step sets `cookie_secure = true` before the service first starts, so the
+  session cookie is never sent over plain HTTP.
 - **Service account:** `vnap-api.service` runs `service/run.sh` as `vnap`, the only member of
   the docker group, with `NoNewPrivileges`, `ProtectSystem=full` and `UMask=0077`.
 - **TLS:** `deploy/Caddyfile` terminates TLS (automatic certificates) and forwards to
@@ -77,8 +83,8 @@ sudo systemctl restart caddy
 
 1. **Forward a port** from the host to the VM's 8443, e.g. host port 48443, in the same way as
    the forward to 8080.
-2. **Keep `cookie_secure = true`** in `service/config.toml`; after changing it,
-   `sudo systemctl restart vnap-api`.
+2. **Set `cookie_secure = true`** in `service/config.toml` (the repository has `false`, for
+   testing only), then `sudo systemctl restart vnap-api`.
 3. **Open `https://localhost:48443`** on the host. The certificate is issued for `localhost`,
    so the name matches whatever the host port is.
 

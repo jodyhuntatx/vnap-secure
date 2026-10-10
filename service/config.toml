@@ -2,9 +2,12 @@
 
 [server]
 data_dir = "data"              # database, user scenarios, collected results
-# The session cookie is sent only over HTTPS: browsers drop it on plain http:// (except for
-# localhost), so login is refused there. false only for a test on a trusted network.
-cookie_secure = true
+# FOR TESTING ONLY, NOT FOR A PRODUCTION DEPLOYMENT: with false the session cookie is also sent
+# over plain http://, so the service works out of the box in every browser on a development VM
+# (Safari and DuckDuckGo drop an HTTPS-only cookie even on http://localhost).
+# In production set cookie_secure = true: the cookie is then sent only over HTTPS, and login
+# over plain HTTP from another host is refused. Without this key the service uses true.
+cookie_secure = false
 session_hours = 12
 
 [auth]

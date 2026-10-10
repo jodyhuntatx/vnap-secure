@@ -19,7 +19,7 @@ Read at start (`VNAP_API_CONFIG` names another file). Relative paths are relativ
 | Section | Key | Default | Meaning |
 |---|---|---|---|
 | `[server]` | `data_dir` | `"data"` | database, users' scenario texts, collected results (backed up) |
-| | `cookie_secure` | `true` | session cookie only over HTTPS; `false` only for a test on a trusted network |
+| | `cookie_secure` | `true` | session cookie only over HTTPS. The repository's `config.toml` sets `false`, **for testing only** (login over plain HTTP in every browser); production must set `true` |
 | | `session_hours` | `12` | session lifetime |
 | `[auth]` | `max_failed_logins` | `5` | failed logins (password or TOTP) before the account is locked |
 | | `lockout_minutes` | `15` | lock duration |

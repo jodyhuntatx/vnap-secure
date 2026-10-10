@@ -62,9 +62,11 @@ Details are in [eavesdropper and scoring](../functional/eavesdropper-and-scoring
 
 ## Browser notes
 
-- **Session cookie:** HTTPS-only by default. Safari and other WebKit browsers (including
-  DuckDuckGo) drop it even on `http://localhost`; use HTTPS, Chrome or Firefox, or set
-  `cookie_secure = false` for a test. The UI says so when the cookie was dropped.
+- **Session cookie:** HTTPS-only with `cookie_secure = true`, as production must have it.
+  Safari and other WebKit browsers (including DuckDuckGo) then drop it even on
+  `http://localhost`; use HTTPS, Chrome or Firefox. The repository's `config.toml` sets
+  `cookie_secure = false`, for testing only, so that these browsers work over plain HTTP. The
+  UI says so when the cookie was dropped.
 - **Map tiles** come from `[ui] tile_url` (OpenStreetMap by default) and are requested with an
   origin-only Referer, as the OpenStreetMap tile policy requires. Without internet access, set
   an internal tile server, or `""` for no background map.

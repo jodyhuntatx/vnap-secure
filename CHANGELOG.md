@@ -20,6 +20,12 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-10: `cookie_secure = false` in the repository's configuration
+
+`service/config.toml` sets `cookie_secure = false`, for testing only: login then works over
+plain HTTP in every browser, including Safari and DuckDuckGo. A production deployment sets
+`true` (a step of the deployment procedure); the service's built-in default stays `true`.
+
 ## 2026-10-10: installation paths in the documentation
 
 The documentation names the clone's parent directory `INSTALL_DIR` and the repository
