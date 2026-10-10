@@ -20,6 +20,19 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-10: installation paths in the documentation
+
+The documentation names the clone's parent directory `INSTALL_DIR` and the repository
+`VNAP_HOME` (`${INSTALL_DIR}/vnap-secure`) instead of `~/COIMBRA`; commands change directory
+with `cd ${VNAP_HOME}/…`. The scripts do not read these variables.
+
+## 2026-10-10: vnapctl progress messages
+
+`vnapctl` reports what it is doing on stderr (`vnapctl: …`): building a helper image, starting
+the run's PKI and the stations, waiting for readiness, collecting events. `-q`/`--quiet` and
+`--json` turn the messages off. `up` pulls `eclipse-mosquitto:2` before the readiness wait
+instead of during it.
+
 ## 2026-10-09: OpenAPI description in the repository
 
 `docs/reference/openapi.json`: the API's OpenAPI 3.1 description, as the service serves it at

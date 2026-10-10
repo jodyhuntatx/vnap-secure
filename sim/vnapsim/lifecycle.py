@@ -17,7 +17,7 @@ import tomllib
 from datetime import datetime, timezone
 
 from .scenario import load_scenario
-from .common import current_user, CITS_PKI_DIR, CITS_PKI_FOUND, IMAGES_DIR, ORIGIN, cits_pki_version, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker
+from .common import current_user, CITS_PKI_DIR, CITS_PKI_FOUND, IMAGES_DIR, ORIGIN, cits_pki_version, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker, progress
 from .status import Simulation, build_status
 
 
@@ -162,6 +162,8 @@ def ensure_image(r, image, subdir, exclude=(), extra=None, labels=None):
     ref = f"{image}:{context_hash(directory, exclude, h)}"
     if subprocess.run(["docker", "image", "inspect", ref], capture_output=True).returncode == 0:
         return ref
+    if not r.dry_run:
+        progress(f"building the helper image {image} (first use, or its sources changed) ...")
     tar = ["tar", "-C", directory, "--exclude=__pycache__", *(f"--exclude={e}" for e in exclude), "-c", "."]
     if extra:
         # GNU tar applies --transform to every member: only names starting with extra[1] change
@@ -208,6 +210,8 @@ def allocate_instance(ref, sets=(), role="admin", dry_run=False, first=1, last=2
 def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
     """Start a scenario. Returns (ok, report dict)."""
     lan, ctl = sc["network"]["name"], (sc["control"] or {}).get("network", "vnapctl0-unused")
+    if not dry_run:
+        progress(f"scenario {sc['name']}: checking that {lan} is free ...")
     sim = Simulation(lan, ctl)
     if sim.running or sim.broker or sim.client or sim.mobility:
         s = build_status(sim)
@@ -258,12 +262,16 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
         c = sc["control"]
         if c:
             ctl_image = ensure_image(r, CTL_IMAGE, "pseudo-ctl")
+            if not dry_run:
+                progress(f"starting the control broker {c['broker']['name']} ...")
             auth_args = ["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []
             r.run(["run", "-d", "--name", c["broker"]["name"], "--network", ctl, "--ip", c["broker"]["ip"],
                    *run_labels(sc, run_id, "broker"), *auth_args, ctl_image, "broker"])
             r.created_containers.append(c["broker"]["name"])
         pki_volume = start_pki(r, sc, run_id, ctl, dry_run) if sc["pki"] else None
         for st in sc["stations"]:
+            if not dry_run:
+                progress(f"starting station {st['name']} ...")
             env, secret_names = station_env(sc, st)
             args = ["create", "--name", st["name"], *run_labels(sc, run_id, "station"),
                     "--network", lan, "--ip", st["ip"], "--cap-add", "NET_ADMIN"]
@@ -294,6 +302,8 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
             r.run(["start", st["name"]])
         if c:
             cl = c["client"]
+            if not dry_run:
+                progress(f"starting the control client {cl['name']} ...")
             args = ["run", "-d", "--name", cl["name"], "--network", ctl, "--ip", cl["ip"],
                     *run_labels(sc, run_id, "client"), *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
                     "-e", f"CONTROL_BROKER={c['broker']['name']}", "-e", f"STATIONS={' '.join(str(s) for s in cl['stations'])}",
@@ -306,6 +316,8 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
         if c and c.get("mobility"):
             mo = c["mobility"]
             mobility_image = ensure_image(r, MOBILITY_IMAGE, "mobility")
+            if not dry_run:
+                progress(f"starting the mobility client {mo['name']} ...")
             config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
                       "vehicles": [{"station_id": st["station_id"], **st["mobility"]}
                                    for st in sc["stations"] if st.get("mobility")],
@@ -320,6 +332,8 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
         ev = sc["eavesdropper"]
         if ev:
             eavesdropper_image = ensure_image(r, EAVESDROPPER_IMAGE, "eavesdropper", exclude=("logs",))
+            if not dry_run:
+                progress(f"starting the eavesdropper {ev['name']} ...")
             # only the message network and raw frames: no control network, no keys, no MQTT
             r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
                    *run_labels(sc, run_id, "eavesdropper"),
@@ -330,12 +344,14 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
             r.created_containers.append(ev["name"])
     except (RuntimeError, ScenarioError) as e:
         if not dry_run:
+            progress("start failed: removing what was created ...")
             r.rollback()
         raise ScenarioError(f"start failed, rolled back: {e}")
     if dry_run:
         return True, {"dry_run": True, "run_id": run_id}
 
     pending = wait_ready(sc, lan, wait)
+    progress("reading the simulation's status ...")
     status = build_status(Simulation(lan, ctl))
     # ready = containers running and exchanging messages; health (e.g. expected chain failures of a
     # negative control) is reported by status/check, not by up
@@ -358,6 +374,8 @@ def start_pki(r, sc, run_id, ctl, dry_run, timeout=90):
     pki_image = ensure_image(r, PKI_IMAGE, "pki", extra=(CITS_PKI_DIR, "src", "cits-pki/src"),
                              labels={"vnap.cits_pki": cits})
     volume = pki_volume_name(run_id)
+    if not dry_run:
+        progress(f"starting the run's PKI {p['name']}: creating the CA hierarchy and the stations' certificates ...")
     r.run(["volume", "create", "--label", "vnap.managed_by=vnapctl", "--label", f"vnap.run_id={run_id}",
            "--label", f"vnap.instance={sc['instance']}", "--label", "vnap.role=pki-volume", volume])
     r.created_volumes.append(volume)
@@ -400,6 +418,12 @@ def wait_ready(sc, lan, wait):
     """Wait until every station's socktap publishes on its embedded broker (sent or received
     message) and pseudonym stations have joined the control channel. socktap's stdout is
     block-buffered, so its log is not a usable readiness signal; [PSEUDONYM] lines go to stderr."""
+    if wait > 0:
+        if subprocess.run(["docker", "image", "inspect", MQTT_IMAGE], capture_output=True).returncode != 0:
+            # pulled here, so that the download does not use up the readiness wait
+            progress(f"pulling {MQTT_IMAGE} (first use; the readiness probes run in it) ...")
+            docker("pull", "-q", MQTT_IMAGE, check=False)
+        progress(f"waiting up to {wait:g} s for {len(sc['stations'])} station(s) to exchange messages ...")
     deadline = time.time() + wait
     ready, lock = set(), threading.Lock()
 
@@ -448,6 +472,8 @@ def wait_ready(sc, lan, wait):
 
 def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     """Remove the simulation on lan/ctl. Returns report dict; raises ScenarioError on refusal."""
+    if not dry_run:
+        progress(f"looking for the simulation on {lan} ...")
     sim = Simulation(lan, ctl)
     containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.observers
     # probes and helpers from this tool are not part of the run
@@ -467,6 +493,7 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
         if names:
             print("  docker rm -f -v " + " ".join(names))
     elif names:
+        progress(f"removing {len(names)} container(s): {', '.join(names)} ...")
         # -v: also their anonymous volumes (mosquitto data/log, eavesdropper /logs), which
         # otherwise accumulate; bind mounts such as certs/ are not affected
         docker("rm", "-f", "-v", *names)
@@ -481,6 +508,8 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
         docker("volume", "rm", "-f", *volumes, check=False)
         report["volumes_removed"] = volumes
     if not keep_networks:
+        if not dry_run and any(net in sim.networks for net in (lan, ctl)):
+            progress("removing the networks ...")
         for net in (lan, ctl):
             if net not in sim.networks:
                 continue

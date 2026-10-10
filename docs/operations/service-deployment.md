@@ -8,7 +8,7 @@ service account is the only one with access to Docker.
 ## Quick start (development)
 
 ```bash
-cd service
+cd ${VNAP_HOME}/service
 python3 -m vnapapi.admin create-user root --role admin   # first admin (password asked, or VNAP_NEW_PASSWORD)
 ./run.sh                                                 # 0.0.0.0:8080: web UI at /ui/, OpenAPI at /api/docs
 ```

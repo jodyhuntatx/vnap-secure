@@ -67,7 +67,7 @@ docker exec rsu tcpdump -i br0 -e -nn ether proto 0x8947
 docker exec rsu tcpdump -i br0 -e -nn ether src 6e:06:e0:03:00:02 and ether proto 0x8947
 
 # save a capture for Wireshark (Ctrl-C to stop); under /mnt/hgfs it is visible on the host
-docker exec rsu tcpdump -i br0 -U -w - ether proto 0x8947 > /mnt/hgfs/COIMBRA/vnap.pcap
+docker exec rsu tcpdump -i br0 -U -w - ether proto 0x8947 > /mnt/hgfs/<host-directory>/vnap.pcap
 ```
 
 - **tcpdump output:** it decodes the GeoNetworking and BTP headers. It does not parse the

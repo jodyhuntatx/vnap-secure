@@ -2,7 +2,7 @@
 
 `sim/vnapctl` starts, inspects and stops simulations described by scenario files. It needs
 only `python3`, the Docker CLI and the `eclipse-mosquitto:2` image. All commands below run in
-`sim/`.
+`${VNAP_HOME}/sim`.
 
 ## Walkthrough
 
@@ -10,6 +10,7 @@ only `python3`, the Docker CLI and the `eclipse-mosquitto:2` image. All commands
 and optionally a control channel, movement, the run's own PKI and an eavesdropper.
 
 ```bash
+cd ${VNAP_HOME}/sim
 ./vnapctl scenarios          # name, stations and features of every scenario
 ```
 
@@ -94,6 +95,10 @@ rejection happens.
 
 Every command finishes on its own (none waits for Ctrl-C). Text output by default; `--json`
 for scripts and agents. `VNAPCTL_DEBUG=1` prints timings to stderr.
+
+While a command works, it reports each step on stderr in lines starting with `vnapctl:` (e.g.
+building a helper image on first use, starting the run's PKI, waiting for the stations). The
+result stays on stdout. `-q`/`--quiet` and `--json` turn these messages off.
 
 ## `up` and `down`
 

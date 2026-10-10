@@ -24,7 +24,7 @@ C-ITS-PKI's `docs/compliance.md` documents their conformance.
 **Regenerate** (from vnap-secure, with the submodule):
 
 ```bash
-cd external/C-ITS-PKI
+cd ${VNAP_HOME}/external/C-ITS-PKI
 ./gen-vnap-certs.sh        # v3; with any argument: v2
 ```
 

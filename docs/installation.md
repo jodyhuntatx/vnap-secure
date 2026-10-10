@@ -32,17 +32,25 @@ A full station image build needs about 10 GB of Docker build cache. Grow the VM'
 VMware, then extend the root volume:
 
 ```bash
-scripts/vm/extend-docker-fs.sh      # lvextend -l +100%FREE -r on the root logical volume
+${VNAP_HOME}/scripts/vm/extend-docker-fs.sh      # lvextend -l +100%FREE -r on the root logical volume
 ```
+
+The script is in the repository, so run it after [step 3](#3-get-the-sources).
 
 Without LVM, use `growpart`, `pvresize` and `lvextend -r` by hand.
 
 ## 3. Get the sources
 
 ```bash
-git clone --recurse-submodules git@github.com:jodyhuntatx/vnap-secure.git ~/COIMBRA/vnap-secure
+INSTALL_DIR=<desired installation directory>
+git clone --recurse-submodules git@github.com:jodyhuntatx/vnap-secure.git ${INSTALL_DIR}/vnap-secure
+export VNAP_HOME=${INSTALL_DIR}/vnap-secure
 ```
 
+- **`INSTALL_DIR` and `VNAP_HOME`** are used throughout this documentation: `INSTALL_DIR` is
+  the directory the repository is cloned into, `VNAP_HOME` the repository itself. The scripts
+  do not read them (each finds the repository from its own location). `export` lasts for the
+  shell session: add the `export VNAP_HOME=…` line to `~/.bashrc` to keep it.
 - **C-ITS-PKI** comes with it, as the submodule `external/C-ITS-PKI` at the tested commit.
   After a `git pull` that moved the submodule, or in a clone made without
   `--recurse-submodules`, run `make submodule` (`git submodule update --init`). See
@@ -56,8 +64,8 @@ The repository can live on the host and be shared into the VM. vanetza-nap canno
 stay on the VM's own file system because of its case-only file name differences.
 
 ```bash
-scripts/vm/mount-shared-folder.sh     # in the VM: mount the VMware shared folders at /mnt/hgfs
-ln -s /mnt/hgfs/COIMBRA ~/COIMBRA     # e.g., so the repository is at ~/COIMBRA/vnap-secure
+${VNAP_HOME}/scripts/vm/mount-shared-folder.sh     # in the VM: mount the VMware shared folders at /mnt/hgfs
+ln -s /mnt/hgfs/<host-directory> ${INSTALL_DIR} # e.g., so the repository is at ${INSTALL_DIR}/vnap-secure
 ```
 
 - **Git on `/mnt/hgfs`** reports "dubious ownership", because the mount shows the files as
@@ -76,14 +84,14 @@ The API service's tests need the packages of `service/requirements.txt`. They go
 virtual environment `service/.venv`, not into the system Python:
 
 ```bash
-cd ~/COIMBRA/vnap-secure
+cd ${VNAP_HOME}
 make service-deps                            # creates service/.venv (with pip) and installs requirements.txt
 ```
 
 By hand, the same is:
 
 ```bash
-cd ~/COIMBRA/vnap-secure/service
+cd ${VNAP_HOME}/service
 python3 -m venv .venv                        # needs python3.12-venv (step 1); puts pip into .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
@@ -94,15 +102,15 @@ python3 -m venv .venv                        # needs python3.12-venv (step 1); p
 - **A `.venv` without pip** ("No module named pip") was created while `python3.12-venv` was
   missing. Install the package (step 1) and run `make service-deps`: it creates the
   environment again.
-- **Check:** `service/.venv/bin/python -m pip list` shows `fastapi`, `uvicorn` and the others.
+- **Check:** `${VNAP_HOME}/service/.venv/bin/python -m pip list` shows `fastapi`, `uvicorn` and the others.
 
 ## 6. First build and smoke test
 
 ```bash
-cd ~/COIMBRA/vnap-secure
+cd ${VNAP_HOME}
 make image                                   # about 20 minutes the first time
 make test                                    # unit tests, UI syntax, patch diffs, documentation links
-cd sim && ./vnapctl up c-its-pki && ./vnapctl check && ./vnapctl down
+cd ${VNAP_HOME}/sim && ./vnapctl up c-its-pki && ./vnapctl check && ./vnapctl down
 ```
 
 `./vnapctl check` should end with `PASS`.

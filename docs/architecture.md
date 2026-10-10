@@ -102,9 +102,10 @@ vnap-secure uses [C-ITS-PKI](https://github.com/jodyhuntatx/C-ITS-PKI) in two wa
 **Updating C-ITS-PKI:**
 
 ```bash
+cd ${VNAP_HOME}
 git -C external/C-ITS-PKI fetch && git -C external/C-ITS-PKI checkout origin/main
-cd sim && ./vnapctl up --instance auto scenarios/templates/pki-refill.toml && ./vnapctl --instance <n> check
-./vnapctl --instance <n> down && cd ..
+cd ${VNAP_HOME}/sim && ./vnapctl up --instance auto scenarios/templates/pki-refill.toml && ./vnapctl --instance <n> check
+./vnapctl --instance <n> down && cd ${VNAP_HOME}
 git add external/C-ITS-PKI && git commit -m "Update C-ITS-PKI to $(git -C external/C-ITS-PKI rev-parse --short HEAD)"
 ```
 

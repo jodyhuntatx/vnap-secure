@@ -35,6 +35,15 @@ def debug(msg):
         print(f"[vnapctl +{time.time() - T0:6.2f}s] {msg}", file=sys.stderr)
 
 
+PROGRESS = False  # set by the command line; the API service leaves it off
+
+
+def progress(msg):
+    """What vnapctl is doing, on stderr (stdout stays the command's result)."""
+    if PROGRESS:
+        print(f"vnapctl: {msg}", file=sys.stderr, flush=True)
+
+
 def current_user():
     """Who runs vnapctl: the account (not $USER, which anyone can set); recorded as a run's owner."""
     import pwd

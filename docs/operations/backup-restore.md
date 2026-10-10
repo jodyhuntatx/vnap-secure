@@ -18,7 +18,7 @@ example with `age`, `gpg`, or an encrypted rclone remote).
 ## Commands
 
 ```bash
-cd service
+cd ${VNAP_HOME}/service
 ./backup.sh create               # new archive in [backup] dir; the oldest beyond [backup] keep are deleted
 ./backup.sh list                 # archives, newest first
 ./backup.sh verify <archive>     # every file against the manifest, and the database's integrity

@@ -3,6 +3,7 @@
 ## Station image
 
 ```bash
+cd ${VNAP_HOME}
 make image                                     # = scripts/build/docker-build.sh
 IMAGE=vnap:r2-p20 make image                   # another tag
 VANETZA_NAP_DIR=~/vanetza-test make image      # another vanetza-nap tree

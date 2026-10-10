@@ -1,5 +1,16 @@
 # Configuration
 
+## Paths in this documentation
+
+| Variable | Meaning |
+|---|---|
+| `INSTALL_DIR` | the directory the repository is cloned into |
+| `VNAP_HOME` | the repository: `${INSTALL_DIR}/vnap-secure` |
+
+Both are set during [installation](../installation.md#3-get-the-sources), and the commands in
+this documentation use them to change directory. No script or program reads them: each finds
+the repository from its own location.
+
 ## Service: `service/config.toml`
 
 Read at start (`VNAP_API_CONFIG` names another file). Relative paths are relative to
@@ -60,5 +71,4 @@ environment:
 | `IMAGE` | `vnap:latest` | `scripts/build/docker-build.sh` |
 | `VANETZA_NAP_DIR` | `~/vanetza-nap` | build, `make msgcheck` |
 | `NO_BUILD` | unset | `1`: prepare the vanetza-nap sources only |
-| `VM_IP`, `VM_USER`, `SSH_KEY`, `VM_REPO` | `172.16.93.134`, `demo`, `~/.ssh/id_jody_git`, `/home/demo/COIMBRA/vnap-secure` | `scripts/vm/*.sh` (on the host) |
 | `OUTPUT_DIR` | `/vnap-certs/certify` | `scripts/certs/gen-certify.sh` |

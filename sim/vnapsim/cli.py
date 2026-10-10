@@ -20,6 +20,7 @@ status, events and check are read-only. Every command finishes in bounded time. 
 0 ok/pass, 1 check failed, 2 usage error (incl. invalid scenario), 3 no simulation running,
 4 degraded / not ready, 5 conflict (already running, name in use, owned by someone else).
 --instance N runs or inspects a parallel copy on its own networks (10.N.x.0/24, names <name>-iN).
+Progress messages ("vnapctl: ...") go to stderr; -q/--quiet and --json turn them off.
 
 Stations are found by membership of the simulation network (default vanetzalan0). Requires only
 python3, the docker CLI and the eclipse-mosquitto:2 image (used for MQTT subscriptions).
@@ -41,7 +42,8 @@ import time
 import tomllib
 from datetime import datetime, timezone
 
-from .common import EVENT_KINDS, EXIT_CONFLICT, EXIT_DEGRADED, EXIT_DOWN, EXIT_FAIL, EXIT_OK, EXIT_USAGE, ScenarioError, clock, parse_duration
+from . import common as shared
+from .common import EVENT_KINDS, EXIT_CONFLICT, EXIT_DEGRADED, EXIT_DOWN, EXIT_FAIL, EXIT_OK, EXIT_USAGE, ScenarioError, clock, parse_duration, progress
 from .status import Simulation, build_status, observer_reports, print_status
 from .events import collect_events, describe
 from .check import compute_metrics, default_expectations, evaluate
@@ -94,6 +96,8 @@ def main():
         parser.add_argument("--instance", dest=prefix + "instance", type=instance_arg, default=None,
                             help="parallel instance N: networks <lan>-iN/<ctl>-iN, subnets 10.N.x.0/24, names <name>-iN; "
                                  "up --instance auto claims the lowest free N (default: VNAPCTL_INSTANCE or 0)")
+        parser.add_argument("-q", "--quiet", dest=prefix + "quiet", action="store_true", default=None,
+                            help="no progress messages on stderr (--json implies it)")
 
     ap = argparse.ArgumentParser(prog="vnapctl", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -167,6 +171,8 @@ def main():
     if args.instance == "auto" and args.cmd != "up":
         ap.error("--instance auto is only for up (other commands need the instance number up printed)")
     lan, ctl = instance_networks(args.lan, args.ctl, 0 if args.instance == "auto" else args.instance)
+    args.quiet = bool(args.top_quiet or getattr(args, "sub_quiet", None))
+    shared.PROGRESS = not args.quiet and not getattr(args, "json", False)
 
     def fail(msg, code):
         print(json.dumps({"error": msg}) if getattr(args, "json", False) else f"vnapctl: {msg}",
@@ -219,6 +225,8 @@ def main():
             role = "user" if args.as_user else "admin"
             claimed = None
             if args.instance == "auto":
+                if not args.dry_run:
+                    progress("claiming a free instance ...")
                 sc, claimed = allocate_instance(args.scenario, args.set, role, args.dry_run)
             else:
                 sc = load_scenario(args.scenario, args.set, args.instance, role)
@@ -267,11 +275,13 @@ def main():
         return EXIT_OK if report["removed"] else EXIT_DOWN
 
     try:
+        progress(f"looking for the simulation on {lan} ...")
         sim = Simulation(lan, ctl)
     except (RuntimeError, FileNotFoundError) as e:
         return fail(str(e), EXIT_USAGE)
 
     if args.cmd == "status":
+        progress("reading the stations' state and logs ...")
         s = build_status(sim)
         print(json.dumps(s, indent=2)) if args.json else print_status(s)
         return {"ok": EXIT_OK, "degraded": EXIT_DEGRADED, "down": EXIT_DOWN}[s["health"]]
@@ -286,6 +296,7 @@ def main():
         stations = set(args.station.split(",")) if args.station else None
         duration = args.duration if args.duration is not None else (0 if args.since else 10.0)
         since = time.time() - args.since if args.since else None
+        progress(f"collecting events for {duration:g} s ..." if duration else "reading events from the container logs ...")
         events, _, _ = collect_events(sim, duration, since, args.count, kinds, stations)
         for ev in events:
             if args.json:
@@ -295,11 +306,14 @@ def main():
         return EXIT_OK
 
     if args.cmd == "check":
+        progress("reading the stations' state and logs ...")
         status = build_status(sim)
         scenario = None if args.no_scenario else scenario_expectations(sim)
+        progress(f"observing the stations' messages for {args.duration:g} s ...")
         events, start, end = collect_events(sim, args.duration)
         status["observers"] = observer_reports(sim)  # what the eavesdropper knows at the end of the window
         # rates use the requested window: the wall time also covers container start-up and log reads
+        progress("evaluating the expectations ...")
         metrics = compute_metrics(sim, status, events, args.duration)
         use_defaults = not args.no_defaults and (scenario["defaults"] if scenario else True)
         exps = (default_expectations(status) if use_defaults else []) + (scenario["expect"] if scenario else []) + args.expect

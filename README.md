@@ -71,8 +71,10 @@ The whole picture, with networks and trust boundaries, is in [docs/architecture.
 ## Installation
 
 ```bash
-git clone --recurse-submodules git@github.com:jodyhuntatx/vnap-secure.git ~/COIMBRA/vnap-secure
-cd ~/COIMBRA/vnap-secure
+INSTALL_DIR=<desired installation directory>
+git clone --recurse-submodules git@github.com:jodyhuntatx/vnap-secure.git ${INSTALL_DIR}/vnap-secure
+export VNAP_HOME=${INSTALL_DIR}/vnap-secure
+cd ${VNAP_HOME}
 git submodule update --init      # in a clone made without --recurse-submodules
 ```
 
@@ -82,6 +84,7 @@ covered in [docs/installation.md](docs/installation.md).
 ## Build
 
 ```bash
+cd ${VNAP_HOME}
 make image          # fetch vanetza-nap at patches/vanetza-nap/BASE into ~/vanetza-nap, apply the patches, build vnap:latest
 docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep pseudonym-control   # patched?
 ```
@@ -94,10 +97,8 @@ docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep ps
 
 ## Run a simulation
 
-From `sim/`:
-
 ```bash
-cd sim
+cd ${VNAP_HOME}/sim
 ./vnapctl scenarios                       # the scenario catalogue
 ./vnapctl up c-its-pki                    # validate, start, wait until the stations exchange messages
 ./vnapctl status                          # stations, certificates, chain checks
@@ -119,7 +120,7 @@ Other scenarios to try:
 ## Run the service
 
 ```bash
-cd service
+cd ${VNAP_HOME}/service
 python3 -m vnapapi.admin create-user root --role admin   # first admin (password asked, or VNAP_NEW_PASSWORD)
 ./run.sh                                                 # 0.0.0.0:8080, web UI at /ui/, API docs at /api/docs
 ```
@@ -129,7 +130,7 @@ is forwarded from the VM to the host (e.g. to open the UI at `http://localhost:8
 Mac). Set `VNAP_API_HOST=127.0.0.1` to listen on the VM only.
 
 In production the service runs as a dedicated account under systemd, behind Caddy for TLS
-(`service/deploy/`). See [docs/operations/service-deployment.md](docs/operations/service-deployment.md),
+(`${VNAP_HOME}/service/deploy/`). See [docs/operations/service-deployment.md](docs/operations/service-deployment.md),
 then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 
 <table>
@@ -155,6 +156,7 @@ then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 ## Tests
 
 ```bash
+cd ${VNAP_HOME}
 make test        # vnapsim and service unit tests, web UI syntax, OpenAPI spec and patch diffs current, documentation links
 ```
 
