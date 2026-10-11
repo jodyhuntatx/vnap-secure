@@ -84,6 +84,12 @@ mobility_rate_hz = 5              # position updates per second and vehicle
 mobility_seed = 12345             # optional: repeat the random turns of a run (default: a new seed)
 auth = { username_env = "CTL_USER", password_env = "CTL_PASS" }   # optional; names of env vars, never values
 
+[control.dynamic_mix_zone]         # optional: a change when enough vehicles are near each other (vehicle movement)
+enabled = true                    # run scope: every station with mobility and pseudonyms takes part (default true)
+min_vehicles = 2                  # vehicles within the radius, the vehicle itself included (default 2)
+radius_m = 50
+cooldown_s = 30                   # least time between two such changes of a vehicle
+
 [[control.mix_zones]]              # optional, repeatable; needs stations with mobility and pseudonyms
 name = "crossing"
 center = [40.208106, -8.4197756]  # [lat, lon]
@@ -136,7 +142,14 @@ run.
   - missing certificate files;
   - certificate combinations the entrypoint cannot use;
   - certificate paths together with `[pki]`;
-  - mix zones without moving pseudonym stations.
+  - mix zones without moving pseudonym stations;
+  - a dynamic mix zone threshold above the number of stations taking part.
+- **Colour:** a station's `color = "#rrggbb"` is the colour of the station and its route on the
+  web UI's maps. The simulation does not use it.
+- **Dynamic mix zone, station scope:** a station's `dynamic_mix_zone = { enabled = false }` or
+  `{ min_vehicles = 3 }` takes it out of the run scope or gives it its own threshold; with
+  `enabled = true` it takes part even when the run scope is off
+  ([vehicle movement](../functional/vehicle-movement.md#dynamic-mix-zones)).
 - **Assigned identities:** stations may leave out `ip`, `station_id`, `mac` and
   `station_type`. `vnapctl` assigns:
   - the next free station ID from 1;

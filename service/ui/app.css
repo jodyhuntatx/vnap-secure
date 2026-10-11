@@ -36,6 +36,8 @@ input, select, textarea { font: inherit; color: var(--text); background: var(--b
   border-radius: 6px; padding: 6px 8px; max-width: 100%; }
 textarea { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; }
 input[type=number] { width: 7.5em; }
+/* the general padding would leave no room for the colour itself */
+input[type=color] { width: 3.2em; height: 2.2em; padding: 2px; cursor: pointer; }
 button { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text);
   border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 button.secondary { background: transparent; color: var(--accent); }
@@ -74,8 +76,9 @@ textarea.prose { font-family: inherit; font-size: inherit; }
 .map.small { height: 360px; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
 @media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } .map { height: 340px; } }
-.station { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.station, .observer { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
 .station.selected { border-color: var(--accent); }
+.station.colored { border-left-width: 6px; }
 .events { max-height: 520px; overflow-y: auto; font-size: 0.85rem; }
 .events div { padding: 3px 0; border-bottom: 1px solid var(--line); }
 .events .t { color: var(--muted); margin-right: 8px; font-family: ui-monospace, monospace; }

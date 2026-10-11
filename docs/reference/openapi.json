@@ -1418,7 +1418,7 @@
     },
     "/api/runs/{run_id}/events/stream": {
       "get": {
-        "description": "Server-sent events: the run's log events as they happen (polled every 2 s, for at most 30 minutes).",
+        "description": "Server-sent events: the run's log events of the last since_s seconds (at most an hour), then\nnew ones as they happen (polled every 2 s, for at most 30 minutes). An event \"ready\" follows\nthe earlier events, with their number.",
         "operationId": "event_stream_api_runs__run_id__events_stream_get",
         "parameters": [
           {
@@ -1444,6 +1444,16 @@
                 }
               ],
               "title": "Kinds"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_s",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "title": "Since S",
+              "type": "number"
             }
           }
         ],

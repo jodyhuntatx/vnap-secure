@@ -28,6 +28,26 @@ state of the run. The runs list shows the name; `run.json` in the results record
 database gains the columns on the first start (runs from before show their scenario's name
 and description).
 
+## 2026-10-11: earlier events on the Events tab
+
+The Events tab shows the events of the last 10 minutes when it opens (it showed only those of
+the last 5 s, so it stayed empty until the next event), and says when it is connected with
+nothing to show. `GET /api/runs/{id}/events/stream` takes `since_s` and sends an event `ready`
+after the earlier events.
+
+## 2026-10-11: vehicle colours
+
+A station's `color = "#rrggbb"` sets the colour of the station and its route on the web UI's
+maps (the builder and the run's Map tab). The builder has a colour picker per vehicle.
+
+## 2026-10-11: dynamic mix zones
+
+The mobility client sends a pseudonym change event to a vehicle when at least `min_vehicles`
+participating vehicles are within `radius_m` of it, at most every `cooldown_s`:
+`[control.dynamic_mix_zone]` for the run, `dynamic_mix_zone = { enabled, min_vehicles }` per
+station. Scenario `c-its-pki-convoy-dynamic`; the web UI's builder has "all vehicles" and
+"min cars" for the run and a toggle with "min cars" per vehicle. No new station image.
+
 ## 2026-10-11: new run from a template, saved templates
 
 - **New run:** the page starts from a template, whose text becomes the new scenario. The

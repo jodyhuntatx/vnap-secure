@@ -30,6 +30,14 @@ where vehicles can be confused with each other. Without "stations", every vehicl
 changes only once at least n watched vehicles are inside the zone. Those waiting then change
 together, and later arrivals change on entry while n or more are inside. A vehicle that leaves
 before that keeps its pseudonym.
+
+Dynamic mix zone (optional): "dynamic_mix_zone": {"radius_m": 50, "cooldown_s": 30,
+"stations": [{"station_id": 2, "min_vehicles": 3}]} is a mix zone that travels with the
+vehicles: a listed vehicle gets a pseudonym change event when at least its min_vehicles
+listed vehicles (itself included) are within radius_m of it, at most once per cooldown_s.
+The first change comes cooldown_s after the start at the earliest. Vehicles that meet with
+the same threshold change in the same tick. The positions are the true ones (this client
+knows them all), not what a vehicle heard on the radio.
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 """
 import json
@@ -143,6 +151,40 @@ class MixZone:
         return change, count, left
 
 
+class DynamicMixZone:
+    """Pseudonym changes when enough vehicles are near each other (see the module docstring)."""
+
+    def __init__(self, raw, vehicles):
+        self.radius = float(raw.get("radius_m", 50))
+        if self.radius <= 0:
+            raise ValueError("dynamic mix zone: radius_m must be > 0")
+        self.cooldown = float(raw.get("cooldown_s", 30))
+        if self.cooldown < 1:
+            raise ValueError("dynamic mix zone: cooldown_s must be >= 1")
+        self.members = {int(s["station_id"]): int(s.get("min_vehicles", 2)) for s in raw.get("stations", [])}
+        ids = {v.station_id for v in vehicles}
+        if not self.members or not set(self.members) <= ids:
+            raise ValueError(f"dynamic mix zone: stations {sorted(set(self.members) - ids)} have no route"
+                             if self.members else "dynamic mix zone: no stations")
+        for station_id, minimum in self.members.items():
+            if not 1 <= minimum <= len(self.members):
+                raise ValueError(f"dynamic mix zone: station {station_id}: min_vehicles must be 1..{len(self.members)}")
+        self.last = {}  # station id -> time of its last change here (none yet: the start)
+
+    def update(self, t, positions):
+        """One tick at time t (s since the start), with every vehicle's position. Returns
+        [(station to send a change event now, participating vehicles within the radius)]."""
+        change = []
+        for station_id, minimum in sorted(self.members.items()):
+            if t - self.last.get(station_id, 0.0) < self.cooldown:
+                continue
+            near = sum(1 for other in self.members if distance(positions[station_id], positions[other]) <= self.radius)
+            if near >= minimum:
+                self.last[station_id] = t
+                change.append((station_id, near))
+        return change
+
+
 ARMS = {"north": (1, 0), "east": (0, 1), "south": (-1, 0), "west": (0, -1)}
 
 
@@ -242,6 +284,10 @@ def main():
         zones = [MixZone(z, vehicles) for z in cfg.get("mix_zones", [])]
     except (KeyError, TypeError, ValueError) as e:
         sys.exit(f"mobility: bad mix zone: {e}")
+    try:
+        dynamic = DynamicMixZone(cfg["dynamic_mix_zone"], vehicles) if cfg.get("dynamic_mix_zone") else None
+    except (KeyError, TypeError, ValueError) as e:
+        sys.exit(f"mobility: bad dynamic mix zone: {e}")
     pseudonym_topic = cfg.get("pseudonym_topic", "vnap/pseudonym").rstrip("/")
     period = 1.0 / float(cfg.get("rate_hz", 5))
     broker, port = cfg.get("broker", "pseudo-broker"), int(cfg.get("port", 1883))
@@ -276,6 +322,10 @@ def main():
         print(f"[MOBILITY] mix zone {z.name}: {z.center[0]:.6f} {z.center[1]:.6f} radius {z.radius:.0f} m, "
               f"stations {sorted(z.stations)}: pseudonym change on entry"
               + (f", once {z.min_vehicles} vehicles are inside" if z.min_vehicles > 1 else ""))
+    if dynamic:
+        print(f"[MOBILITY] dynamic mix zone: radius {dynamic.radius:.0f} m, cooldown {dynamic.cooldown:.0f} s, "
+              + ", ".join(f"station {s} (min {n})" for s, n in sorted(dynamic.members.items()))
+              + ": pseudonym change when that many of these vehicles are within the radius")
     events = 0
     t0 = time.monotonic()
     next_tick, next_log = t0, t0
@@ -310,6 +360,12 @@ def main():
                 client.publish(f"{pseudonym_topic}/{station_id}/change", json.dumps(event), qos=1)
                 print(f"[MOBILITY] t={t:6.1f} s station {station_id} in mix zone {z.name}"
                       + (f" ({count} inside)" if z.min_vehicles > 1 else "") + f": change event {event['event_id']}")
+        for station_id, near in (dynamic.update(t, positions) if dynamic else []):
+            events += 1
+            event = {"event_id": f"mobility-{events}", "reason": "dynamic-mix-zone"}
+            client.publish(f"{pseudonym_topic}/{station_id}/change", json.dumps(event), qos=1)
+            print(f"[MOBILITY] t={t:6.1f} s station {station_id} in a dynamic mix zone ({near} within "
+                  f"{dynamic.radius:.0f} m): change event {event['event_id']}")
         if log:
             next_log += LOG_EVERY
         next_tick += period

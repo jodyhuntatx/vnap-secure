@@ -18,6 +18,10 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
      - *Builder*: RSUs and vehicles, pseudonyms and silent periods, routes or random-turn
        crossings, mix zones, the run's PKI (certificates at start, refill) and the
        eavesdropper. Positions, routes, crossings and zones are set by clicking the map.
+       Each vehicle has a colour, used for the vehicle and its route here and on the run's map.
+       *Dynamic mix zone*: "all vehicles" with "min cars", radius and cooldown for the run,
+       and a toggle with its own "min cars" per vehicle
+       ([vehicle movement](../functional/vehicle-movement.md#dynamic-mix-zones)).
   3. Add overrides, validate, start. The scenario is checked against the user policy. Field
      errors are listed, and in the builder the station concerned is highlighted.
 
@@ -39,7 +43,7 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
     start as the scenario's; an empty name gives the scenario's name again.
   - *Map*: start positions, routes, crossings and mix zones, with live positions every 2 s.
     Pick a station, then click the map to move it.
-  - *Events*: the live event stream, filtered by kind (pseudonym, ID change, refill,
+  - *Events*: the last 10 minutes' events and then the live event stream, filtered by kind (pseudonym, ID change, refill,
     certificate check, error), with pause. Hover a kind for its meaning.
   - *Control*: ID change trigger, lock and unlock, with each station's answer.
   - *Results*: run a check (extra expectations allowed) and see earlier checks. After the stop,

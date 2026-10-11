@@ -1,4 +1,4 @@
-"""Mix zone logic of the mobility client (sim/images/mobility/mobility.py)."""
+"""Mix zone and dynamic mix zone logic of the mobility client (sim/images/mobility/mobility.py)."""
 
 import os
 import sys
@@ -13,7 +13,7 @@ paho.mqtt.client = types.ModuleType("paho.mqtt.client")
 for name, module in (("paho", paho), ("paho.mqtt", paho.mqtt), ("paho.mqtt.client", paho.mqtt.client)):
     sys.modules.setdefault(name, module)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "images", "mobility"))
-from mobility import MixZone  # noqa: E402
+from mobility import DynamicMixZone, MixZone  # noqa: E402
 
 IN, OUT = (40.0, -8.0), (40.01, -8.0)   # the zone's centre; about 1.1 km north of it
 
@@ -79,3 +79,39 @@ class MixZoneTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NEAR = (40.0002, -8.0)   # about 22 m north of IN
+
+
+def dynamic(stations, radius=50, cooldown=30):
+    return DynamicMixZone({"radius_m": radius, "cooldown_s": cooldown,
+                           "stations": [{"station_id": s, "min_vehicles": n} for s, n in stations.items()]},
+                          [types.SimpleNamespace(station_id=s) for s in (2, 3, 4, 5)])
+
+
+class DynamicMixZoneTest(unittest.TestCase):
+    def test_changes_together_when_enough_are_near_and_again_after_the_cooldown(self):
+        d = dynamic({2: 3, 3: 3, 4: 3})
+        apart = {2: IN, 3: NEAR, 4: OUT, 5: IN}             # station 5 is near but does not take part
+        together = {2: IN, 3: NEAR, 4: IN, 5: OUT}
+        self.assertEqual(d.update(40.0, apart), [])
+        self.assertEqual(d.update(40.2, together), [(2, 3), (3, 3), (4, 3)])
+        self.assertEqual(d.update(50.0, together), [])      # cooldown
+        self.assertEqual(d.update(70.2, together), [(2, 3), (3, 3), (4, 3)])
+        self.assertEqual(d.update(110.0, apart), [])
+
+    def test_no_change_before_the_first_cooldown(self):
+        d = dynamic({2: 2, 3: 2})
+        self.assertEqual(d.update(29.8, {2: IN, 3: IN, 4: OUT, 5: OUT}), [])
+        self.assertEqual(d.update(30.0, {2: IN, 3: IN, 4: OUT, 5: OUT}), [(2, 2), (3, 2)])
+
+    def test_each_station_has_its_own_threshold(self):
+        d = dynamic({2: 2, 3: 3, 4: 1}, cooldown=10)
+        self.assertEqual(d.update(10.0, {2: IN, 3: NEAR, 4: OUT, 5: OUT}), [(2, 2), (4, 1)])   # 3 needs three, 4 nobody
+        self.assertEqual(d.update(12.0, {2: IN, 3: NEAR, 4: IN, 5: OUT}), [(3, 3)])
+
+    def test_configuration_is_checked(self):
+        for stations, kw in (({2: 4, 3: 2}, {}), ({9: 2}, {}), ({}, {}), ({2: 2, 3: 2}, {"radius": 0}), ({2: 2, 3: 2}, {"cooldown": 0})):
+            with self.assertRaises(ValueError):
+                dynamic(stations, **kw)

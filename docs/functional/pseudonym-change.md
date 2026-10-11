@@ -21,7 +21,8 @@ simply follow the station across it.
   [control channels](../reference/control-channels.md#pseudonym-change).
 - **Who sends events:**
   - the event client (periodically, at random intervals, once, or by hand);
-  - the mobility client, when a vehicle enters a mix zone ([vehicle movement](vehicle-movement.md#mix-zones));
+  - the mobility client, when a vehicle enters a mix zone or enough vehicles are near each
+    other ([vehicle movement](vehicle-movement.md#mix-zones));
   - the service's control actions.
 - **Thread safety:** the MQTT thread only queues the event. The change runs on socktap's
   `io_context` under the `TimeTrigger` mutex, which also guards CAM signing, so a change cannot

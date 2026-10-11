@@ -44,7 +44,41 @@ client drives the vehicles.
 
 ## Mix zones
 
-`[[control.mix_zones]]` (name, center, radius, stations) makes the mobility client send a
+A mix zone is a place where several vehicles change pseudonym at about the same time and
+place, so that an observer cannot tell which new identity belongs to which old one.
+
+**The problem.** A vehicle broadcasts CAMs several times a second with its position, speed and
+heading. Changing the pseudonym certificate alone hides little: when one car changes on an
+empty road, an eavesdropper sees one identity stop and another appear a moment later on the
+same trajectory, and links them. A change protects privacy only when there are other
+candidates for the new identity.
+
+**How a mix zone creates that ambiguity:**
+
+- **Many vehicles together:** every vehicle entering the zone changes there, so several old
+  identities disappear and several new ones appear in the same small area.
+- **Unpredictable movement:** the zone is where trajectories diverge, typically an
+  intersection, so extrapolating a vehicle's heading does not single out one new identity.
+- **Silence:** vehicles stop transmitting for a random time after the change, so the observer
+  has a gap in position and in message timing instead of a continuous track.
+
+The privacy gained is roughly the number of vehicles that could plausibly be the same one
+(the anonymity set). A vehicle alone in a zone gains nothing.
+
+**In the simulation:**
+
+| Element | Role |
+|---|---|
+| `[[control.mix_zones]]` | the zone: the mobility client sends a change event to each vehicle entering it, which stands in for a vehicle knowing it is in a designated zone |
+| `silent_min_ms`, `silent_max_ms` (`pseudonyms`) | the random radio silence after a full ID change ([pseudonym change](pseudonym-change.md)) |
+| crossing mobility with random turns | unpredictable exits (`c-its-pki-mixzone-random`). With fixed turns (`c-its-pki-mixzone`) the eavesdropper's mistakes form a pattern an attacker could undo |
+| `min_vehicles` | the "many vehicles together" condition: a vehicle does not spend a pseudonym on a change that would be linked anyway |
+| the eavesdropper and its score | the test of the zone: it links old and new identities by position and CAM timing, and the score against ground truth says how well the zone worked ([eavesdropper and scoring](eavesdropper-and-scoring.md)) |
+
+The mix zone is the countermeasure, the eavesdropper measures it, and the parameters above
+are what to vary to see when linking fails.
+
+**Configuration.** `[[control.mix_zones]]` (name, center, radius, stations) makes the mobility client send a
 pseudonym change event to a vehicle each time it enters the zone, instead of on a clock. Set
 `control.client.mode = "manual"` for that. The events carry the reason `mix-zone <name>`
 and show up in `vnapctl events`.
@@ -63,6 +97,36 @@ Only the stations the zone watches count (`stations`, by default every station w
 and pseudonyms), so an RSU at the crossing does not. A vehicle changes at most once per visit,
 and one that starts inside the zone counts but does not change. The default `min_vehicles = 1`
 changes every vehicle on entry.
+
+## Dynamic mix zones
+
+A dynamic mix zone is a mix zone that travels with the vehicles: instead of a fixed circle on
+the map, the condition is that enough vehicles are near each other, wherever they are.
+
+- **Rule:** a participating vehicle gets a pseudonym change event when at least `min_vehicles`
+  participating vehicles, itself included, are within `radius_m` of it.
+- **Cooldown:** at most one such change per vehicle every `cooldown_s`. The first one comes
+  `cooldown_s` after the start at the earliest. Vehicles that stay together (a convoy) change
+  again each time the cooldown ends.
+- **Together:** vehicles that meet with the same threshold change in the same position
+  update. With different thresholds, the one with the lower threshold may change alone.
+- **Events** carry the reason `dynamic-mix-zone`. Set `control.client.mode = "manual"` so that
+  no clock-driven changes mix in.
+
+Two scopes select who takes part and with which threshold:
+
+| Scope | Where | Effect |
+|---|---|---|
+| Run | `[control.dynamic_mix_zone]` with `enabled`, `min_vehicles`, `radius_m`, `cooldown_s` | every station with mobility and pseudonyms takes part (`enabled = false`: only the stations that say so) |
+| Station | `dynamic_mix_zone = { enabled = …, min_vehicles = … }` in a station | this station takes part or not, with its own threshold; replaces the run scope for it |
+
+Example: `c-its-pki-convoy-dynamic` (three cars, all three within 80 m, every 20 s). Fixed
+mix zones and a dynamic one can be used together.
+
+**It is an oracle.** The mobility client knows every vehicle's true position, so vehicles
+react to ground truth, not to what they heard on the radio. It shows whether proximity-based
+changes help at all; a vehicle deciding from the CAMs it receives would be a change to the
+station.
 
 ## Origin
 

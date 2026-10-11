@@ -321,7 +321,8 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
             config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
                       "vehicles": [{"station_id": st["station_id"], **st["mobility"]}
                                    for st in sc["stations"] if st.get("mobility")],
-                      "mix_zones": mo["mix_zones"], "pseudonym_topic": "vnap/pseudonym",
+                      "mix_zones": mo["mix_zones"], "dynamic_mix_zone": mo["dynamic_mix_zone"],
+                      "pseudonym_topic": "vnap/pseudonym",
                       # random turns: a fixed seed repeats a run; otherwise a new one, recorded in the config
                       "seed": mo["seed"] if mo["seed"] is not None else random.randrange(1 << 31)}
             r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"],

@@ -45,7 +45,7 @@ bodies; this page gives the overview.
 | `PATCH /api/runs/{id}` | owner | change the run's `name` (at most 100 characters; empty: the scenario's name again) and `description` (at most 2000) |
 | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/share` | owner | stop; share read-only with another user |
 | `GET /api/runs/{id}/layout` | readers | description, stations, routes, crossings, mix zones (for the map) |
-| `GET /api/runs/{id}/events`, `GET /api/runs/{id}/events/stream` | readers | events from the logs (optionally live MQTT for up to 30 s); server-sent events |
+| `GET /api/runs/{id}/events`, `GET /api/runs/{id}/events/stream` | readers | events from the logs (optionally live MQTT for up to 30 s); server-sent events: the last `since_s` seconds (default 5, at most 3600), an event `ready`, then new events |
 | `GET /api/runs/{id}/positions` | readers | current position of every moving station |
 | `GET /api/runs/{id}/eavesdropper` | readers | the eavesdropper's report and the score against ground truth |
 | `POST /api/runs/{id}/control` | owner | pseudonym change, trigger, lock, unlock; returns the station's answer |

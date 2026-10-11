@@ -5,15 +5,16 @@ import { clear, h } from "../dom.js";
 import { crossingLayer, getUiConfig, makeMap, offset, stationColor, zoneColor } from "./mapview.js";
 
 let CENTER = [40.208106, -8.4197756];   // replaced by the service's origin (ui-config)
+const DMZ_HELP = "A mix zone that travels with the vehicles: a vehicle changes its pseudonym when at least 'min cars' participating vehicles, itself included, are within the radius of it, at most once per cooldown. Needs pseudonyms and movement.";
 
 function newStation(kind, n) {
   const vehicle = kind === "vehicle";
   return {
-    extra: {}, envExtra: {}, pseudoExtra: {}, hasPosition: !vehicle,
+    extra: {}, envExtra: {}, pseudoExtra: {}, hasPosition: !vehicle, dmzOn: false, dmzMin: "", color: "",
     kind, name: vehicle ? `car${n}` : (n > 1 ? `rsu${n}` : "rsu"),
     position: vehicle ? offset(CENTER, 0, 60 * n) : [...CENTER],
     pseudonyms: vehicle, silent_min_ms: 0, silent_max_ms: 0,
-    mobility: vehicle ? "crossing" : "none", route: [], speed_kmh: 36, loop: true, start_s: 1.5 * (n - 1),
+    mobility: "none", route: [], speed_kmh: 36, loop: true, start_s: 1.5 * (n - 1),
     crossing: [...CENTER], arm_m: 150, start_arm: ["east", "north", "west", "south"][(n - 1) % 4],
   };
 }
@@ -43,6 +44,11 @@ function rest(obj, known) {
   return Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !known.includes(k)));
 }
 
+// a vehicle can take part in the dynamic mix zone when it changes pseudonyms and moves
+export function canMix(m, s) {
+  return s.kind === "vehicle" && s.pseudonyms && m.signed && ((s.mobility === "route" && s.route.length >= 2) || s.mobility === "crossing");
+}
+
 export function toToml(m) {
   const lines = [`description = ${q(m.description)}`];
   lines.push(...pairs(Object.fromEntries(Object.entries(m.extra).filter(([, v]) => !isTable(v)))));
@@ -55,6 +61,7 @@ export function toToml(m) {
     lines.push("[[stations]]", `name = ${q(s.name)}`);
     if (s.kind === "rsu") lines.push("station_type = 15");
     else if (s.station_type !== undefined) lines.push(`station_type = ${n(s.station_type)}`);
+    if (s.color) lines.push(`color = ${q(s.color)}`);
     lines.push(...pairs(s.extra));
     const moves = s.kind === "vehicle" && ((s.mobility === "route" && s.route.length >= 2) || s.mobility === "crossing");
     const env = pairs(s.envExtra);
@@ -69,13 +76,24 @@ export function toToml(m) {
     if (moves && s.mobility === "crossing") {
       lines.push(`mobility = ${inline([`crossing = ${pt(s.crossing)}`, `arm_m = ${n(s.arm_m)}`, `start_arm = ${q(s.start_arm)}`, `speed_kmh = ${n(s.speed_kmh)}`, `start_s = ${n(s.start_s)}`])}`);
     }
+    if (canMix(m, s)) {   // station scope: only what differs from the run scope
+      const own = [];
+      if (s.dmzOn !== m.dmz.all) own.push(`enabled = ${s.dmzOn}`);
+      if (s.dmzOn && s.dmzMin !== "" && Number(s.dmzMin) !== Number(m.dmz.min_vehicles)) own.push(`min_vehicles = ${Math.floor(Number(s.dmzMin))}`);
+      if (own.length) lines.push(`dynamic_mix_zone = ${inline(own)}`);
+    }
     lines.push("");
   }
+  const dynamic = m.dmz.has || m.dmz.all || m.stations.some((s) => canMix(m, s) && s.dmzOn);
   const moving = m.stations.some((s) => s.kind === "vehicle" && s.mobility !== "none");
-  if (m.hasControl || anyPseudo || moving || m.zones.length) {
+  if (m.hasControl || anyPseudo || moving || m.zones.length || dynamic) {
     lines.push("[control]", ...pairs(m.controlExtra), "", "[control.client]", `mode = ${q(m.client.mode)}`);
     if (m.client.mode === "periodic") lines.push(`interval = ${n(m.client.interval)}`);
     lines.push(...pairs(m.clientExtra), "");
+    if (dynamic) {
+      lines.push("[control.dynamic_mix_zone]", `enabled = ${m.dmz.all}`, `min_vehicles = ${Math.floor(Number(m.dmz.min_vehicles) || 2)}`,
+        `radius_m = ${n(m.dmz.radius_m)}`, `cooldown_s = ${n(m.dmz.cooldown_s)}`, ...pairs(m.dmz.extra), "");
+    }
     for (const z of m.zones) {
       lines.push("[[control.mix_zones]]", `name = ${q(z.name)}`, `center = ${pt(z.center)}`, `radius_m = ${n(z.radius_m)}`,
         ...(Number(z.min_vehicles) > 1 ? [`min_vehicles = ${Math.floor(Number(z.min_vehicles))}`] : []), ...pairs(z.extra), "");
@@ -97,6 +115,10 @@ export function fromScenario(sc, center) {
   const defaults = table(sc.defaults), pki = table(sc.pki), control = table(sc.control), client = table(control.client);
   const eav = table(sc.eavesdropper);
   const security = typeof defaults.security === "string" ? defaults.security : "none";
+  const zone = control.dynamic_mix_zone;
+  const dmz = { has: isTable(zone), all: isTable(zone) && zone.enabled !== false, min_vehicles: num(table(zone).min_vehicles, 2),
+    radius_m: num(table(zone).radius_m, 50), cooldown_s: num(table(zone).cooldown_s, 30),
+    extra: rest(table(zone), ["enabled", "min_vehicles", "radius_m", "cooldown_s"]) };
   const stations = (Array.isArray(sc.stations) ? sc.stations : []).filter(isTable).map((st, i) => {
     const env = table(st.env), mob = table(st.mobility), pseudo = isTable(st.pseudonyms) ? st.pseudonyms : null;
     const lat = parseFloat(env.VANETZA_LATITUDE), lon = parseFloat(env.VANETZA_LONGITUDE);
@@ -105,7 +127,10 @@ export function fromScenario(sc, center) {
     return {
       kind: st.station_type === 15 ? "rsu" : "vehicle", name: String(st.name ?? `station${i + 1}`),
       station_type: st.station_type === 15 ? undefined : st.station_type,
-      extra: rest(st, ["name", "station_type", "env", "pseudonyms", "mobility"]),
+      extra: rest(st, ["name", "station_type", "env", "pseudonyms", "mobility", "dynamic_mix_zone", "color"]),
+      color: typeof st.color === "string" && /^#[0-9a-fA-F]{6}$/.test(st.color) ? st.color : "",
+      dmzOn: isTable(st.dynamic_mix_zone) ? st.dynamic_mix_zone.enabled !== false : dmz.all,
+      dmzMin: num(table(st.dynamic_mix_zone).min_vehicles, ""),
       envExtra: rest(env, ["VANETZA_LATITUDE", "VANETZA_LONGITUDE"]), hasPosition,
       position: hasPosition ? [lat, lon] : [...center],
       pseudonyms: !!pseudo, silent_min_ms: num(pseudo && pseudo.silent_min_ms, 0), silent_max_ms: num(pseudo && pseudo.silent_max_ms, 0),
@@ -124,7 +149,7 @@ export function fromScenario(sc, center) {
     pki: { initial: num(pki.initial, 8), refill_at: num(pki.refill_at, 2), batch: num(pki.batch, 8) },
     pkiExtra: rest(pki, ["initial", "refill_at", "batch", "enabled"]),
     stations,
-    hasControl: isTable(sc.control), controlExtra: rest(control, ["client", "mix_zones"]),
+    hasControl: isTable(sc.control), controlExtra: rest(control, ["client", "mix_zones", "dynamic_mix_zone"]), dmz,
     client: { mode: typeof client.mode === "string" ? client.mode : "periodic", interval: num(client.interval, 30) },
     clientExtra: rest(client, ["mode", "interval"]),
     zones: (Array.isArray(control.mix_zones) ? control.mix_zones : []).filter(isTable).map((z, i) => ({
@@ -152,7 +177,7 @@ export async function builder(pane, sc) {
   const layers = L.layerGroup();
 
   // ------------------------------------------------------------ inputs bound to the model
-  const num = (obj, key, attrs) => h("input", { type: "number", value: obj[key], ...attrs, onchange: (e) => { obj[key] = Number(e.target.value); draw(); } });
+  const num = (obj, key, attrs) => h("input", { type: "number", value: obj[key], onchange: (e) => { obj[key] = Number(e.target.value); draw(); }, ...attrs });
   const txt = (obj, key) => h("input", { value: obj[key], onchange: (e) => { obj[key] = e.target.value.trim(); renderCards(); } });
   const chk = (obj, key, after) => h("input", { type: "checkbox", checked: obj[key], onchange: (e) => { obj[key] = e.target.checked; (after || draw)(); } });
   const pick = (obj, key, options, after) => h("select", { onchange: (e) => { obj[key] = e.target.value; (after || draw)(); } },
@@ -161,6 +186,13 @@ export async function builder(pane, sc) {
     mode = { what, target };
     modeLine.textContent = `Click the map: ${label}` + (what === "route" ? " (each click adds a waypoint; 'clear route' starts over)" : "");
   } }, label);
+
+  // run scope of the dynamic mix zone: "all vehicles" switches every vehicle on or off
+  const allBox = h("input", { type: "checkbox", onchange: (e) => {
+    m.dmz.all = e.target.checked;
+    for (const s of m.stations) s.dmzOn = m.dmz.all;
+    renderCards();
+  } });
 
   function renderCards() {
     clear(cards);
@@ -176,7 +208,18 @@ export async function builder(pane, sc) {
           h("label", { class: "inline" }, chk(s, "pseudonyms", renderCards), "pseudonyms (ID changes)"),
           s.pseudonyms ? [h("label", {}, "silent min ms", num(s, "silent_min_ms", { min: 0 })),
             h("label", {}, "silent max ms", num(s, "silent_max_ms", { min: 0 }))] : null,
-          h("label", {}, "Movement", pick(s, "mobility", ["none", "route", "crossing"], renderCards))));
+          h("label", {}, "Movement", pick(s, "mobility", ["none", "route", "crossing"], renderCards)),
+          h("label", { title: "Colour of this vehicle and its route on the maps, here and in the run." }, "Colour",
+            h("input", { type: "color", value: s.color || stationColor(5), onchange: (e) => { s.color = e.target.value; renderCards(); } })),
+          s.color ? h("button", { type: "button", class: "secondary", title: "Back to the colour all vehicles have by default",
+            onclick: () => { s.color = ""; renderCards(); } }, "default colour") : null));
+        if (canMix(m, s)) {
+          parts.push(h("div", { class: "row" },
+            h("label", { class: "inline", title: DMZ_HELP }, chk(s, "dmzOn", renderCards), "dynamic mix zone"),
+            s.dmzOn ? h("label", { title: "Vehicles that must be within the radius, this one included, for this vehicle to change. Empty: the value for all vehicles." },
+              "min cars", h("input", { type: "number", min: 1, max: 50, step: 1, value: s.dmzMin, placeholder: m.dmz.min_vehicles,
+                onchange: (e) => { s.dmzMin = e.target.value === "" ? "" : Math.max(1, Math.floor(Number(e.target.value) || 1)); draw(); } })) : null));
+        }
         if (s.mobility === "route") {
           parts.push(h("div", { class: "row" }, setOnMap("route", s, `draw route of ${s.name}`),
             h("button", { type: "button", class: "secondary", onclick: () => { s.route = []; draw(); } }, "clear route"),
@@ -191,8 +234,13 @@ export async function builder(pane, sc) {
             h("label", {}, "km/h", num(s, "speed_kmh", { min: 1, max: 500 })), h("label", {}, "start s", num(s, "start_s", { min: 0, step: 0.5 }))));
         }
       }
-      cards.append(h("div", { class: "station", "data-name": s.name }, parts));
+      const card = h("div", { class: "station colored", "data-name": s.name }, parts);
+      card.style.borderLeftColor = s.color || stationColor(s.kind === "rsu" ? 15 : 5);   // as on the map
+      cards.append(card);
     });
+    const able = m.stations.filter((s) => canMix(m, s));
+    allBox.checked = m.dmz.all;
+    allBox.indeterminate = able.some((s) => s.dmzOn) && able.some((s) => !s.dmzOn);
     renderZones();
     draw();
   }
@@ -213,7 +261,7 @@ export async function builder(pane, sc) {
   function draw() {
     layers.clearLayers();
     for (const s of m.stations) {
-      const color = stationColor(s.kind === "rsu" ? 15 : 5);
+      const color = s.color || stationColor(s.kind === "rsu" ? 15 : 5);
       if (s.kind === "vehicle" && s.mobility === "route" && s.route.length) {
         L.polyline(s.route, { color, weight: 3 }).addTo(layers);
         L.circleMarker(s.route[0], { radius: 7, color, fillOpacity: 0.9 }).bindTooltip(s.name, { permanent: true, className: "station-label" }).addTo(layers);
@@ -265,10 +313,23 @@ export async function builder(pane, sc) {
       h("label", {}, "Pseudonym change events", pick(m.client, "mode", ["manual", "periodic", "random", "once"])),
       h("label", {}, "every s (periodic)", num(m.client, "interval", { min: 1 }))),
     h("div", { class: "row" },
-      h("label", { class: "inline" }, chk(m.eavesdropper, "enabled"), "eavesdropper"),
-      h("label", {}, "link window s", num(m.eavesdropper, "link_window", { min: 0, step: 0.5 })),
-      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("position"), onchange: (e) => toggleLink("position", e.target.checked) }), "position"),
-      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("timing"), onchange: (e) => toggleLink("timing", e.target.checked) }), "timing")));
+      h("label", { class: "inline", title: DMZ_HELP }, allBox, "dynamic mix zone: all vehicles"),
+      h("label", { title: "Run scope: vehicles that must be within the radius, the vehicle itself included. A vehicle's own 'min cars' replaces it." },
+        "min cars", num(m.dmz, "min_vehicles", { min: 1, max: 50, step: 1, onchange: (e) => { m.dmz.min_vehicles = Math.max(1, Math.floor(Number(e.target.value) || 1)); renderCards(); } })),
+      h("label", {}, "radius m", num(m.dmz, "radius_m", { min: 1, max: 5000 })),
+      h("label", { title: "Least time between two dynamic mix zone changes of a vehicle; also the earliest first change." },
+        "cooldown s", num(m.dmz, "cooldown_s", { min: 1 }))));
+  // the eavesdropper is a participant of its own, not a station and not a setting of the scenario
+  const eavesdropperPanel = h("div", { class: "panel" }, h("h2", {}, "Eavesdropper"),
+    h("p", { class: "muted" }, "A passive attacker that listens to every message and tries to follow each vehicle through its pseudonym changes."),
+    h("div", { class: "observer" }, h("div", { class: "row" },
+      h("label", { class: "inline" }, chk(m.eavesdropper, "enabled"), "listening"),
+      h("label", { title: "How long after a pseudonym went silent the eavesdropper still continues its track with a new one." },
+        "link window s", num(m.eavesdropper, "link_window", { min: 0, step: 0.5 })),
+      h("label", { class: "inline", title: "Link a new pseudonym to an old one by where it appears." },
+        h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("position"), onchange: (e) => toggleLink("position", e.target.checked) }), "link by position"),
+      h("label", { class: "inline", title: "Link a new pseudonym to an old one by the timing of its messages." },
+        h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("timing"), onchange: (e) => toggleLink("timing", e.target.checked) }), "link by timing"))));
   function toggleLink(kind, on) {
     m.eavesdropper.link_by = on ? [...new Set([...m.eavesdropper.link_by, kind])] : m.eavesdropper.link_by.filter((k) => k !== kind);
   }
@@ -277,6 +338,7 @@ export async function builder(pane, sc) {
   function add(kind) {   // the next free rsuN / carN
     let station;
     do { station = newStation(kind, kind === "rsu" ? ++rsus : ++cars); } while (!unused(station.name));
+    station.dmzOn = m.dmz.all;
     m.stations.push(station);
     renderCards();
   }
@@ -288,7 +350,8 @@ export async function builder(pane, sc) {
           h("button", { type: "button", class: "secondary", onclick: () => add("rsu") }, "Add RSU"),
           h("button", { type: "button", class: "secondary", onclick: () => add("vehicle") }, "Add vehicle"))),
       h("div", { class: "panel" }, h("h2", {}, "Mix zones"), zonesBox,
-        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40, min_vehicles: 1, extra: {} }); renderZones(); draw(); } }, "Add mix zone"))),
+        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40, min_vehicles: 1, extra: {} }); renderZones(); draw(); } }, "Add mix zone")),
+      eavesdropperPanel),
     h("div", {},
       h("div", { class: "panel" }, modeLine, mapEl,
         h("p", { class: "legend muted" }, h("span", {}, h("i", { class: "dot rsu" }), "RSU"), h("span", {}, h("i", { class: "dot car" }), "vehicle"),

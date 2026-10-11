@@ -222,6 +222,27 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(alice.get(f"/api/runs/{run['id']}/events").status_code, 409)
         self.assertEqual(alice.post(f"/api/runs/{run['id']}/control", json={"action": "change", "station": "obu1-i7"}).status_code, 409)
 
+    def test_event_stream_sends_earlier_events_then_ready(self):
+        alice = self.client("alice")
+        run = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        self.start(run["id"])
+        self.assertEqual(alice.get(f"/api/runs/{run['id']}/events/stream?since_s=4000").status_code, 400)
+        asked, now = [], time.time()
+
+        def fake_collect(sim, duration, since, count, kinds, stations):
+            asked.append((now - since, kinds))
+            self.db.execute("UPDATE runs SET state = 'stopped' WHERE id = ?", (run["id"],))   # the stream ends after this round
+            return [{"t": now - 300, "station": "obu1-i7", "kind": "pseudonym", "action": "changed"},
+                    {"t": now - 2, "station": "obu2-i7", "kind": "pseudonym", "action": "changed"}], None, None
+        with mock.patch("vnapapi.app.collect_events", fake_collect), mock.patch("vnapapi.app.describe", lambda e: "changed"), \
+                mock.patch.object(self.runs, "simulation", lambda r: None), mock.patch("vnapapi.app.asyncio.sleep", mock.AsyncMock()):
+            body = alice.get(f"/api/runs/{run['id']}/events/stream?kinds=pseudonym&since_s=600").text
+        self.assertAlmostEqual(asked[0][0], 601, delta=5)
+        self.assertEqual(asked[0][1], {"pseudonym"})
+        self.assertEqual(body.count("data: {\"t\""), 2)
+        self.assertLess(body.index("obu2-i7"), body.index('event: ready\ndata: {"earlier": 2}'))
+        self.assertIn("event: end", body)
+
 
     # ------------------------------------------------------------ web UI
     def test_ui_is_served_with_a_strict_csp(self):
@@ -254,6 +275,7 @@ class ApiTest(unittest.TestCase):
         rsu, obu1 = lay["stations"][0], lay["stations"][1]
         self.assertEqual((rsu["station_type"], rsu["mobility"], rsu["pseudonyms"]), (15, {}, False))
         self.assertTrue(obu1["pseudonyms"])
+        self.assertIsNone(obu1["color"])
         self.assertEqual(obu1["mobility"]["crossing"], [40.208106, -8.4197756])
         self.assertGreater(obu1["start"][1], -8.4197756)            # starts on the east arm
         self.assertEqual(len(lay["mix_zones"]), 1)

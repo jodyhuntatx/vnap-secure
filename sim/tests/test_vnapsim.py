@@ -109,6 +109,55 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(sc["stations"][0]["pki"]["certificates"], "regular")
 
 
+class DynamicMixZoneScenarioTest(unittest.TestCase):
+    BASE = ('[defaults]\nsecurity = "certs-v3"\n[pki]\n[[stations]]\nname = "rsu"\nstation_type = 15\n'
+            + "".join(f'[[stations]]\nname = "car{i}"\npseudonyms = {{}}\n'
+                      f'mobility = {{ crossing = [40.2, -8.4], start_arm = "{arm}" }}\n%s\n' for i, arm in ((1, "east"), (2, "north"), (3, "west")))
+            + "[control]\n%s\n")
+
+    def zone(self, *parts):
+        sc = load_scenario(scenario_file(self.BASE % parts), role="user", policy=POLICY)
+        return sc["control"]["mobility"]["dynamic_mix_zone"], [s["station_id"] for s in sc["stations"]]
+
+    def errors(self, *parts):
+        with self.assertRaises(ScenarioError) as ctx:
+            load_scenario(scenario_file(self.BASE % parts), role="user", policy=POLICY)
+        return [e["text"] for e in ctx.exception.errors]
+
+    def test_off_without_the_tables(self):
+        self.assertIsNone(self.zone("", "", "", "")[0])
+
+    def test_run_scope_takes_every_moving_pseudonym_station(self):
+        zone, ids = self.zone("", "", "", "[control.dynamic_mix_zone]\nmin_vehicles = 3\nradius_m = 60")
+        self.assertEqual(zone, {"radius_m": 60, "cooldown_s": 30,
+                                "stations": [{"station_id": i, "min_vehicles": 3} for i in ids[1:]]})   # not the RSU
+
+    def test_station_scope_overrides_the_run_scope(self):
+        zone, ids = self.zone("dynamic_mix_zone = { enabled = false }", "dynamic_mix_zone = { min_vehicles = 1 }", "",
+                              "[control.dynamic_mix_zone]")
+        self.assertEqual(zone["stations"], [{"station_id": ids[2], "min_vehicles": 1}, {"station_id": ids[3], "min_vehicles": 2}])
+        zone, ids = self.zone("dynamic_mix_zone = {}", "dynamic_mix_zone = { min_vehicles = 2 }", "",
+                              "[control.dynamic_mix_zone]\nenabled = false\ncooldown_s = 10")
+        self.assertEqual(zone, {"radius_m": 50, "cooldown_s": 10, "stations": [{"station_id": i, "min_vehicles": 2} for i in ids[1:3]]})
+
+    def test_station_color(self):
+        sc = load_scenario(scenario_file(self.BASE % ('color = "#1A2b3c"', "", "", "")), role="user", policy=POLICY)
+        self.assertEqual([s["color"] for s in sc["stations"]], [None, "#1A2b3c", None, None])
+        self.assertIn('stations[car1]: color must be "#rrggbb"', self.errors('color = "red"', "", "", ""))
+
+    def test_errors(self):
+        self.assertIn("stations[car1]: dynamic_mix_zone min_vehicles 4 is more than the 3 station(s) taking part",
+                      self.errors("dynamic_mix_zone = { min_vehicles = 4 }", "", "", "[control.dynamic_mix_zone]"))
+        self.assertIn("control.dynamic_mix_zone: cooldown_s must be >= 1",
+                      self.errors("", "", "", "[control.dynamic_mix_zone]\ncooldown_s = 0"))
+        self.assertIn("control.dynamic_mix_zone: unknown key(s) radius",
+                      self.errors("", "", "", "[control.dynamic_mix_zone]\nradius = 5"))
+        text = self.BASE.replace('station_type = 15\n', 'station_type = 15\ndynamic_mix_zone = {}\n') % ("", "", "", "")
+        with self.assertRaises(ScenarioError) as ctx:
+            load_scenario(scenario_file(text), role="user", policy=POLICY)
+        self.assertIn("stations[rsu]: dynamic_mix_zone needs both mobility and pseudonyms", [e["text"] for e in ctx.exception.errors])
+
+
 class ScoringTest(unittest.TestCase):
     def test_purity_and_longest_followed_chain(self):
         from vnapsim.scoring import score

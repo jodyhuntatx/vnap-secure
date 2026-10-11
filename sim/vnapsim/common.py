@@ -137,7 +137,7 @@ def cits_pki_version(directory=None):
 PKI_KEYS = {"enabled", "etsi_version", "validity_hours", "initial", "refill_at", "batch", "ip", "key_derivation"}
 SECURITY_ENTITIES = {"none", "dummy", "dummy-v2", "dummy-v3", "certs", "certs-v2", "certs-v3"}
 STATION_KEYS = {"name", "ip", "station_id", "station_type", "mac", "security", "at_cert", "at_key",
-                "aa_cert", "root_cert", "pseudonyms", "mobility", "env"}
+                "aa_cert", "root_cert", "pseudonyms", "mobility", "dynamic_mix_zone", "color", "env"}
 CLIENT_MODES = {"periodic", "random", "once", "manual"}
 EXIT_CONFLICT = 5
 

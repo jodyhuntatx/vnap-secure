@@ -346,6 +346,10 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
             st["mobility"] = check_mobility(mob, where, errors)
             if entrypoint != "native":
                 errors.append(f"{where}: mobility needs entrypoint = 'native'")
+        st["dynamic_mix_zone"] = raw.get("dynamic_mix_zone")   # checked with [control.dynamic_mix_zone]
+        st["color"] = raw.get("color")   # for maps only: the simulation does not use it
+        if st["color"] is not None and not (isinstance(st["color"], str) and re.fullmatch(r"#[0-9a-fA-F]{6}", st["color"])):
+            errors.append(f"{where}: color must be \"#rrggbb\"")
         if pki_on and st["security"].startswith("certs"):
             st["aa_cert"], st["root_cert"] = "/vnap-certs/public/aa.cert", "/vnap-certs/public/root_ca.cert"
             if not st.get("pki"):  # no pseudonym pool: a regular authorization ticket
@@ -416,6 +420,9 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         control.setdefault("mobility", {})["mix_zones"] = check_mix_zones(ctl_raw.get("mix_zones", []), stations, errors)
         if control["mobility"]["mix_zones"] and "name" not in control["mobility"]:
             errors.append("control.mix_zones need stations with mobility (zones trigger on vehicle positions)")
+        control["mobility"]["dynamic_mix_zone"] = check_dynamic_mix_zone(ctl_raw.get("dynamic_mix_zone"), stations, errors)
+        if control["mobility"]["dynamic_mix_zone"] and "name" not in control["mobility"]:
+            errors.append("control.dynamic_mix_zone needs stations with mobility (it triggers on vehicle positions)")
         if not control["mobility"].get("name"):
             control["mobility"] = None
     elif any(s.get("mobility") for s in stations):
@@ -540,6 +547,65 @@ def check_mix_zones(raw, stations, errors):
         zones.append({"name": str(z.get("name", f"zone{i}")), "center": [float(c) for c in center],
                       "radius_m": radius, "stations": list(ids), "min_vehicles": minimum})
     return zones
+
+
+def check_dynamic_mix_zone(raw, stations, errors):
+    """Validate [control.dynamic_mix_zone] (run scope: every moving station with pseudonyms takes
+    part) and the stations' dynamic_mix_zone tables (one station's enabled and min_vehicles).
+    Returns the mobility client's configuration, or None when no station takes part."""
+    def integer(value):
+        return isinstance(value, int) and not isinstance(value, bool)
+    where = "control.dynamic_mix_zone"
+    if raw is not None and not isinstance(raw, dict):
+        errors.append(f"{where}: must be a table")
+        raw = None
+    run = raw or {}
+    unknown = set(run) - {"enabled", "min_vehicles", "radius_m", "cooldown_s"}
+    if unknown:
+        errors.append(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
+    everyone = run.get("enabled", raw is not None)
+    if not isinstance(everyone, bool):
+        errors.append(f"{where}: enabled must be true or false")
+    minimum = run.get("min_vehicles", 2)
+    if not integer(minimum) or minimum < 1:
+        errors.append(f"{where}: min_vehicles must be an integer >= 1")
+        minimum = 2
+    radius, cooldown = run.get("radius_m", 50), run.get("cooldown_s", 30)
+    if not isinstance(radius, (int, float)) or isinstance(radius, bool) or radius <= 0:
+        errors.append(f"{where}: radius_m must be > 0")
+    if not isinstance(cooldown, (int, float)) or isinstance(cooldown, bool) or cooldown < 1:
+        errors.append(f"{where}: cooldown_s must be >= 1")
+    members = []
+    for st in stations:
+        own, here = st.get("dynamic_mix_zone"), f"stations[{st['base_name']}]"
+        if own is not None and not isinstance(own, dict):
+            errors.append(f"{here}: dynamic_mix_zone must be a table {{ enabled = true, min_vehicles = 2 }}")
+            continue
+        if own is not None and set(own) - {"enabled", "min_vehicles"}:
+            errors.append(f"{here}: unknown dynamic_mix_zone key(s) {', '.join(sorted(set(own) - {'enabled', 'min_vehicles'}))}")
+        takes_part = own.get("enabled", True) if own is not None else everyone
+        if not isinstance(takes_part, bool):
+            errors.append(f"{here}: dynamic_mix_zone.enabled must be true or false")
+            continue
+        can = bool(st.get("mobility") and st.get("pseudonyms"))
+        if takes_part and own is not None and not can:
+            errors.append(f"{here}: dynamic_mix_zone needs both mobility and pseudonyms")
+        if not (takes_part and can):
+            continue   # run scope: stations that cannot take part (an RSU) are left out
+        own_minimum = (own or {}).get("min_vehicles", minimum)
+        if not integer(own_minimum) or own_minimum < 1:
+            errors.append(f"{here}: dynamic_mix_zone.min_vehicles must be an integer >= 1")
+            own_minimum = minimum
+        members.append((st, here, own_minimum))
+    if everyone is True and not members:
+        errors.append(f"{where}: no station with mobility and pseudonyms takes part")
+    for st, here, own_minimum in members:
+        if own_minimum > len(members):
+            errors.append(f"{here}: dynamic_mix_zone min_vehicles {own_minimum} is more than the {len(members)} station(s) taking part")
+    if not members:
+        return None
+    return {"radius_m": radius, "cooldown_s": cooldown,
+            "stations": [{"station_id": st["station_id"], "min_vehicles": n} for st, _, n in members]}
 
 
 def check_mobility(mob, where, errors):

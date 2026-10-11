@@ -221,7 +221,8 @@ def build_status(sim):
                                                 for v in vehicles],
                                    "seed": mcfg.get("seed"),
                                    "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations", "min_vehicles")}
-                                                 for z in mcfg.get("mix_zones", [])]}
+                                                 for z in mcfg.get("mix_zones", [])],
+                                   "dynamic_mix_zone": mcfg.get("dynamic_mix_zone")}
         if sim.pki:
             pe = pki_log_events(Simulation.name(sim.pki))
             issued = [e for e in pe if e["action"] == "issued"]
@@ -358,6 +359,10 @@ def print_status(s):
                 print(f"  mix zone {z['name']}: {z['center'][0]:.6f} {z['center'][1]:.6f} radius {z['radius_m']} m, "
                       f"pseudonym change on entry for stations {z['stations']}"
                       + (f", once {z['min_vehicles']} vehicles are inside" if (z.get("min_vehicles") or 1) > 1 else ""))
+            if mo.get("dynamic_mix_zone"):
+                d = mo["dynamic_mix_zone"]
+                print(f"  dynamic mix zone: radius {d['radius_m']} m, cooldown {d['cooldown_s']} s, pseudonym change for "
+                      + ", ".join(f"station {s['station_id']} (min {s['min_vehicles']})" for s in d["stations"]))
     for o in s.get("observers", []):
         print()
         if "tracks" in o:

@@ -23,6 +23,7 @@ cd ${VNAP_HOME}/sim
 | `c-its-pki-tracking`, `c-its-pki-tracking-silent` | add a passive eavesdropper (with silent periods) |
 | `c-its-pki-traffic`, `c-its-pki-convoy` | moving vehicles; a convoy watched by an eavesdropper |
 | `c-its-pki-mixzone`, `c-its-pki-mixzone-random` | four cars changing identity in an intersection mix zone (fixed or random turns) |
+| `c-its-pki-convoy-dynamic` | a convoy with a dynamic mix zone: cars change when three are within 80 m of each other |
 | `c-its-pki-mixzone-min3` | the same mix zone with a threshold: cars change only once three are inside |
 | `c-its-pki-refill`, `c-its-pki-refill-sweep`, `c-its-pki-mixzone-pki` | the run's own PKI with certificate refill |
 | `c-its-pki-badroot`, `naive-v3` | negative controls: messages must be rejected |

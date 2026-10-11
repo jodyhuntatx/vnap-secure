@@ -102,6 +102,9 @@ export async function runView(app, session, runId) {
       const lines = [];
       if (k) lines.push(`Run PKI: ${k.state}, provisioned in ${k.provisioned_ms} ms, ${k.batches} refill batch(es)` +
         (k.batches ? `, issue mean ${k.issue_ms_mean} ms, queue max ${k.queue_ms_max} ms` : ""));
+      const d = s.control && s.control.mobility && s.control.mobility.dynamic_mix_zone;
+      if (d) lines.push(`Dynamic mix zone: radius ${d.radius_m} m, cooldown ${d.cooldown_s} s, ` +
+        d.stations.map((x) => `station ${x.station_id} (min ${x.min_vehicles})`).join(", "));
       for (const o of s.observers || []) {
         if ("tracks" in o) lines.push(`Eavesdropper: ${o.tracks} track(s), ${o.pseudonyms} pseudonym(s), ${o.linked_changes} linked change(s)`);
       }
@@ -140,7 +143,7 @@ export async function runView(app, session, runId) {
     for (const z of layout.mix_zones) L.circle(z.center, { radius: z.radius_m, color: zoneColor(), fillOpacity: 0.12 }).addTo(map);
     const markers = {};
     for (const s of layout.stations) {
-      const color = stationColor(s.station_type);
+      const color = s.color || stationColor(s.station_type);
       if (s.mobility.route) L.polyline(s.mobility.route, { color, weight: 2, opacity: 0.6 }).addTo(map);
       if (s.mobility.crossing) crossingLayer(s.mobility.crossing, s.mobility.arm_m || 150, color).addTo(map);
       markers[s.name] = L.circleMarker(s.start, { radius: s.station_type === 15 ? 9 : 7, color, fillOpacity: 0.9 })
@@ -183,20 +186,37 @@ export async function runView(app, session, runId) {
       error: "errors in the station logs",
     };
     const chosen = new Set(kinds);
+    const HISTORY_S = 600;   // earlier events shown when the stream opens
     const list = h("div", { class: "events" });
+    const state = h("p", { class: "muted" });
     let paused = false;
     let source = null;
+    let ready = false;        // the earlier events have arrived
+    function showState(lost) {
+      if (lost) state.textContent = "Connection lost, reconnecting …";
+      else if (!ready) state.textContent = "Connecting …";
+      else if (!list.children.length) state.textContent = `Connected. No events in the last ${HISTORY_S / 60} minutes; new ones appear here within a few seconds.`;
+      else state.textContent = "";
+      state.hidden = !state.textContent;
+    }
+    // (re)connecting starts over: the last minutes' events of the chosen kinds, then the live ones
     function connect() {
       if (source) source.close();
-      source = new EventSource(`/api/runs/${runId}/events/stream?kinds=${[...chosen].join(",")}`);
+      clear(list);
+      ready = false;
+      showState();
+      source = new EventSource(`/api/runs/${runId}/events/stream?kinds=${[...chosen].join(",")}&since_s=${HISTORY_S}`);
+      source.addEventListener("ready", () => { ready = true; showState(); });
+      source.onerror = () => { if (source.readyState !== EventSource.CLOSED) { ready = false; clear(list); showState(true); } };
       source.onmessage = (msg) => {
         if (paused) return;
         const ev = JSON.parse(msg.data);
         list.prepend(h("div", {}, h("span", { class: "t" }, new Date(ev.t * 1000).toLocaleTimeString()),
           h("span", { class: "k", title: HINTS[ev.kind] || "" }, LABELS[ev.kind] || ev.kind), h("b", {}, ev.station), " ", ev.text));
         while (list.children.length > 500) list.lastChild.remove();
+        showState();
       };
-      source.addEventListener("end", () => { source.close(); list.prepend(h("div", { class: "muted" }, "run ended")); });
+      source.addEventListener("end", () => { source.close(); state.hidden = true; list.prepend(h("div", { class: "muted" }, "run ended")); });
     }
     pane.append(h("div", { class: "panel" },
       h("div", { class: "row" },
@@ -205,8 +225,8 @@ export async function runView(app, session, runId) {
           connect();
         } }), LABELS[k])),
         h("button", { type: "button", class: "secondary", onclick: (e) => { paused = !paused; e.target.textContent = paused ? "Resume" : "Pause"; } }, "Pause"),
-        h("button", { type: "button", class: "secondary", onclick: () => clear(list) }, "Clear")),
-      list));
+        h("button", { type: "button", class: "secondary", onclick: () => { clear(list); showState(); } }, "Clear")),
+      state, list));
     connect();
     stopTab = () => source && source.close();
     onLeave(() => source && source.close());

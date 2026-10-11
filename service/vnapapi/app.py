@@ -492,13 +492,19 @@ def create_app(cfg=None, start_workers=True):
         return [{**e, "text": describe(e)} for e in evs]
 
     @app.get("/api/runs/{run_id}/events/stream")
-    async def event_stream(run_id: str, request: Request, kinds: Optional[str] = None, user=Depends(principal)):
-        """Server-sent events: the run's log events as they happen (polled every 2 s, for at most 30 minutes)."""
+    async def event_stream(run_id: str, request: Request, kinds: Optional[str] = None, since_s: float = 5,
+                           user=Depends(principal)):
+        """Server-sent events: the run's log events of the last since_s seconds (at most an hour), then
+        new ones as they happen (polled every 2 s, for at most 30 minutes). An event "ready" follows
+        the earlier events, with their number."""
         run = run_for(user, run_id)
         chosen = parse_kinds(kinds)
+        if not 0 <= since_s <= 3600:
+            raise HTTPException(400, "since_s 0..3600")
 
         async def gen():
-            last = time.time() - 5
+            last = time.time() - since_s
+            ready = False
             end = time.time() + 1800
             seen = set()
             while time.time() < end and not await request.is_disconnected():
@@ -515,6 +521,9 @@ def create_app(cfg=None, start_workers=True):
                         yield f"data: {json.dumps({**e, 'text': describe(e)})}\n\n"
                 if evs:
                     last = max(e["t"] for e in evs)
+                if not ready:
+                    ready = True
+                    yield f"event: ready\ndata: {json.dumps({'earlier': len(seen)})}\n\n"
                 yield ": keep-alive\n\n"
                 await asyncio.sleep(2)
         return StreamingResponse(gen(), media_type="text/event-stream")
@@ -685,7 +694,7 @@ def create_app(cfg=None, start_workers=True):
             start = mob.get("start") or [float(st["env"].get("VANETZA_LATITUDE", ORIGIN[0])),
                                          float(st["env"].get("VANETZA_LONGITUDE", ORIGIN[1]))]
             stations.append({"name": st["name"], "station_id": st["station_id"], "station_type": st["station_type"],
-                             "start": start, "pseudonyms": bool(st.get("pseudonyms")),
+                             "start": start, "pseudonyms": bool(st.get("pseudonyms")), "color": st.get("color"),
                              "mobility": {k: mob[k] for k in ("route", "loop", "crossing", "arm_m", "speed_kmh") if k in mob}})
         zones = ((sc["control"] or {}).get("mobility") or {}).get("mix_zones", []) if sc["control"] else []
         return {"description": sc["description"], "stations": stations, "mix_zones": zones,
