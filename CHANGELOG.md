@@ -20,6 +20,32 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-11: run name and description
+
+A run has a name and a description of its own, which start as its scenario's. The owner (or
+an admin) changes them on the web UI's Overview tab, or with `PATCH /api/runs/{id}`, in any
+state of the run. The runs list shows the name; `run.json` in the results records both. The
+database gains the columns on the first start (runs from before show their scenario's name
+and description).
+
+## 2026-10-11: new run from a template, saved templates
+
+- **New run:** the page starts from a template, whose text becomes the new scenario. The
+  "Scenario text" and "Builder" tabs edit that same scenario: the builder reads the text
+  (`POST /api/scenarios/parse`) and keeps the keys its forms do not show. An unchanged template
+  is still started by its name.
+- **Saved templates:** a scenario can be saved as a template of one's own, optionally shared
+  with all users (`/api/templates`; a new database table).
+- **Generic names:** saving can rename stations to `rsu1…`, `vehicle1…` and mix zones to
+  `zone1…`.
+- `POST /api/runs` takes a `name` for the run.
+
+## 2026-10-11: line breaks in scenario text
+
+A line break inside a `"..."` string of a scenario text is refused by TOML ("Illegal character
+'\n'"). The error now says how to write it (`"""..."""`), and the web UI's text editor says
+so above the text.
+
 ## 2026-10-10: mix zone threshold
 
 `[[control.mix_zones]]` takes `min_vehicles = n`: a vehicle that entered the zone changes its

@@ -35,10 +35,14 @@ bodies; this page gives the overview.
 | `POST /api/auth/totp/setup`, `/enable`, `/disable`, `/recovery-codes` | session | TOTP second factor ([service deployment](../operations/service-deployment.md#accounts-and-authentication)) |
 | `GET/POST /api/tokens`, `DELETE /api/tokens/{id}` | all | own API tokens |
 | `GET/POST /api/users`, `PATCH /api/users/{name}`, `POST /api/users/{name}/password` | admin | accounts: create, role, disable, unlock, reset TOTP, reset password |
-| `GET /api/scenarios`, `GET /api/scenarios/{kind}/{name}` | all | templates (and, for admins, the catalogue) and their text |
+| `GET /api/scenarios`, `GET /api/scenarios/{kind}/{name}` | all | templates, saved templates (and, for admins, the catalogue); the text of a template or catalogue scenario |
+| `POST /api/scenarios/parse` | all | scenario text as JSON (TOML syntax only, no validation) |
+| `POST /api/templates` | users | save scenario text as a template of one's own: `name`, `scenario_text`, `shared` (readable by every user), `genericize` (generic station and mix zone names), `replace` |
+| `GET/DELETE /api/templates/{id}` | readers / owner | a saved template's text; delete it |
 | `GET /api/schema` | all | JSON Schema of the scenario format |
 | `POST /api/scenarios/validate` | all | field-level validation against the user policy |
-| `GET/POST /api/runs`, `GET/DELETE /api/runs/{id}` | all | list, start (template, catalogue or scenario text, overrides, duration), details with live status, delete |
+| `GET/POST /api/runs`, `GET/DELETE /api/runs/{id}` | all | list, start (template, catalogue or scenario text, overrides, duration, name), details with live status, delete |
+| `PATCH /api/runs/{id}` | owner | change the run's `name` (at most 100 characters; empty: the scenario's name again) and `description` (at most 2000) |
 | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/share` | owner | stop; share read-only with another user |
 | `GET /api/runs/{id}/layout` | readers | description, stations, routes, crossings, mix zones (for the map) |
 | `GET /api/runs/{id}/events`, `GET /api/runs/{id}/events/stream` | readers | events from the logs (optionally live MQTT for up to 30 s); server-sent events |

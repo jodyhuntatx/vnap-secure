@@ -159,6 +159,9 @@ from the command line.
 - **What users start:** templates (`sim/scenarios/templates/`) or their own scenario text,
   with overrides. All are checked against the user policy, with field-level errors. Admins can
   also start the catalogue (`sim/scenarios/`).
+- **Saved templates:** a user saves scenario text as a template of their own, optionally shared
+  with all users (at most 100 per user). They are in the database, so backups include them;
+  the service's own templates stay in `sim/scenarios/templates/`.
 - **Jobs:** starting and stopping are jobs. Each run gets:
   - a free instance;
   - CPU and memory limits on every container;
@@ -167,6 +170,8 @@ from the command line.
   automatically at their deadline) and disk space for kept results.
 - **Record:** a run keeps its scenario, overrides, image, mobility seed and the C-ITS-PKI
   commit of its PKI.
+- **Name and description:** a run starts with its scenario's; the owner can change both at any
+  time (web UI, or `PATCH /api/runs/{id}`). `run.json` in the results follows.
 - **Privacy:** runs are private to their owner (and admins) unless shared with other users,
   read-only.
 - **Results:** at stop, the service keeps:
@@ -179,7 +184,7 @@ from the command line.
 ## Tests
 
 ```bash
-make test-service      # 29 tests, no Docker needed
+make test-service      # 33 tests, no Docker needed
 ```
 
 The endpoints are listed in [API](../reference/api.md); the browser UI is described in

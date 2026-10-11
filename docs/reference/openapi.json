@@ -154,6 +154,18 @@
             ],
             "title": "Duration Minutes"
           },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "overrides": {
             "default": [],
             "items": {
@@ -197,6 +209,40 @@
           }
         },
         "title": "NewRun",
+        "type": "object"
+      },
+      "NewTemplate": {
+        "properties": {
+          "genericize": {
+            "default": false,
+            "title": "Genericize",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 64,
+            "title": "Name",
+            "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
+          },
+          "scenario_text": {
+            "title": "Scenario Text",
+            "type": "string"
+          },
+          "shared": {
+            "default": false,
+            "title": "Shared",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scenario_text",
+          "name"
+        ],
+        "title": "NewTemplate",
         "type": "object"
       },
       "NewToken": {
@@ -321,6 +367,36 @@
         "title": "Position",
         "type": "object"
       },
+      "RunChange": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "RunChange",
+        "type": "object"
+      },
       "ScenarioRef": {
         "properties": {
           "overrides": {
@@ -366,6 +442,19 @@
           }
         },
         "title": "ScenarioRef",
+        "type": "object"
+      },
+      "ScenarioText": {
+        "properties": {
+          "scenario_text": {
+            "title": "Scenario Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scenario_text"
+        ],
+        "title": "ScenarioText",
         "type": "object"
       },
       "Share": {
@@ -1020,6 +1109,52 @@
           }
         },
         "summary": "Get Run"
+      },
+      "patch": {
+        "description": "Change the run's name and description, in any state. An empty name gives the scenario's name again.",
+        "operationId": "change_run_api_runs__run_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Run"
       }
     },
     "/api/runs/{run_id}/check": {
@@ -1651,6 +1786,43 @@
         "summary": "Scenarios"
       }
     },
+    "/api/scenarios/parse": {
+      "post": {
+        "description": "The scenario text as JSON (for the web UI's builder). Not validated beyond its TOML syntax.",
+        "operationId": "parse_scenario_api_scenarios_parse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenarioText"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Parse Scenario"
+      }
+    },
     "/api/scenarios/validate": {
       "post": {
         "operationId": "validate_api_scenarios_validate_post",
@@ -1747,6 +1919,115 @@
           }
         },
         "summary": "Schema"
+      }
+    },
+    "/api/templates": {
+      "post": {
+        "description": "Save scenario text as a template of one's own (`shared`: every user may read it). `genericize`\ngives stations and mix zones generic names; `replace` overwrites one's template of the same name.",
+        "operationId": "save_template_api_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTemplate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Template"
+      }
+    },
+    "/api/templates/{template_id}": {
+      "delete": {
+        "operationId": "delete_template_api_templates__template_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Template"
+      },
+      "get": {
+        "operationId": "saved_template_api_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Saved Template"
       }
     },
     "/api/tokens": {

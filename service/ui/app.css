@@ -55,6 +55,9 @@ pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-
 .codes { font-size: 1rem; letter-spacing: 0.05em; }
 .hint { border-bottom: 1px dotted var(--muted); cursor: help; }
 .description { margin: 0 0 10px; white-space: pre-line; }
+form.edit label { display: block; margin-bottom: 10px; }
+form.edit input, form.edit textarea { display: block; max-width: 100%; }
+textarea.prose { font-family: inherit; font-size: inherit; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; background: var(--code); }
 .badge.running, .badge.ok, .badge.pass { background: var(--ok-bg); color: var(--ok); }
 .badge.failed, .badge.fail, .badge.bad, .badge.down, .badge.refused { background: var(--bad-bg); color: var(--bad); }

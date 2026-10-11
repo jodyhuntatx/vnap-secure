@@ -1,14 +1,15 @@
-// Scenario builder: stations, routes, crossings and mix zones in forms and on a map; it
-// writes the scenario as TOML for the same validation and start as scenario text.
+// Scenario builder: stations, routes, crossings and mix zones in forms and on a map. It edits
+// a scenario read from its text (fromScenario) and writes it back as TOML (toToml). Keys the
+// forms do not show are kept as they are; comments of the text are not.
 import { clear, h } from "../dom.js";
 import { crossingLayer, getUiConfig, makeMap, offset, stationColor, zoneColor } from "./mapview.js";
-import { startControls } from "./newrun.js";
 
 let CENTER = [40.208106, -8.4197756];   // replaced by the service's origin (ui-config)
 
 function newStation(kind, n) {
   const vehicle = kind === "vehicle";
   return {
+    extra: {}, envExtra: {}, pseudoExtra: {}, hasPosition: !vehicle,
     kind, name: vehicle ? `car${n}` : (n > 1 ? `rsu${n}` : "rsu"),
     position: vehicle ? offset(CENTER, 0, 60 * n) : [...CENTER],
     pseudonyms: vehicle, silent_min_ms: 0, silent_max_ms: 0,
@@ -17,57 +18,131 @@ function newStation(kind, n) {
   };
 }
 
+// ------------------------------------------------------------ TOML
+const q = (s) => JSON.stringify(String(s));
+const n = (x) => String(Number(x) || 0);
+const f = (x) => String(Number((Number(x) || 0).toFixed(7)));   // degrees: 7 decimals are about 1 cm
+const pt = (p) => `[${f(p[0])}, ${f(p[1])}]`;
+const key = (k) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : q(k));
+const isTable = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+// any value on one line (tables as inline tables)
+function value(v) {
+  if (typeof v === "string") return q(v);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return `[${v.map(value).join(", ")}]`;
+  return inline(pairs(v));
+}
+function pairs(obj) {
+  return Object.entries(obj || {}).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => `${key(k)} = ${value(v)}`);
+}
+const inline = (parts) => (parts.length ? `{ ${parts.join(", ")} }` : "{}");
+
+// `obj` without `known` keys: what the forms do not show
+function rest(obj, known) {
+  return Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !known.includes(k)));
+}
+
 export function toToml(m) {
-  const q = (s) => JSON.stringify(String(s));
-  const f = (x) => Number(x).toFixed(6);
-  const pt = (p) => `[${f(p[0])}, ${f(p[1])}]`;
-  const lines = [`description = ${q(m.description)}`, "", "[defaults]", `security = ${q(m.signed ? "certs-v3" : "none")}`, ""];
+  const lines = [`description = ${q(m.description)}`];
+  lines.push(...pairs(Object.fromEntries(Object.entries(m.extra).filter(([, v]) => !isTable(v)))));
+  lines.push("", "[defaults]", `security = ${q(m.signed ? m.security : "none")}`, ...pairs(m.defaultsExtra), "");
   const anyPseudo = m.signed && m.stations.some((s) => s.kind === "vehicle" && s.pseudonyms);
-  if (m.signed) {
-    lines.push("[pki]", `initial = ${m.pki.initial}`, `refill_at = ${m.pki.refill_at}`, `batch = ${m.pki.batch}`, "");
+  if (m.signed && m.hasPki) {
+    lines.push("[pki]", `initial = ${n(m.pki.initial)}`, `refill_at = ${n(m.pki.refill_at)}`, `batch = ${n(m.pki.batch)}`, ...pairs(m.pkiExtra), "");
   }
   for (const s of m.stations) {
     lines.push("[[stations]]", `name = ${q(s.name)}`);
     if (s.kind === "rsu") lines.push("station_type = 15");
-    if (s.kind === "rsu" || s.mobility === "none") {
-      lines.push(`env = { VANETZA_LATITUDE = ${q(f(s.position[0]))}, VANETZA_LONGITUDE = ${q(f(s.position[1]))} }`);
-    }
+    else if (s.station_type !== undefined) lines.push(`station_type = ${n(s.station_type)}`);
+    lines.push(...pairs(s.extra));
+    const moves = s.kind === "vehicle" && ((s.mobility === "route" && s.route.length >= 2) || s.mobility === "crossing");
+    const env = pairs(s.envExtra);
+    if (!moves || s.hasPosition) env.unshift(`VANETZA_LATITUDE = ${q(f(s.position[0]))}`, `VANETZA_LONGITUDE = ${q(f(s.position[1]))}`);
+    if (env.length) lines.push(`env = ${inline(env)}`);
     if (s.kind === "vehicle" && s.pseudonyms && m.signed) {
-      lines.push(`pseudonyms = { silent_min_ms = ${Number(s.silent_min_ms) || 0}, silent_max_ms = ${Number(s.silent_max_ms) || 0} }`);
+      lines.push(`pseudonyms = ${inline([...pairs(s.pseudoExtra), `silent_min_ms = ${n(s.silent_min_ms)}`, `silent_max_ms = ${n(s.silent_max_ms)}`])}`);
     }
-    if (s.kind === "vehicle" && s.mobility === "route" && s.route.length >= 2) {
-      lines.push(`mobility = { route = [${s.route.map(pt).join(", ")}], speed_kmh = ${Number(s.speed_kmh)}, start_s = ${Number(s.start_s)}, loop = ${s.loop} }`);
+    if (moves && s.mobility === "route") {
+      lines.push(`mobility = ${inline([`route = [${s.route.map(pt).join(", ")}]`, `speed_kmh = ${n(s.speed_kmh)}`, `start_s = ${n(s.start_s)}`, `loop = ${!!s.loop}`])}`);
     }
-    if (s.kind === "vehicle" && s.mobility === "crossing") {
-      lines.push(`mobility = { crossing = ${pt(s.crossing)}, arm_m = ${Number(s.arm_m)}, start_arm = ${q(s.start_arm)}, speed_kmh = ${Number(s.speed_kmh)}, start_s = ${Number(s.start_s)} }`);
+    if (moves && s.mobility === "crossing") {
+      lines.push(`mobility = ${inline([`crossing = ${pt(s.crossing)}`, `arm_m = ${n(s.arm_m)}`, `start_arm = ${q(s.start_arm)}`, `speed_kmh = ${n(s.speed_kmh)}`, `start_s = ${n(s.start_s)}`])}`);
     }
     lines.push("");
   }
   const moving = m.stations.some((s) => s.kind === "vehicle" && s.mobility !== "none");
-  if (anyPseudo || moving || m.zones.length) {
-    lines.push("[control]", "", "[control.client]", `mode = ${q(m.client.mode)}`);
-    if (m.client.mode === "periodic") lines.push(`interval = ${Number(m.client.interval)}`);
-    lines.push("");
+  if (m.hasControl || anyPseudo || moving || m.zones.length) {
+    lines.push("[control]", ...pairs(m.controlExtra), "", "[control.client]", `mode = ${q(m.client.mode)}`);
+    if (m.client.mode === "periodic") lines.push(`interval = ${n(m.client.interval)}`);
+    lines.push(...pairs(m.clientExtra), "");
     for (const z of m.zones) {
-      lines.push("[[control.mix_zones]]", `name = ${q(z.name)}`, `center = ${pt(z.center)}`, `radius_m = ${Number(z.radius_m)}`,
-        ...(Number(z.min_vehicles) > 1 ? [`min_vehicles = ${Math.floor(Number(z.min_vehicles))}`] : []), "");
+      lines.push("[[control.mix_zones]]", `name = ${q(z.name)}`, `center = ${pt(z.center)}`, `radius_m = ${n(z.radius_m)}`,
+        ...(Number(z.min_vehicles) > 1 ? [`min_vehicles = ${Math.floor(Number(z.min_vehicles))}`] : []), ...pairs(z.extra), "");
     }
   }
   if (m.eavesdropper.enabled) {
-    lines.push("[eavesdropper]", `link_window = ${Number(m.eavesdropper.link_window)}`,
-      `link_by = [${m.eavesdropper.link_by.map(q).join(", ")}]`, "");
+    lines.push("[eavesdropper]", `link_window = ${n(m.eavesdropper.link_window)}`,
+      `link_by = [${m.eavesdropper.link_by.map(q).join(", ")}]`, ...pairs(m.eavExtra), "");
   }
+  for (const [k, v] of Object.entries(m.extra)) if (isTable(v)) lines.push(`[${key(k)}]`, ...pairs(v), "");
   return lines.join("\n");
 }
 
-export async function builder(pane, session, editAsText) {
-  CENTER = (await getUiConfig()).origin || CENTER;
-  const m = {
-    description: "built scenario", signed: true, pki: { initial: 8, refill_at: 2, batch: 8 },
-    client: { mode: "manual", interval: 20 }, zones: [{ name: "crossing", center: [...CENTER], radius_m: 40, min_vehicles: 1 }],
-    eavesdropper: { enabled: true, link_window: 15, link_by: ["position", "timing"] },
-    stations: [newStation("rsu", 1), newStation("vehicle", 1), newStation("vehicle", 2)],
+// The builder's model of a scenario (the parsed text, as /api/scenarios/parse returns it).
+export function fromScenario(sc, center) {
+  const table = (v) => (isTable(v) ? v : {});
+  const point = (p, fallback) => (Array.isArray(p) && p.length === 2 && p.every((x) => typeof x === "number") ? [p[0], p[1]] : [...fallback]);
+  const num = (v, fallback) => (typeof v === "number" ? v : fallback);
+  const defaults = table(sc.defaults), pki = table(sc.pki), control = table(sc.control), client = table(control.client);
+  const eav = table(sc.eavesdropper);
+  const security = typeof defaults.security === "string" ? defaults.security : "none";
+  const stations = (Array.isArray(sc.stations) ? sc.stations : []).filter(isTable).map((st, i) => {
+    const env = table(st.env), mob = table(st.mobility), pseudo = isTable(st.pseudonyms) ? st.pseudonyms : null;
+    const lat = parseFloat(env.VANETZA_LATITUDE), lon = parseFloat(env.VANETZA_LONGITUDE);
+    const hasPosition = Number.isFinite(lat) && Number.isFinite(lon);
+    const route = Array.isArray(mob.route) ? mob.route.map((p) => point(p, center)) : [];
+    return {
+      kind: st.station_type === 15 ? "rsu" : "vehicle", name: String(st.name ?? `station${i + 1}`),
+      station_type: st.station_type === 15 ? undefined : st.station_type,
+      extra: rest(st, ["name", "station_type", "env", "pseudonyms", "mobility"]),
+      envExtra: rest(env, ["VANETZA_LATITUDE", "VANETZA_LONGITUDE"]), hasPosition,
+      position: hasPosition ? [lat, lon] : [...center],
+      pseudonyms: !!pseudo, silent_min_ms: num(pseudo && pseudo.silent_min_ms, 0), silent_max_ms: num(pseudo && pseudo.silent_max_ms, 0),
+      pseudoExtra: rest(pseudo, ["silent_min_ms", "silent_max_ms"]),
+      mobility: "route" in mob ? "route" : ("crossing" in mob ? "crossing" : "none"),
+      route, speed_kmh: num(mob.speed_kmh, 50), loop: mob.loop === true, start_s: num(mob.start_s, 0),
+      crossing: point(mob.crossing, center), arm_m: num(mob.arm_m, 150),
+      start_arm: ["north", "east", "south", "west"].includes(mob.start_arm) ? mob.start_arm : "east",
+    };
+  });
+  return {
+    description: typeof sc.description === "string" ? sc.description : "",
+    extra: rest(sc, ["description", "defaults", "pki", "stations", "control", "eavesdropper"]),
+    signed: security !== "none", security: security !== "none" ? security : "certs-v3", defaultsExtra: rest(defaults, ["security"]),
+    hasPki: isTable(sc.pki) && pki.enabled !== false,
+    pki: { initial: num(pki.initial, 8), refill_at: num(pki.refill_at, 2), batch: num(pki.batch, 8) },
+    pkiExtra: rest(pki, ["initial", "refill_at", "batch", "enabled"]),
+    stations,
+    hasControl: isTable(sc.control), controlExtra: rest(control, ["client", "mix_zones"]),
+    client: { mode: typeof client.mode === "string" ? client.mode : "periodic", interval: num(client.interval, 30) },
+    clientExtra: rest(client, ["mode", "interval"]),
+    zones: (Array.isArray(control.mix_zones) ? control.mix_zones : []).filter(isTable).map((z, i) => ({
+      name: String(z.name ?? `zone${i}`), center: point(z.center, center), radius_m: num(z.radius_m, 40),
+      min_vehicles: num(z.min_vehicles, 1), extra: rest(z, ["name", "center", "radius_m", "min_vehicles"]) })),
+    eavesdropper: { enabled: isTable(sc.eavesdropper) && eav.enabled !== false, link_window: num(eav.link_window, 3),
+      link_by: Array.isArray(eav.link_by) ? eav.link_by.filter((k) => k === "position" || k === "timing") : ["position", "timing"] },
+    eavExtra: rest(eav, ["enabled", "link_window", "link_by"]),
   };
+}
+
+// Builds the forms and the map in `pane` for the parsed scenario `sc`. Returns the editor:
+// toml() is the scenario as text, changed() whether anything was edited, showErrors(errors)
+// marks the stations that validation complained about.
+export async function builder(pane, sc) {
+  CENTER = (await getUiConfig()).origin || CENTER;
+  const m = fromScenario(sc, CENTER);
+  const initial = toToml(m);
   let mode = null;   // what a map click sets: {what: "position"|"route"|"crossing"|"zone", target}
   const cards = h("div", {});
   const zonesBox = h("div", {});
@@ -181,40 +256,45 @@ export async function builder(pane, session, editAsText) {
   const general = h("div", { class: "panel" },
     h("div", { class: "row" },
       h("label", {}, "Description", txt(m, "description")),
-      h("label", { class: "inline" }, chk(m, "signed", renderCards), "signed messages (the run's own PKI)")),
+      h("label", { class: "inline" }, chk(m, "signed", () => { if (m.signed) m.hasPki = true; renderCards(); }), "signed messages (the run's own PKI)")),
     h("div", { class: "row" },
       h("label", {}, "certificates at start", num(m.pki, "initial", { min: 1, max: 256 })),
       h("label", {}, "refill at", num(m.pki, "refill_at", { min: 0, max: 255 })),
       h("label", {}, "batch", num(m.pki, "batch", { min: 1, max: 256 }))),
     h("div", { class: "row" },
-      h("label", {}, "Pseudonym change events", pick(m.client, "mode", ["manual", "periodic", "random"])),
+      h("label", {}, "Pseudonym change events", pick(m.client, "mode", ["manual", "periodic", "random", "once"])),
       h("label", {}, "every s (periodic)", num(m.client, "interval", { min: 1 }))),
     h("div", { class: "row" },
       h("label", { class: "inline" }, chk(m.eavesdropper, "enabled"), "eavesdropper"),
       h("label", {}, "link window s", num(m.eavesdropper, "link_window", { min: 0, step: 0.5 })),
-      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: true, onchange: (e) => toggleLink("position", e.target.checked) }), "position"),
-      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: true, onchange: (e) => toggleLink("timing", e.target.checked) }), "timing")));
+      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("position"), onchange: (e) => toggleLink("position", e.target.checked) }), "position"),
+      h("label", { class: "inline" }, h("input", { type: "checkbox", checked: m.eavesdropper.link_by.includes("timing"), onchange: (e) => toggleLink("timing", e.target.checked) }), "timing")));
   function toggleLink(kind, on) {
     m.eavesdropper.link_by = on ? [...new Set([...m.eavesdropper.link_by, kind])] : m.eavesdropper.link_by.filter((k) => k !== kind);
   }
-  let rsus = 1, cars = 2;
+  let rsus = m.stations.filter((s) => s.kind === "rsu").length, cars = m.stations.length - rsus;
+  const unused = (name) => !m.stations.some((s) => s.name === name);
+  function add(kind) {   // the next free rsuN / carN
+    let station;
+    do { station = newStation(kind, kind === "rsu" ? ++rsus : ++cars); } while (!unused(station.name));
+    m.stations.push(station);
+    renderCards();
+  }
   pane.append(h("div", { class: "grid2" },
     h("div", {},
       general,
       h("div", { class: "panel" }, h("h2", {}, "Stations"), cards,
         h("div", { class: "row" },
-          h("button", { type: "button", class: "secondary", onclick: () => { m.stations.push(newStation("rsu", ++rsus)); renderCards(); } }, "Add RSU"),
-          h("button", { type: "button", class: "secondary", onclick: () => { m.stations.push(newStation("vehicle", ++cars)); renderCards(); } }, "Add vehicle"))),
+          h("button", { type: "button", class: "secondary", onclick: () => add("rsu") }, "Add RSU"),
+          h("button", { type: "button", class: "secondary", onclick: () => add("vehicle") }, "Add vehicle"))),
       h("div", { class: "panel" }, h("h2", {}, "Mix zones"), zonesBox,
-        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40, min_vehicles: 1 }); renderZones(); draw(); } }, "Add mix zone"))),
+        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40, min_vehicles: 1, extra: {} }); renderZones(); draw(); } }, "Add mix zone"))),
     h("div", {},
       h("div", { class: "panel" }, modeLine, mapEl,
         h("p", { class: "legend muted" }, h("span", {}, h("i", { class: "dot rsu" }), "RSU"), h("span", {}, h("i", { class: "dot car" }), "vehicle"),
           h("span", {}, h("i", { class: "dot zone" }), "mix zone"))),
-      h("div", { class: "panel" },
-        h("div", { class: "row" }, h("button", { type: "button", class: "secondary", onclick: () => editAsText(toToml(m)) }, "Edit as text")),
-        errorsBox,
-        startControls(session, () => ({ scenario_text: toToml(m), overrides: [] }), showErrors)))));
+      errorsBox)));
   renderCards();
   setTimeout(() => map.invalidateSize(), 50);
+  return { toml: () => toToml(m), changed: () => toToml(m) !== initial, showErrors };
 }

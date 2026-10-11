@@ -1,4 +1,4 @@
-"""SQLite storage: users (with TOTP), sessions, API tokens, runs, shares, checks, audit log."""
+"""SQLite storage: users (with TOTP), sessions, API tokens, runs, shares, saved templates, checks, audit log."""
 
 import json
 import os
@@ -28,10 +28,14 @@ CREATE TABLE IF NOT EXISTS runs (
     scenario_file TEXT NOT NULL, overrides TEXT NOT NULL, state TEXT NOT NULL, instance INTEGER,
     lan TEXT, ctl TEXT, vnap_run_id TEXT, image TEXT, seed INTEGER, error TEXT,
     created_at REAL NOT NULL, started_at REAL, stopped_at REAL, deadline REAL, stop_reason TEXT,
-    start_status TEXT);
+    start_status TEXT, name TEXT, description TEXT);
 CREATE TABLE IF NOT EXISTS run_shares (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id),
     PRIMARY KEY (run_id, user_id));
+CREATE TABLE IF NOT EXISTS templates (
+    id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL,
+    text TEXT NOT NULL, shared INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+    UNIQUE (owner_id, name));
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     created_at REAL NOT NULL, verdict TEXT NOT NULL, result TEXT NOT NULL);
@@ -60,6 +64,8 @@ class Database:
         ("users", "totp_pending", "TEXT"),
         ("users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "totp_last_step", "INTEGER NOT NULL DEFAULT 0"),
+        ("runs", "name", "TEXT"),
+        ("runs", "description", "TEXT"),
     ]
 
     def _migrate(self):

@@ -24,7 +24,7 @@ export async function runsView(app, session) {
       const mine = r.owner === session.user.username || session.user.role === "admin";
       if (mine && ["queued", "starting", "running"].includes(r.state)) {
         actions.push(h("button", { class: "danger", type: "button", onclick: async () => {
-          try { await post(`/runs/${r.id}/stop`); notice(`stopping ${r.scenario}`); refresh(); } catch (e) { notice(e.message, "error"); }
+          try { await post(`/runs/${r.id}/stop`); notice(`stopping ${r.name}`); refresh(); } catch (e) { notice(e.message, "error"); }
         } }, "Stop"));
       }
       if (mine && ["stopped", "failed"].includes(r.state)) {
@@ -34,13 +34,13 @@ export async function runsView(app, session) {
         } }, "Delete"));
       }
       return [
-        h("a", { href: `#/run/${r.id}` }, r.scenario), badge(r.state), r.owner,
+        h("a", { href: `#/run/${r.id}` }, r.name), badge(r.state), r.owner,
         r.instance ?? "", time(r.started_at || r.created_at),
         r.state === "running" ? remaining(r.deadline) : (r.stop_reason || r.error || ""),
         h("div", { class: "row" }, actions),
       ];
     });
-    body.append(h("div", { class: "panel" }, table(["Scenario", "State", "Owner", "Instance", "Started", "Time left / reason", ""], rows)));
+    body.append(h("div", { class: "panel" }, table(["Run", "State", "Owner", "Instance", "Started", "Time left / reason", ""], rows)));
   }
 
   await refresh();

@@ -4,6 +4,7 @@ automatic stop at the time limit, and collection of results."""
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ from vnapsim.status import Simulation, build_status  # noqa: E402
 
 TEMPLATE_DIR = os.path.join(SCENARIO_DIR, "templates")
 ACTIVE = ("queued", "starting", "running", "stopping")
+MAX_SAVED_TEMPLATES = 100   # per user
 
 
 class RunError(Exception):
@@ -31,6 +33,52 @@ class RunError(Exception):
     def __init__(self, message, errors=None, status=400):
         super().__init__(message)
         self.errors, self.status = errors or [], status
+
+
+def parse_text(text):
+    """Scenario text as a dictionary; RunError with a field-level error when it is not TOML."""
+    if len(text) > 100_000:
+        raise RunError("scenario_text too long")
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        message = str(e)
+        if "Illegal character '\\n'" in message:   # a line break inside "..."
+            message += ': a string in "..." must stay on one line; write several lines as \"\"\"...\"\"\"'
+        raise RunError(f"scenario_text: {message}", [{"path": "", "message": message, "text": message}])
+
+
+def genericize(text):
+    """Scenario text with generic names: stations become rsu1.. (station type 15) and vehicle1..,
+    mix zones zone1.. The text keeps its comments and layout. Station names are also replaced
+    where [check] expectations start with them. Returns (text, {old name: new name})."""
+    data = parse_text(text)
+    stations, zones, rsus, vehicles = {}, {}, 0, 0
+    for st in data.get("stations") or []:
+        if isinstance(st, dict) and isinstance(st.get("name"), str) and st["name"] not in stations:
+            if st.get("station_type") == 15:
+                rsus += 1
+                stations[st["name"]] = f"rsu{rsus}"
+            else:
+                vehicles += 1
+                stations[st["name"]] = f"vehicle{vehicles}"
+    control = data.get("control") if isinstance(data.get("control"), dict) else {}
+    for i, zone in enumerate(control.get("mix_zones") or [], 1):
+        if isinstance(zone, dict) and isinstance(zone.get("name"), str):
+            zones.setdefault(zone["name"], f"zone{i}")
+    names = zones | stations
+    if not names:
+        return text, {}
+    # all names in one pass: a new name may be another station's old name
+    out = re.sub(r"""(\bname\s*=\s*)(["'])(%s)\2""" % "|".join(map(re.escape, sorted(names, key=len, reverse=True))),
+                 lambda m: f"{m.group(1)}{m.group(2)}{names[m.group(3)]}{m.group(2)}", text)
+    if stations:
+        prefix = re.compile(r"(?<![\w.-])(%s)(?=\.)" % "|".join(map(re.escape, sorted(stations, key=len, reverse=True))))
+        out = re.sub(r"\bexpect\s*=\s*\[.*?\]", lambda m: prefix.sub(lambda n: stations[n.group(1)], m.group(0)), out, flags=re.S)
+    after = parse_text(out)
+    if [s.get("name") for s in after.get("stations") or []] != [stations.get(s.get("name"), s.get("name")) for s in data.get("stations") or []]:
+        raise RunError("cannot replace the names in this text: write each station as name = \"...\"")
+    return out, names
 
 
 def policy_role(user):
@@ -81,12 +129,7 @@ class RunManager:
         if len(given) != 1:
             raise RunError("give exactly one of scenario, template, scenario_text")
         if text is not None:
-            if len(text) > 100_000:
-                raise RunError("scenario_text too long")
-            try:
-                tomllib.loads(text)
-            except tomllib.TOMLDecodeError as e:
-                raise RunError(f"scenario_text: {e}", [{"path": "", "message": str(e), "text": str(e)}])
+            parse_text(text)
             path = os.path.join(self.scenario_dir, f"{run_id or 'check-' + secrets.token_hex(6)}.toml")
             with open(path, "w") as f:
                 f.write(text)
@@ -106,6 +149,54 @@ class RunManager:
         except ScenarioError as e:
             raise RunError(str(e), status=404)
 
+    def saved_templates(self, user):
+        """Templates saved by users: one's own and the shared ones; admins see all."""
+        return self.db.query(
+            "SELECT t.id, t.name, u.username AS owner, t.shared, t.updated_at FROM templates t JOIN users u ON u.id = t.owner_id "
+            "WHERE t.owner_id = ? OR t.shared OR ? ORDER BY t.name, u.username", (user["id"], user["role"] == "admin"))
+
+    def saved_template(self, user, template_id, write=False):
+        row = self.db.one("SELECT t.*, u.username AS owner FROM templates t JOIN users u ON u.id = t.owner_id WHERE t.id = ?",
+                          (template_id,))
+        mine = row and (row["owner_id"] == user["id"] or user["role"] == "admin")
+        if not row or not (mine or (row["shared"] and not write)):
+            raise RunError("no such template" if not row or not row["shared"] else "only the owner can do this",
+                           status=404 if not row or not row["shared"] else 403)
+        return row
+
+    def save_template(self, user, name, text, shared=False, make_generic=False, replace=False):
+        """Save scenario text as a template of this user. It must be valid for the user, so that it can
+        be started as it is. Returns (template, {old name: new name})."""
+        if user["role"] == "viewer":
+            raise RunError("viewers cannot save templates", status=403)
+        if not 1 <= len(name) <= 64 or not name.replace("-", "").replace("_", "").isalnum():
+            raise RunError("template names are 1 to 64 letters, digits, '-' and '_'")
+        renamed = {}
+        if make_generic:
+            text, renamed = genericize(text)
+        path = self.scenario_path(user, text=text)
+        try:
+            self.validate(user, path, [])
+        finally:
+            os.remove(path)
+        now = time.time()
+        old = self.db.one("SELECT id FROM templates WHERE owner_id = ? AND name = ?", (user["id"], name))
+        if old and not replace:
+            raise RunError(f"you already have a template {name}", status=409)
+        if old:
+            self.db.execute("UPDATE templates SET text = ?, shared = ?, updated_at = ? WHERE id = ?", (text, int(shared), now, old["id"]))
+            template_id = old["id"]
+        else:
+            if self.db.one("SELECT COUNT(*) AS n FROM templates WHERE owner_id = ?", (user["id"],))["n"] >= MAX_SAVED_TEMPLATES:
+                raise RunError(f"limit reached: {MAX_SAVED_TEMPLATES} saved templates; delete old ones first", status=429)
+            template_id = self.db.execute("INSERT INTO templates (owner_id, name, text, shared, created_at, updated_at) "
+                                          "VALUES (?, ?, ?, ?, ?, ?)", (user["id"], name, text, int(shared), now, now))
+        return self.saved_template(user, template_id), renamed
+
+    def delete_template(self, user, template_id):
+        self.saved_template(user, template_id, write=True)
+        self.db.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+
     def validate(self, user, path, overrides):
         try:
             return load_scenario(path, overrides, 0, policy_role(user), self.policy)
@@ -113,7 +204,7 @@ class RunManager:
             raise RunError("invalid scenario", e.errors or [{"path": "", "message": str(e), "text": str(e)}])
 
     # ------------------------------------------------------------ runs
-    def create(self, user, scenario=None, template=None, scenario_text=None, overrides=(), duration_minutes=None):
+    def create(self, user, scenario=None, template=None, scenario_text=None, overrides=(), duration_minutes=None, name=None):
         if user["role"] == "viewer":
             raise RunError("viewers cannot start runs", status=403)
         limits = self.cfg["limits"]["admin" if user["role"] == "admin" else "user"]
@@ -131,12 +222,16 @@ class RunManager:
         overrides = list(overrides or [])
         if len(overrides) > 50 or any(not isinstance(o, str) or len(o) > 500 for o in overrides):
             raise RunError("at most 50 overrides of at most 500 characters")
+        name = " ".join((name or "").split())
+        if len(name) > 100:
+            raise RunError("name: at most 100 characters")
         run_id = secrets.token_hex(6)
         path = self.scenario_path(user, scenario, template, scenario_text, run_id)
         sc = self.validate(user, path, overrides)
-        self.db.execute("INSERT INTO runs (id, owner_id, scenario, scenario_file, overrides, state, created_at, deadline) "
-                        "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
-                        (run_id, user["id"], sc["name"], path, json.dumps(overrides), time.time(), minutes * 60))
+        self.db.execute("INSERT INTO runs (id, owner_id, scenario, scenario_file, overrides, state, created_at, deadline, "
+                        "name, description) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                        (run_id, user["id"], sc["name"], path, json.dumps(overrides), time.time(), minutes * 60,
+                         name or sc["name"], sc["description"]))
         self.jobs.put(("start", run_id))
         return self.get(run_id)
 
@@ -145,6 +240,7 @@ class RunManager:
                           "WHERE r.id = ?", (run_id,))
         if run:
             run["overrides"] = json.loads(run["overrides"])
+            run["name"] = run["name"] or run["scenario"]   # runs from before names: the scenario's
             run["start_status"] = json.loads(run["start_status"]) if run["start_status"] else None
             run["shared_with"] = [r["username"] for r in self.db.query(
                 "SELECT u.username FROM run_shares s JOIN users u ON u.id = s.user_id WHERE s.run_id = ?", (run_id,))]
@@ -157,6 +253,28 @@ class RunManager:
             ids = self.db.query("SELECT id FROM runs WHERE owner_id = ? OR id IN (SELECT run_id FROM run_shares WHERE user_id = ?) "
                                 "ORDER BY created_at DESC", (user["id"], user["id"]))
         return [self.get(r["id"]) for r in ids]
+
+    def rename(self, run_id, name=None, description=None):
+        """Change the run's name and description (None: keep). An empty name gives the scenario's name again."""
+        if name is not None:
+            name = " ".join(name.split())
+            if len(name) > 100:
+                raise RunError("name: at most 100 characters")
+            self.db.execute("UPDATE runs SET name = ? WHERE id = ?", (name or None, run_id))
+        if description is not None:
+            description = description.strip()
+            if len(description) > 2000:
+                raise RunError("description: at most 2000 characters")
+            self.db.execute("UPDATE runs SET description = ? WHERE id = ?", (description, run_id))
+        run = self.get(run_id)
+        record = os.path.join(self.results_dir, run_id, "run.json")
+        if os.path.isfile(record):   # results already collected: keep their record current
+            with open(record) as f:
+                data = json.load(f)
+            data.update(name=run["name"], description=run["description"])
+            with open(record, "w") as f:
+                json.dump(data, f, indent=1)
+        return run
 
     def stop(self, run_id, reason):
         run = self.get(run_id)
@@ -285,7 +403,7 @@ class RunManager:
             with open(os.path.join(out, "score.json"), "w") as f:
                 json.dump(score, f, indent=1)
         shutil.copy(run["scenario_file"], os.path.join(out, "scenario.toml"))
-        record = {k: run[k] for k in ("id", "owner", "scenario", "overrides", "instance", "vnap_run_id", "image",
+        record = {k: run[k] for k in ("id", "owner", "name", "description", "scenario", "overrides", "instance", "vnap_run_id", "image",
                                       "seed", "created_at", "started_at")}
         if sim.pki:   # the C-ITS-PKI version that issued the run's certificates
             record["cits_pki"] = (sim.pki["Config"].get("Labels") or {}).get("vnap.cits_pki")

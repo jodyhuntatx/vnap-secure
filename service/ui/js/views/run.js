@@ -1,5 +1,5 @@
 // One run: overview, live map, event stream, pseudonym control and results.
-import { get, post } from "../api.js";
+import { get, patch, post } from "../api.js";
 import { badge, clear, every, h, notice, onLeave, remaining, table, time } from "../dom.js";
 import { crossingLayer, makeMap, stationColor, zoneColor } from "./mapview.js";
 
@@ -13,13 +13,13 @@ export async function runView(app, session, runId) {
   const pane = h("div", {});
   app.append(title, tabs, pane);
   let stopTab = () => {};
-  let description = null;   // from the scenario, fetched once by the overview
+  let description = null;   // the scenario's, fetched once by the overview: shown for runs without their own
   const running = () => run.state === "running";
   const needsRunning = () => h("p", { class: "panel muted" }, `This needs a running run (the run is ${run.state}).`);
 
   function setTitle() {
     clear(title);
-    title.append(`${run.scenario} `, badge(run.state), h("span", { class: "muted" }, `  run ${run.id}`));
+    title.append(`${run.name} `, badge(run.state), h("span", { class: "muted" }, `  run ${run.id}`));
   }
   function select(name) {
     stopTab();
@@ -44,7 +44,29 @@ export async function runView(app, session, runId) {
     if (description === null) {
       try { description = (await get(`/runs/${runId}/layout`)).description || ""; } catch (e) { description = ""; }
     }
+    let editing = false;      // the edit form is open: no refresh, it would discard what was typed
+    const shown = () => run.description ?? description;
+    function editForm() {
+      const name = h("input", { value: run.name, maxlength: 100, size: 40 });
+      const text = h("textarea", { class: "prose", rows: 4, maxlength: 2000 });
+      text.value = shown();
+      const close = () => { editing = false; render(); };
+      return h("form", { class: "edit", onsubmit: async (ev) => {
+        ev.preventDefault();
+        try {
+          run = { ...run, ...await patch(`/runs/${runId}`, { name: name.value, description: text.value }) };
+          setTitle();
+          notice("saved");
+          close();
+        } catch (e) { notice(e.message, "error"); }
+      } },
+        h("label", {}, "Name", name),
+        h("label", {}, "Description", text),
+        h("div", { class: "row" }, h("button", { type: "submit" }, "Save"),
+          h("button", { type: "button", class: "secondary", onclick: close }, "Cancel")));
+    }
     async function render() {
+      if (editing) return;
       clear(box);
       const actions = [];
       if (canWrite && ["queued", "starting", "running"].includes(run.state)) {
@@ -53,9 +75,12 @@ export async function runView(app, session, runId) {
         } }, "Stop run"));
       }
       box.append(h("div", { class: "panel" },
-        description ? h("p", { class: "description" }, description) : null,
-        table(["Owner", "Instance", "Started", "Time left", "Image", "Seed", "Shared with"], [[
-          run.owner, run.instance ?? "", time(run.started_at), running() ? remaining(run.deadline) : (run.stop_reason || ""),
+        shown() ? h("p", { class: "description" }, shown()) : null,
+        canWrite ? h("p", {}, h("button", { type: "button", class: "secondary", title: "Change this run's name and description",
+          onclick: () => { clear(box); box.append(h("div", { class: "panel" }, editForm())); editing = true; } },
+          "Edit name and description")) : null,
+        table(["Scenario", "Owner", "Instance", "Started", "Time left", "Image", "Seed", "Shared with"], [[
+          run.scenario, run.owner, run.instance ?? "", time(run.started_at), running() ? remaining(run.deadline) : (run.stop_reason || ""),
           run.image || "", run.seed ?? "", (run.shared_with || []).join(", ")]]),
         run.overrides.length ? h("p", {}, "Overrides: ", run.overrides.map((o) => h("code", {}, o))) : null,
         run.error ? h("p", { class: "errors" }, run.error) : null,

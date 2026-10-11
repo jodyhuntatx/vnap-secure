@@ -22,7 +22,7 @@ from . import backup as backups
 from .config import load_config
 from .control import ControlError, publish, read_retained, request as mqtt_request
 from .db import Database
-from .runs import RunError, RunManager
+from .runs import RunError, RunManager, parse_text
 from .security import CSRF_HEADER, ROLES, SESSION_COOKIE, TOKEN_PREFIX, TOTP_REQUIRED, Accounts, check_password_policy
 
 from vnapsim.check import compute_metrics, default_expectations, evaluate  # noqa: E402  (path set by .runs)
@@ -125,7 +125,7 @@ def create_app(cfg=None, start_workers=True):
         return run
 
     def public_run(run):
-        return {k: run[k] for k in ("id", "owner", "scenario", "overrides", "state", "instance", "vnap_run_id", "image",
+        return {k: run[k] for k in ("id", "owner", "name", "description", "scenario", "overrides", "state", "instance", "vnap_run_id", "image",
                                     "seed", "error", "created_at", "started_at", "stopped_at", "stop_reason", "shared_with")} | \
             {"deadline": run["deadline"] if run["state"] in ("running", "stopping", "stopped") else None}
 
@@ -334,9 +334,44 @@ def create_app(cfg=None, start_workers=True):
         return {"ok": True}
 
     # ------------------------------------------------------------ scenarios
+    def public_template(t, text=False):
+        return {k: t[k] for k in ("id", "name", "owner", "updated_at") + (("text",) if text else ())} | {"shared": bool(t["shared"])}
+
     @app.get("/api/scenarios")
     def scenarios(user=Depends(principal)):
-        return runs.catalogue(user)
+        return runs.catalogue(user) | {"saved": [public_template(t) for t in runs.saved_templates(user)]}
+
+    class ScenarioText(BaseModel):
+        scenario_text: str
+
+    @app.post("/api/scenarios/parse")
+    def parse_scenario(body: ScenarioText, user=Depends(principal)):
+        """The scenario text as JSON (for the web UI's builder). Not validated beyond its TOML syntax."""
+        return {"scenario": json.loads(json.dumps(parse_text(body.scenario_text), default=str))}
+
+    class NewTemplate(ScenarioText):
+        name: str = Field(max_length=64)
+        shared: bool = False
+        genericize: bool = False
+        replace: bool = False
+
+    @app.post("/api/templates", status_code=201)
+    def save_template(body: NewTemplate, request: Request, user=Depends(principal)):
+        """Save scenario text as a template of one's own (`shared`: every user may read it). `genericize`
+        gives stations and mix zones generic names; `replace` overwrites one's template of the same name."""
+        template, renamed = runs.save_template(user, body.name, body.scenario_text, body.shared, body.genericize, body.replace)
+        audit(user, "template.saved", request, str(template["id"]), {"name": body.name, "shared": body.shared})
+        return public_template(template, text=True) | {"renamed": renamed}
+
+    @app.get("/api/templates/{template_id}")
+    def saved_template(template_id: int, user=Depends(principal)):
+        return public_template(runs.saved_template(user, template_id), text=True)
+
+    @app.delete("/api/templates/{template_id}")
+    def delete_template(template_id: int, request: Request, user=Depends(principal)):
+        runs.delete_template(user, template_id)
+        audit(user, "template.deleted", request, str(template_id))
+        return {"ok": True}
 
     @app.get("/api/scenarios/{kind}/{name}")
     def scenario_text(kind: str, name: str, user=Depends(principal)):
@@ -373,6 +408,7 @@ def create_app(cfg=None, start_workers=True):
     # ------------------------------------------------------------ runs
     class NewRun(ScenarioRef):
         duration_minutes: Optional[int] = None
+        name: Optional[str] = Field(default=None, max_length=200)   # the run's name (default: the scenario's)
 
     @app.get("/api/runs")
     def list_runs(user=Depends(principal)):
@@ -380,7 +416,7 @@ def create_app(cfg=None, start_workers=True):
 
     @app.post("/api/runs", status_code=202)
     def create_run(body: NewRun, request: Request, user=Depends(principal)):
-        run = runs.create(user, body.scenario, body.template, body.scenario_text, body.overrides, body.duration_minutes)
+        run = runs.create(user, body.scenario, body.template, body.scenario_text, body.overrides, body.duration_minutes, body.name)
         audit(user, "run.created", request, run["id"], {"scenario": run["scenario"], "overrides": body.overrides})
         return public_run(run)
 
@@ -391,6 +427,18 @@ def create_app(cfg=None, start_workers=True):
         if run["state"] == "running":
             out["status"] = build_status(runs.simulation(run))
         return out
+
+    class RunChange(BaseModel):
+        name: Optional[str] = Field(default=None, max_length=200)
+        description: Optional[str] = Field(default=None, max_length=4000)
+
+    @app.patch("/api/runs/{run_id}")
+    def change_run(run_id: str, body: RunChange, request: Request, user=Depends(principal)):
+        """Change the run's name and description, in any state. An empty name gives the scenario's name again."""
+        run_for(user, run_id, write=True)
+        run = runs.rename(run_id, body.name, body.description)
+        audit(user, "run.changed", request, run_id, body.model_dump(exclude_none=True))
+        return public_run(run)
 
     @app.post("/api/runs/{run_id}/stop", status_code=202)
     def stop_run(run_id: str, request: Request, user=Depends(principal)):

@@ -9,19 +9,34 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
 
 - **Runs:** every visible run with its state and time left; stop and delete.
 - **New run:**
-  - *From a template*: pick a template, see its text, add overrides.
-  - *Scenario text*: edit TOML directly ([scenario format](../reference/scenario-format.md)).
-  - *Builder*: RSUs and vehicles, pseudonyms and silent periods, routes or random-turn
-    crossings, mix zones, the run's PKI (certificates at start, refill) and the eavesdropper.
-    Positions, routes, crossings and zones are set by clicking the map. *Edit as text* turns
-    the result into TOML.
+  1. *Start from the template*: pick a template (or the blank scenario). Its text becomes the
+     new scenario. The list has the service's templates, the saved templates and, for admins,
+     the catalogue. Picking another one replaces the scenario, after a question if it was
+     edited.
+  2. Edit the scenario in either tab; both edit the same scenario:
+     - *Scenario text*: TOML ([scenario format](../reference/scenario-format.md)).
+     - *Builder*: RSUs and vehicles, pseudonyms and silent periods, routes or random-turn
+       crossings, mix zones, the run's PKI (certificates at start, refill) and the
+       eavesdropper. Positions, routes, crossings and zones are set by clicking the map.
+  3. Add overrides, validate, start. The scenario is checked against the user policy. Field
+     errors are listed, and in the builder the station concerned is highlighted.
 
-  All three validate against the user policy before starting. Field errors are listed, and
-  in the builder the station concerned is highlighted.
+  - **Text and builder:** the builder reads the text when its tab opens, and keeps every key
+    its forms do not show (e.g. `[check]`, `validity_hours`). It writes the text again only
+    when something was changed in it; the text's comments are then lost, and defaults the
+    forms show are written out (e.g. a station's position).
+  - **Save as a template:** saves the scenario as it is, under a name (letters, digits, `-`,
+    `_`); it must be valid. A saved template is its owner's; "shared with all users" lets
+    every user start from it. Only the owner or an admin replaces or deletes it.
+  - **Generic names:** when saving, renames the stations `rsu1`, `rsu2`, … (station type 15)
+    and `vehicle1`, `vehicle2`, …, and the mix zones `zone1`, `zone2`, …, also where `[check]`
+    expectations start with a station's name. Comments keep the old names.
 - **Run:**
-  - *Overview*: the scenario's description, owner, instance, time left, image and seed. Per
-    station: state, pseudonym, refill and certificate checks. Also the run PKI's issue times,
-    the eavesdropper's tracks and warnings. Stop and share are here.
+  - *Overview*: the run's name and description, scenario, owner, instance, time left, image
+    and seed. Per station: state, pseudonym, refill and certificate checks. Also the run PKI's
+    issue times, the eavesdropper's tracks and warnings. Stop and share are here.
+    "Edit name and description" changes both, in any state of the run (owner or admin). They
+    start as the scenario's; an empty name gives the scenario's name again.
   - *Map*: start positions, routes, crossings and mix zones, with live positions every 2 s.
     Pick a station, then click the map to move it.
   - *Events*: the live event stream, filtered by kind (pseudonym, ID change, refill,

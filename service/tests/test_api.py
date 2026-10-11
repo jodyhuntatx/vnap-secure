@@ -2,6 +2,7 @@
 dependencies of requirements.txt on PYTHONPATH). Docker-facing functions are replaced by fakes;
 scenario loading and validation are real."""
 import os
+import re
 import sys
 import shutil
 import tempfile
@@ -361,6 +362,81 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(root.patch("/api/users/alice", json={"reset_totp": True}).status_code, 200)
         self.assertEqual(alice.get("/api/auth/me").status_code, 401)                  # sessions ended
         self.assertEqual(self.client("alice").get("/api/auth/totp").json()["enabled"], False)
+
+    def test_run_name_and_description_can_be_changed(self):
+        alice, bob, vera = self.client("alice"), self.client("bob"), self.client("vera")
+        run = alice.post("/api/runs", json={"template": "mixzone-random"}).json()
+        self.assertEqual(run["name"], run["scenario"])
+        self.assertIn("random-turn intersection mix zone", run["description"])
+        url = f"/api/runs/{run['id']}"
+        r = alice.patch(url, json={"name": "  Friday   demo ", "description": "four cars\nthreshold 3\n"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["name"], r.json()["description"]), ("Friday demo", "four cars\nthreshold 3"))
+        self.assertEqual(alice.patch(url, json={"description": ""}).json()["description"], "")       # name kept
+        listed = alice.get("/api/runs").json()[0]
+        self.assertEqual((listed["name"], listed["scenario"]), ("Friday demo", run["scenario"]))
+        self.assertEqual(alice.patch(url, json={"name": ""}).json()["name"], run["scenario"])       # back to the scenario's
+        self.assertEqual(alice.patch(url, json={"name": "x" * 101}).status_code, 400)
+        self.assertEqual(alice.patch(url, json={"description": "x" * 2001}).status_code, 400)
+        alice.post(url + "/share", json={"username": "vera"})
+        self.assertEqual(vera.patch(url, json={"name": "mine"}).status_code, 403)                   # shared: read only
+        self.assertEqual(bob.patch(url, json={"name": "mine"}).status_code, 403)
+        self.assertEqual(self.client("root").patch(url, json={"name": "by admin"}).json()["name"], "by admin")
+
+    def test_line_break_in_a_string_is_explained(self):
+        alice = self.client("alice")
+        r = alice.post("/api/scenarios/validate", json={"scenario_text": 'description = "two\nlines"\n'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('write several lines as """..."""', r.text.replace('\\"', '"'))
+        text = alice.get("/api/scenarios/templates/pki-refill").json()["text"]
+        text = re.sub(r'(?m)^description = "[^"\n]*"$', 'description = """two\nlines"""', text, count=1)
+        self.assertIn('"""two', text)
+        r = alice.post("/api/scenarios/validate", json={"scenario_text": text})
+        self.assertTrue(r.json()["valid"], r.text)
+
+    def test_saved_templates(self):
+        alice, bob, vera, root = (self.client(u) for u in ("alice", "bob", "vera", "root"))
+        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
+        r = alice.post("/api/templates", json={"name": "my zone", "scenario_text": text})
+        self.assertEqual(r.status_code, 400)                                           # name: no spaces
+        r = alice.post("/api/templates", json={"name": "my-zone", "scenario_text": text})
+        self.assertEqual(r.status_code, 201, r.text)
+        saved = r.json()
+        self.assertEqual((saved["name"], saved["owner"], saved["shared"], saved["text"]), ("my-zone", "alice", False, text))
+        self.assertEqual([t["name"] for t in alice.get("/api/scenarios").json()["saved"]], ["my-zone"])
+        self.assertEqual(bob.get("/api/scenarios").json()["saved"], [])                # private
+        self.assertEqual(bob.get(f"/api/templates/{saved['id']}").status_code, 404)
+        self.assertEqual(len(root.get("/api/scenarios").json()["saved"]), 1)           # admins see all
+        self.assertEqual(alice.post("/api/templates", json={"name": "my-zone", "scenario_text": text}).status_code, 409)
+        r = alice.post("/api/templates", json={"name": "my-zone", "scenario_text": text, "shared": True, "replace": True})
+        self.assertEqual((r.status_code, r.json()["id"], r.json()["shared"]), (201, saved["id"], True))
+        self.assertEqual(bob.get(f"/api/templates/{saved['id']}").json()["text"], text)
+        self.assertEqual(bob.delete(f"/api/templates/{saved['id']}").status_code, 403)
+        self.assertEqual(vera.post("/api/templates", json={"name": "v", "scenario_text": text}).status_code, 403)
+        r = alice.post("/api/templates", json={"name": "bad", "scenario_text": 'image = "evil:latest"\n[[stations]]\nname = "a"\n'})
+        self.assertEqual(r.status_code, 400)                                           # must be valid for the user
+        run = bob.post("/api/runs", json={"scenario_text": text, "name": "from my-zone"}).json()
+        self.assertEqual(run["name"], "from my-zone")
+        self.assertEqual(alice.delete(f"/api/templates/{saved['id']}").status_code, 200)
+        self.assertEqual(alice.get("/api/scenarios").json()["saved"], [])
+
+    def test_genericized_template(self):
+        alice = self.client("alice")
+        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
+        text = text.replace('name = "obu2"', "name = 'vehicle1'").replace(
+            'expect = ["eavesdropper.decode_errors==0"', 'expect = ["obu1.pki.starved==0", "rsu.cam.rx>=1", "eavesdropper.decode_errors==0"')
+        r = alice.post("/api/templates", json={"name": "generic", "scenario_text": text, "genericize": True})
+        self.assertEqual(r.status_code, 201, r.text)
+        out = r.json()
+        self.assertEqual(out["renamed"], {"rsu": "rsu1", "obu1": "vehicle1", "vehicle1": "vehicle2", "obu3": "vehicle3",
+                                          "obu4": "vehicle4", "crossing": "zone1"})
+        sc = alice.post("/api/scenarios/parse", json={"scenario_text": out["text"]}).json()["scenario"]
+        self.assertEqual([s["name"] for s in sc["stations"]], ["rsu1", "vehicle1", "vehicle2", "vehicle3", "vehicle4"])
+        self.assertEqual(sc["control"]["mix_zones"][0]["name"], "zone1")
+        self.assertEqual(sc["stations"][1]["mobility"]["crossing"], [40.208106, -8.4197756])   # the key "crossing" stays
+        self.assertEqual(sc["check"]["expect"][:3], ["vehicle1.pki.starved==0", "rsu1.cam.rx>=1", "eavesdropper.decode_errors==0"])
+        self.assertIn("# Layout: crossing at", out["text"])                            # comments are kept
+        self.assertEqual(alice.post("/api/scenarios/parse", json={"scenario_text": "a = [1"}).status_code, 400)
 
     def test_database_migration_adds_totp_columns(self):
         import sqlite3
