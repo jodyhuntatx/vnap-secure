@@ -502,7 +502,8 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
 
 
 def check_mix_zones(raw, stations, errors):
-    """Validate [[control.mix_zones]]: pseudonym change events when a vehicle enters a zone."""
+    """Validate [[control.mix_zones]]: pseudonym change events when a vehicle enters a zone
+    (with min_vehicles: once that many watched vehicles are inside)."""
     if not isinstance(raw, list):
         errors.append("control.mix_zones must be an array of tables ([[control.mix_zones]])")
         return []
@@ -514,7 +515,7 @@ def check_mix_zones(raw, stations, errors):
         if not isinstance(z, dict):
             errors.append(f"{where}: must be a table")
             continue
-        unknown = set(z) - {"name", "center", "radius_m", "stations"}
+        unknown = set(z) - {"name", "center", "radius_m", "stations", "min_vehicles"}
         if unknown:
             errors.append(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
         center = z.get("center")
@@ -531,8 +532,13 @@ def check_mix_zones(raw, stations, errors):
             errors.append(f"{where}: station(s) {bad} need both mobility and pseudonyms")
         if not ids:
             errors.append(f"{where}: no station with mobility and pseudonyms to watch")
+        minimum = z.get("min_vehicles", 1)
+        if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+            errors.append(f"{where}: min_vehicles must be an integer >= 1")
+        elif ids and not bad and minimum > len(ids):
+            errors.append(f"{where}: min_vehicles {minimum} is more than the {len(ids)} station(s) the zone watches")
         zones.append({"name": str(z.get("name", f"zone{i}")), "center": [float(c) for c in center],
-                      "radius_m": radius, "stations": list(ids)})
+                      "radius_m": radius, "stations": list(ids), "min_vehicles": minimum})
     return zones
 
 

@@ -220,7 +220,7 @@ def build_status(sim):
                                                  "random_turns": "crossing" in v}
                                                 for v in vehicles],
                                    "seed": mcfg.get("seed"),
-                                   "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations")}
+                                   "mix_zones": [{k: z.get(k) for k in ("name", "center", "radius_m", "stations", "min_vehicles")}
                                                  for z in mcfg.get("mix_zones", [])]}
         if sim.pki:
             pe = pki_log_events(Simulation.name(sim.pki))
@@ -356,7 +356,8 @@ def print_status(s):
                 for v in mo["vehicles"]) + (f" (seed {mo['seed']})" if any(v.get("random_turns") for v in mo["vehicles"]) else ""))
             for z in mo.get("mix_zones", []):
                 print(f"  mix zone {z['name']}: {z['center'][0]:.6f} {z['center'][1]:.6f} radius {z['radius_m']} m, "
-                      f"pseudonym change on entry for stations {z['stations']}")
+                      f"pseudonym change on entry for stations {z['stations']}"
+                      + (f", once {z['min_vehicles']} vehicles are inside" if (z.get("min_vehicles") or 1) > 1 else ""))
     for o in s.get("observers", []):
         print()
         if "tracks" in o:

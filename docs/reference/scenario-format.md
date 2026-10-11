@@ -89,6 +89,7 @@ name = "crossing"
 center = [40.208106, -8.4197756]  # [lat, lon]
 radius_m = 40                     # pseudonym change event when a vehicle enters this circle
 stations = [2, 3]                 # default: every station with mobility and pseudonyms
+min_vehicles = 2                  # optional (default 1): change only once this many of them are inside
 
 [control.client]
 mode = "periodic"                 # periodic | random | once | manual

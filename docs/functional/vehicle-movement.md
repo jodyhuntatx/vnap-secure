@@ -49,6 +49,21 @@ pseudonym change event to a vehicle each time it enters the zone, instead of on 
 `control.client.mode = "manual"` for that. The events carry the reason `mix-zone <name>`
 and show up in `vnapctl events`.
 
+**Threshold.** `min_vehicles = n` makes the change conditional on company in the zone
+(example: `c-its-pki-mixzone-min3`):
+
+- A vehicle that enters waits while fewer than `n` vehicles are inside.
+- When the `n`-th vehicle is inside, every waiting vehicle gets its change event in the same
+  position update, so they change together.
+- While `n` or more stay inside, a later arrival changes on entry.
+- A vehicle that leaves before the threshold is reached keeps its pseudonym; the mobility
+  client logs `left mix zone <name> without a change`.
+
+Only the stations the zone watches count (`stations`, by default every station with mobility
+and pseudonyms), so an RSU at the crossing does not. A vehicle changes at most once per visit,
+and one that starts inside the zone counts but does not change. The default `min_vehicles = 1`
+changes every vehicle on entry.
+
 ## Origin
 
 Stations without a position, and the example layouts, are placed around the crossing of Rua

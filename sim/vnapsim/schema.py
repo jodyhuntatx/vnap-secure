@@ -136,7 +136,9 @@ SCENARIO_SCHEMA = {
                         "mix_zones": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["center"],
                                       "properties": {"name": _str("zone name"), "center": LATLON,
                                                      "radius_m": _num("radius", 0, None, 40),
-                                                     "stations": {"type": "array", "items": {"type": "integer"}}}}}}},
+                                                     "stations": {"type": "array", "items": {"type": "integer"}},
+                                                     "min_vehicles": {"type": "integer", "minimum": 1, "default": 1,
+                                                                      "description": "change only once this many watched vehicles are inside"}}}}}},
         "eavesdropper": {"type": "object", "additionalProperties": False, "description": "passive tracking attacker",
                          "properties": {
                              "enabled": {"type": "boolean", "default": True}, "name": _str("container name", "eavesdropper"),

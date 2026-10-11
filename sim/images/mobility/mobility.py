@@ -26,6 +26,10 @@ Mix zones (optional): "mix_zones": [{"name": "x", "center": [lat, lon], "radius_
 "stations": [2, 3]}] sends a pseudonym change event to a vehicle each time it enters a zone
 (topic <pseudonym_topic>/<station_id>/change, default vnap/pseudonym), so ID changes happen
 where vehicles can be confused with each other. Without "stations", every vehicle is watched.
+"min_vehicles": n (default 1) makes the change conditional on company: a vehicle that entered
+changes only once at least n watched vehicles are inside the zone. Those waiting then change
+together, and later arrivals change on entry while n or more are inside. A vehicle that leaves
+before that keeps its pseudonym.
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 """
 import json
@@ -113,14 +117,30 @@ class MixZone:
         self.stations = set(int(s) for s in raw.get("stations", ids))
         if not self.stations <= ids:
             raise ValueError(f"mix zone {self.name}: stations {sorted(self.stations - ids)} have no route")
+        self.min_vehicles = int(raw.get("min_vehicles", 1))
+        if not 1 <= self.min_vehicles <= len(self.stations):
+            raise ValueError(f"mix zone {self.name}: min_vehicles must be 1..{len(self.stations)} (the watched stations)")
         self.inside = {}  # station id -> inside at the last tick (None: not evaluated yet)
+        self.waiting = set()  # entered and not changed yet in this visit
 
-    def entered(self, station_id, position):
-        """True when the vehicle has just entered the zone (not when it starts inside)."""
-        inside = distance(position, self.center) <= self.radius
-        was = self.inside.get(station_id)
-        self.inside[station_id] = inside
-        return inside and was is False
+    def update(self, positions):
+        """One tick, with every vehicle's position (station id -> (lat, lon)). Returns (stations
+        to send a change event now, watched vehicles inside, stations that left unchanged).
+        A vehicle waits from its entry (not when it starts inside) until min_vehicles are inside."""
+        left = []
+        for station_id in sorted(self.stations):
+            inside = distance(positions[station_id], self.center) <= self.radius
+            was = self.inside.get(station_id)
+            self.inside[station_id] = inside
+            if inside and was is False:
+                self.waiting.add(station_id)
+            elif not inside and station_id in self.waiting:
+                self.waiting.discard(station_id)
+                left.append(station_id)
+        count = sum(self.inside.values())
+        change = sorted(self.waiting) if count >= self.min_vehicles else []
+        self.waiting.difference_update(change)
+        return change, count, left
 
 
 ARMS = {"north": (1, 0), "east": (0, 1), "south": (-1, 0), "west": (0, -1)}
@@ -254,7 +274,8 @@ def main():
         print(f"[MOBILITY] random seed {seed}")
     for z in zones:
         print(f"[MOBILITY] mix zone {z.name}: {z.center[0]:.6f} {z.center[1]:.6f} radius {z.radius:.0f} m, "
-              f"stations {sorted(z.stations)}: pseudonym change on entry")
+              f"stations {sorted(z.stations)}: pseudonym change on entry"
+              + (f", once {z.min_vehicles} vehicles are inside" if z.min_vehicles > 1 else ""))
     events = 0
     t0 = time.monotonic()
     next_tick, next_log = t0, t0
@@ -262,8 +283,10 @@ def main():
         now = time.monotonic()
         t = now - t0
         log = now >= next_log
+        positions = {}
         for v in vehicles:
             (lat, lon), speed, heading = v.state(t)
+            positions[v.station_id] = (lat, lon)
             payload = {"lat": round(lat, 7), "lon": round(lon, 7), "speed": round(speed, 2),
                        "heading": round(heading, 1)}
             # retained: a station that (re)connects gets its current position at once
@@ -272,16 +295,21 @@ def main():
                 print(f"[MOBILITY] {line}")
             if getattr(v, "pending_log", None):
                 v.pending_log.clear()
-            for z in zones:
-                if v.station_id in z.stations and z.entered(v.station_id, (lat, lon)):
-                    events += 1
-                    event = {"event_id": f"mobility-{events}", "reason": f"mix-zone {z.name}"}
-                    client.publish(f"{pseudonym_topic}/{v.station_id}/change", json.dumps(event), qos=1)
-                    print(f"[MOBILITY] t={t:6.1f} s station {v.station_id} entered mix zone {z.name}: "
-                          f"change event {event['event_id']}")
             if log:
                 print(f"[MOBILITY] t={t:6.1f} s station {v.station_id}: {payload['lat']:.6f} {payload['lon']:.6f} "
                       f"{speed * 3.6:.0f} km/h heading {heading:.0f}")
+        # zones after all positions of this tick: the number inside does not depend on the vehicle order
+        for z in zones:
+            change, count, left = z.update(positions)
+            for station_id in left:
+                print(f"[MOBILITY] t={t:6.1f} s station {station_id} left mix zone {z.name} without a change: "
+                      f"fewer than {z.min_vehicles} vehicles inside")
+            for station_id in change:
+                events += 1
+                event = {"event_id": f"mobility-{events}", "reason": f"mix-zone {z.name}"}
+                client.publish(f"{pseudonym_topic}/{station_id}/change", json.dumps(event), qos=1)
+                print(f"[MOBILITY] t={t:6.1f} s station {station_id} in mix zone {z.name}"
+                      + (f" ({count} inside)" if z.min_vehicles > 1 else "") + f": change event {event['event_id']}")
         if log:
             next_log += LOG_EVERY
         next_tick += period

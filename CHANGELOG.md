@@ -20,6 +20,14 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-10: mix zone threshold
+
+`[[control.mix_zones]]` takes `min_vehicles = n`: a vehicle that entered the zone changes its
+pseudonym only once at least `n` watched vehicles are inside. Those waiting change together;
+one that leaves before keeps its pseudonym. Scenario `c-its-pki-mixzone-min3`; the web UI's
+builder has the field per mix zone. The web UI's Control tab no longer has the "Change
+pseudonym" button, which did the same as "ID change trigger".
+
 ## 2026-10-10: `cookie_secure = false` in the repository's configuration
 
 `service/config.toml` sets `cookie_secure = false`, for testing only: login then works over

@@ -49,7 +49,8 @@ export function toToml(m) {
     if (m.client.mode === "periodic") lines.push(`interval = ${Number(m.client.interval)}`);
     lines.push("");
     for (const z of m.zones) {
-      lines.push("[[control.mix_zones]]", `name = ${q(z.name)}`, `center = ${pt(z.center)}`, `radius_m = ${Number(z.radius_m)}`, "");
+      lines.push("[[control.mix_zones]]", `name = ${q(z.name)}`, `center = ${pt(z.center)}`, `radius_m = ${Number(z.radius_m)}`,
+        ...(Number(z.min_vehicles) > 1 ? [`min_vehicles = ${Math.floor(Number(z.min_vehicles))}`] : []), "");
     }
   }
   if (m.eavesdropper.enabled) {
@@ -63,7 +64,7 @@ export async function builder(pane, session, editAsText) {
   CENTER = (await getUiConfig()).origin || CENTER;
   const m = {
     description: "built scenario", signed: true, pki: { initial: 8, refill_at: 2, batch: 8 },
-    client: { mode: "manual", interval: 20 }, zones: [{ name: "crossing", center: [...CENTER], radius_m: 40 }],
+    client: { mode: "manual", interval: 20 }, zones: [{ name: "crossing", center: [...CENTER], radius_m: 40, min_vehicles: 1 }],
     eavesdropper: { enabled: true, link_window: 15, link_by: ["position", "timing"] },
     stations: [newStation("rsu", 1), newStation("vehicle", 1), newStation("vehicle", 2)],
   };
@@ -125,6 +126,8 @@ export async function builder(pane, session, editAsText) {
     clear(zonesBox);
     m.zones.forEach((z, i) => zonesBox.append(h("div", { class: "row" },
       h("label", {}, "Mix zone", txt(z, "name")), h("label", {}, "radius m", num(z, "radius_m", { min: 5, max: 1000 })),
+      h("label", { title: "A vehicle changes its pseudonym only once at least this many vehicles are inside the zone; one that leaves before keeps its pseudonym. 1: every vehicle changes on entry." },
+        "min vehicles", num(z, "min_vehicles", { min: 1, max: 50, step: 1 })),
       setOnMap("zone", z, `place ${z.name}`),
       h("button", { type: "button", class: "danger", onclick: () => { m.zones.splice(i, 1); renderZones(); draw(); } }, "Remove"))));
   }
@@ -203,7 +206,7 @@ export async function builder(pane, session, editAsText) {
           h("button", { type: "button", class: "secondary", onclick: () => { m.stations.push(newStation("rsu", ++rsus)); renderCards(); } }, "Add RSU"),
           h("button", { type: "button", class: "secondary", onclick: () => { m.stations.push(newStation("vehicle", ++cars)); renderCards(); } }, "Add vehicle"))),
       h("div", { class: "panel" }, h("h2", {}, "Mix zones"), zonesBox,
-        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40 }); renderZones(); draw(); } }, "Add mix zone"))),
+        h("button", { type: "button", class: "secondary", onclick: () => { m.zones.push({ name: `zone${m.zones.length + 1}`, center: [...CENTER], radius_m: 40, min_vehicles: 1 }); renderZones(); draw(); } }, "Add mix zone"))),
     h("div", {},
       h("div", { class: "panel" }, modeLine, mapEl,
         h("p", { class: "legend muted" }, h("span", {}, h("i", { class: "dot rsu" }), "RSU"), h("span", {}, h("i", { class: "dot car" }), "vehicle"),
