@@ -147,8 +147,8 @@ COPY --from=build /vanetza/bin/certify /usr/local/bin/certify
 COPY --from=build /vanetza/tools/socktap/config.ini /config.ini
 COPY --from=build /vanetza/tools/socktap/zenoh_config.json5 /zenoh_config.json5
 COPY --from=build /vanetza/entrypoint.sh /entrypoint.sh
-COPY --from=build /usr/local/lib/libfast* /usr/local/lib
-COPY --from=build /usr/local/lib/libfoon* /usr/local/lib
+COPY --from=build /usr/local/lib/libfast* /usr/local/lib/
+COPY --from=build /usr/local/lib/libfoon* /usr/local/lib/
 COPY --from=build /tmp/prometheus-cpp/_build/*.deb /deps/
 COPY --from=build /usr/local/lib/libzenoh* /usr/local/lib/
 RUN dpkg -i /deps/*.deb

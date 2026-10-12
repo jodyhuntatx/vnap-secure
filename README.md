@@ -85,7 +85,10 @@ covered in [docs/installation.md](docs/installation.md).
 
 ```bash
 cd ${VNAP_HOME}
-make image          # fetch vanetza-nap at patches/vanetza-nap/BASE into ~/vanetza-nap, apply the patches, build vnap:latest
+sudo apt install -y make docker.io     # install make and docker
+sudo usermod -aG docker $USER          # add current user to docker group for non-sudo docker access
+<logout/login to effect non-sudo docker access>
+make image          # fetch vanetza-nap at patches/vanetza-nap/BASE into ~/vanetza-nap, apply the patches, build vnap:latest, takes ~20+ minutes
 docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep pseudonym-control   # patched?
 ```
 
@@ -121,6 +124,7 @@ Other scenarios to try:
 
 ```bash
 cd ${VNAP_HOME}/service
+./0-install-venv.sh                                      # install virtual env support and initialize
 ./create-admin.sh                                        # first admin (password asked, or VNAP_NEW_PASSWORD)
 ./run.sh                                                 # 0.0.0.0:8080, web UI at /ui/, API docs at /api/docs
 ```
