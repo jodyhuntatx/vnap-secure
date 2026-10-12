@@ -45,6 +45,12 @@ Environment:
 - **`VNAP_SIM_DIR`:** where `vnapsim` is (default `../sim`).
 - **`CITS_PKI_DIR`:** another C-ITS-PKI ([architecture](../architecture.md#dependency-on-c-its-pki)).
 
+## Report suggestions: `service/recommendations.toml`
+
+The rules behind "Suggested next runs" in a run's summary report: conditions on the run's
+facts, fixed text, priorities and a limit. Read for every report, so a change needs no
+restart. See [suggested next runs](../functional/eavesdropper-and-scoring.md#suggested-next-runs).
+
 ## User policy: `sim/policy.toml`
 
 What a scenario from a user may set ([scenario format](scenario-format.md#user-policy)):

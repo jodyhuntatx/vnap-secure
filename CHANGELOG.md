@@ -20,6 +20,20 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-12: suggested next runs in the summary report
+
+The summary report ends with "6. Suggested next runs", chosen by rule from the run's
+measurements. The rules are in `service/recommendations.toml`: fixed text with conditions on
+the run's facts (`links.wrong>=8`, `pattern.share>=0.8`), priorities and a limit of 6. The 16
+starting rules come from the recommendations of the summaries in `results/`.
+
+- **Editable without code:** the file is read for every report.
+  `python3 -m vnapapi.report --rules <results directory>` lists a run's facts and what each
+  rule made of them, including rules with a mistake.
+- **No judgement:** a rule only says what was written into it; each suggestion states the
+  number that triggered it.
+- Details: [suggested next runs](docs/functional/eavesdropper-and-scoring.md#suggested-next-runs).
+
 ## 2026-10-12: summary report at the end of a run
 
 When a run stops, the service writes `report.docx` into its results, in the form of the test
@@ -27,7 +41,7 @@ summaries in `results/`: header table, purpose, setup, results (with every link 
 against ground truth, wrong links by vehicle pair and the content of each track),
 observations, conclusion and limitations. The *Results* tab links it first.
 
-- **Facts only:** no recommendations for further scenarios; those need judgement.
+- **Facts only** in this first version; suggested next runs were added the same day (above).
 - **Built from the collected files** (`service/vnapapi/report.py`, standard library only), so
   `python3 -m vnapapi.report <results directory>` writes it again, also for earlier runs.
 - **`run.json`** gains `stopped_at`, `stop_reason` and the last check; **`score.json`** gains

@@ -266,11 +266,34 @@ class ApiTest(unittest.TestCase):
                          "1 entries with a change event, 1 passages without", "8.0 m, 5.94 s gap", "WRONG",
                          "v1 -&gt; v1 -&gt; v2", "silent 6-12 s", "4. Conclusion", "5. Limitations of this run"):
             self.assertIn(expected, text)
+        self.assertIn("6. Suggested next runs", text)
+        self.assertIn("With 2 vehicles a guess is already right 50 % of the time", text)      # rule few-vehicles
+        # the catalogue: every shipped rule can be evaluated; own rules, priorities, limit and mistakes
+        from vnapapi.report import facts, gather, recommend
+        f = facts(gather(d))
+        chosen, notes = recommend(f)
+        self.assertFalse([n for n in notes if "NOT USED" in n], notes)
+        self.assertLessEqual(len(chosen), 6)
+        own = os.path.join(self.tmp, "rules.toml")
+        with open(own, "w") as file:
+            file.write('limit = 2\n'
+                       '[[rule]]\nid = "low"\npriority = 1\nwhen = ["links>=1"]\ntitle = "Low."\ntext = "low"\n'
+                       '[[rule]]\nid = "high"\npriority = 9\nwhen = ["links.correct_share>=0.5", "links.wrong<links"]\n'
+                       'title = "High."\ntext = "{links.correct} of {links} ({links.correct_share:.0%})"\n'
+                       '[[rule]]\nid = "off"\npriority = 8\nwhen = ["links>=3"]\ntitle = "Off."\ntext = "off"\n'
+                       '[[rule]]\nid = "typo"\npriority = 7\nwhen = ["linkz>=1"]\ntitle = "Typo."\ntext = "typo"\n'
+                       '[[rule]]\nid = "badtext"\npriority = 6\nwhen = ["links>=1"]\ntitle = "Bad."\ntext = "{nothing}"\n'
+                       '[[rule]]\nid = "third"\npriority = 0\nwhen = ["links>=1"]\ntitle = "Third."\ntext = "beyond the limit"\n')
+        chosen, notes = recommend(f, own)
+        self.assertEqual(chosen, [("High.", "1 of 2 (50 %)"), ("Low.", "low")])
+        self.assertEqual(notes[1:4], ["off: no (links>=3)", "typo: NOT USED, no fact linkz", "badtext: NOT USED, text: no fact nothing"])
+        self.assertEqual(recommend(f, os.path.join(self.tmp, "missing.toml"))[0], None)
         # without an eavesdropper and with nothing but run.json: still a report
         for name in ("score.json", "status.json", "scenario.toml"):
             os.remove(os.path.join(d, name))
         with zipfile.ZipFile(write_report(d)) as z:
             self.assertIn("No eavesdropper took part", z.read("word/document.xml").decode())
+        self.assertFalse([n for n in recommend(facts(gather(d)))[1] if "NOT USED" in n])
 
     def test_live_endpoints_need_a_running_run(self):
         alice = self.client("alice")

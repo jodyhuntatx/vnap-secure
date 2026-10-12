@@ -1,0 +1,135 @@
+# Suggested next runs in a run's summary report (report.docx, section 6).
+#
+# Each [[rule]] is one suggestion. It is printed when every condition in `when` holds for the
+# run; the report prints the `limit` rules with the highest priority.
+#
+#   id        a name of your own, shown by --rules
+#   priority  higher is printed first
+#   when      conditions "fact OP value": OP is one of >= <= == != > <, value a number or
+#             another fact. All must hold. A rule naming an unknown fact is never printed.
+#   title     the bold lead-in
+#   text      the suggestion; {fact} inserts a fact, {fact:.0%} or {fact:.1f} formats it.
+#             State the number that triggered the rule, so the reader can judge it.
+#
+# The facts of a run, and which rules hold for it:
+#   python3 -m vnapapi.report --rules data/results/<run id>
+# They are listed in docs/functional/eavesdropper-and-scoring.md#suggested-next-runs.
+# The file is read each time a report is written; no restart is needed.
+
+limit = 6
+
+# ---------------------------------------------------------------- the trigger did not work
+[[rule]]
+id = "no-changes"
+priority = 95
+when = ["vehicles>=1", "changes==0"]
+title = "Get pseudonym changes first."
+text = "No vehicle changed its pseudonym in {duration_s:.0f} s, so this run measures nothing about linkability. Check what should trigger the changes: the control client's mode, the mix zones the routes actually pass through, and their minimum number of vehicles."
+
+[[rule]]
+id = "zone-threshold"
+priority = 70
+when = ["zone.skipped>=3", "zone.skipped>zone.changes"]
+title = "Bring the vehicles into the mix zone together."
+text = "{zone.skipped} passages through a mix zone caused no change because too few vehicles were inside, against {zone.changes} entries that did. Lower min_vehicles, or adjust start times and speeds so that the vehicles reach the zone at the same time."
+
+# ---------------------------------------------------------------- a weakness the results show
+[[rule]]
+id = "pattern-reversible"
+priority = 90
+when = ["links.wrong>=8", "pattern.share>=0.8"]
+title = "Break the traffic pattern."
+text = "{pattern.explained} of the {links.wrong} wrong links ({pattern.share:.0%}) follow one fixed rule 'old vehicle X is really new vehicle Y', so an attacker who knows the traffic can turn them into correct links. Rerun with random turns (mobility with a crossing) or uneven arrival times, and check that the mistakes no longer follow a rule."
+
+[[rule]]
+id = "starved"
+priority = 88
+when = ["pki.starved>=1"]
+title = "Keep the certificate pools filled."
+text = "{pki.starved} pseudonym changes were refused for lack of unused certificates. Raise [pki] refill_at or batch so that a new batch arrives before the pool runs out, then rerun; a refused change is a change the eavesdropper did not have to link."
+
+[[rule]]
+id = "timing-leak"
+priority = 85
+when = ["timing.links>=5", "timing.correct_share>=0.5", "timing.correct_share>chance"]
+title = "Check the CAM timing."
+text = "{timing.correct} of {timing.links} links by timing were correct ({timing.correct_share:.0%}), against about {chance:.0%} for guessing. The CAM timing appears to carry over between identities: check that the station image restarts the CAM timer at a random phase on every ID change (vnap:r2-p17 or later), and rerun."
+
+[[rule]]
+id = "followed"
+priority = 80
+when = ["followed.longest>=3"]
+title = "Shorten how long a vehicle can be followed."
+text = "One vehicle was followed correctly through {followed.longest} changes in a row. Lengthen the silent period (configured maximum {silent.configured_max_s:g} s), or let changes happen only where several vehicles are close together (a mix zone with min_vehicles of 3 or more), and compare."
+
+[[rule]]
+id = "above-chance"
+priority = 75
+when = ["links>=8", "links.over_chance>=2"]
+title = "Give the eavesdropper more candidates."
+text = "{links.correct} of {links} links were correct ({links.correct_share:.0%}), {links.over_chance:.1f} times what guessing among {vehicles} vehicles gives. Rerun with more vehicles changing at the same place and time, or a longer silent period, to see what brings this down to chance."
+
+[[rule]]
+id = "pool-wrap"
+priority = 65
+when = ["changes.wrapped>=1"]
+title = "Avoid reusing certificates."
+text = "{changes.wrapped} changes returned to a certificate used before, which an eavesdropper recognises by identifier without any linking. Enlarge the pool or enable refill ([pki] refill_at), so that reuse stays out of this measurement."
+
+# ---------------------------------------------------------------- the attacker was too weak
+[[rule]]
+id = "no-eavesdropper"
+priority = 60
+when = ["eavesdropper==0", "changes>=1"]
+title = "Add an eavesdropper."
+text = "The run had {changes} pseudonym changes and nobody trying to link them. Add an [eavesdropper] section to the scenario to score linkability against ground truth."
+
+[[rule]]
+id = "no-silent-period"
+priority = 58
+when = ["eavesdropper==1", "changes>=1", "silent.configured_max_s==0"]
+title = "Add a silent period."
+text = "The vehicles kept sending right after each ID change. Without a silent period a new identity appears where the old one stopped, and position continuity links it. Rerun with pseudonyms silent_min_ms and silent_max_ms set (e.g. 3000 to 13000) and compare."
+
+[[rule]]
+id = "window-too-short"
+priority = 55
+when = ["eavesdropper==1", "changes>=1", "silent.configured_max_s>eavesdropper.link_window_s"]
+title = "Use a more patient eavesdropper."
+text = "Silent periods of up to {silent.configured_max_s:g} s were configured, but the eavesdropper links only within {eavesdropper.link_window_s:g} s, so it gives up on the longer ones. Rerun with [eavesdropper] link_window above the longest silent period; a protection that only defeats an impatient attacker is weak."
+
+[[rule]]
+id = "one-technique"
+priority = 50
+when = ["eavesdropper==1", "changes>=1", "eavesdropper.techniques<2"]
+title = "Let the eavesdropper use position and timing."
+text = "The eavesdropper linked with {eavesdropper.techniques} of its 2 techniques beyond shared identifiers. Rerun with link_by = [\"position\", \"timing\"] for the stronger baseline."
+
+# ---------------------------------------------------------------- cost, repetition, realism
+[[rule]]
+id = "silent-cost"
+priority = 45
+when = ["silent.share>=0.3"]
+title = "Map privacy against availability."
+text = "The vehicles were silent for {silent.share:.0%} of the run, and a silent vehicle sends no CAMs. Sweep the silent period (shorter and longer) and record both the correct links and the time silent, to find the shortest silence that still protects."
+
+[[rule]]
+id = "repeat"
+priority = 40
+when = ["eavesdropper==1", "changes>=1", "repeats<10"]
+title = "Repeat with other seeds."
+text = "Kept runs of exactly this scenario: {repeats}, different mobility seeds among them: {repeats.seeds}. The counts of one run are not statistics: run it at least 10 times with different seeds and compare the share of correct links across them."
+
+[[rule]]
+id = "few-vehicles"
+priority = 35
+when = ["eavesdropper==1", "changes>=1", "vehicles>=2", "vehicles<6"]
+title = "Denser traffic."
+text = "With {vehicles} vehicles a guess is already right {chance:.0%} of the time. Rerun with six to ten vehicles in mixed directions, so that more candidates fall inside the eavesdropper's window."
+
+[[rule]]
+id = "equal-speeds"
+priority = 30
+when = ["eavesdropper==1", "changes>=1", "vehicles>=2", "speeds.distinct==1"]
+title = "Vary the speeds."
+text = "All {vehicles} vehicles drive at the same speed, which makes every one of them fit a dead-reckoned prediction equally well. Give them different speeds and see whether that helps or hurts the eavesdropper."

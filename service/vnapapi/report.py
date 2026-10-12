@@ -5,8 +5,9 @@ score.json, scenario.toml and the container logs), so it can be made again later
 
     python3 -m vnapapi.report <results directory>
 
-The report states what was measured. Recommendations for further scenarios, as in the
-hand-written summaries, are a matter of judgement and are not generated.
+The report states what was measured. Its last section, "Suggested next runs", comes from the
+rules in service/recommendations.toml: fixed text, printed when its conditions hold for the
+run. `--rules` in front of the directory lists the run's facts and what each rule made of them.
 """
 
 import calendar
@@ -21,6 +22,7 @@ from collections import Counter
 from xml.sax.saxutils import escape
 
 REPORT_NAME = "report.docx"
+CATALOGUE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recommendations.toml")
 
 RE_SILENT = re.compile(r"\[IDCHANGE\] silent period (\d+) ms")
 RE_MOB_STATION = re.compile(r"\[MOBILITY\] station (\d+): (.*?)(?:, topic \S+)?$")
@@ -140,7 +142,7 @@ def gather(directory):
             "position": (env.get("VANETZA_LATITUDE"), env.get("VANETZA_LONGITUDE")),
             "dynamic": dynamic_changes.get(st.get("station_id"), 0),
         })
-    return {"run": run, "status": status, "score": score, "scenario": scenario, "stations": stations,
+    return {"directory": directory, "run": run, "status": status, "score": score, "scenario": scenario, "stations": stations,
             "vehicles": [s for s in stations if s["pool"]], "control": control, "mobility": mobility,
             "started": started, "stopped": stopped, "seconds": max(0.0, stopped - started) if started else 0.0,
             "zone_changes": zone_changes, "zone_skipped": zone_skipped}
@@ -199,7 +201,153 @@ def _evidence(link):
     return "; ".join(out) or "-"
 
 
-def build(d):
+def _repeats(d):
+    """Kept runs of the same owner with exactly this scenario (this one included), and their seeds."""
+    try:
+        with open(os.path.join(d["directory"], "scenario.toml"), "rb") as f:
+            mine = f.read()
+    except OSError:
+        return 1, 1
+    parent = os.path.dirname(os.path.abspath(d["directory"]))
+    seeds, count = set(), 0
+    for name in os.listdir(parent):
+        other = _json(os.path.join(parent, name), "run.json")
+        if not other or other.get("owner") != d["run"].get("owner"):
+            continue
+        try:
+            with open(os.path.join(parent, name, "scenario.toml"), "rb") as f:
+                same = f.read() == mine
+        except OSError:
+            continue
+        if same:
+            count += 1
+            seeds.add(other.get("seed"))
+    return max(count, 1), max(len(seeds), 1)
+
+
+def facts(d):
+    """The run as numbers, for the conditions and texts of recommendations.toml."""
+    score, vehicles, scenario = d["score"], d["vehicles"], d["scenario"]
+    n = len(vehicles)
+    silent = [s for v in vehicles for s in v["silent"]]
+    cfg_max = [v["silent_cfg"][1] or 0 for v in vehicles]
+    zones = d["mobility"].get("mix_zones") or []
+    dyn = d["mobility"].get("dynamic_mix_zone")
+    pki = d["control"].get("pki")
+    eav = scenario.get("eavesdropper") if isinstance(scenario.get("eavesdropper"), dict) else {}
+    declared = {s.get("name"): s for s in scenario.get("stations", []) if isinstance(s, dict)}
+    speeds = {(declared.get(v["name"], {}).get("mobility") or {}).get("speed_kmh") for v in vehicles}
+    repeats, seeds = _repeats(d)
+    f = {
+        "duration_s": round(d["seconds"], 1), "stations": len(d["stations"]), "vehicles": n,
+        "changes": sum(v["changes"] for v in vehicles), "changes.rejected": sum(v["rejected"] for v in vehicles),
+        "changes.wrapped": sum(v["wrapped"] for v in vehicles),
+        "changes.per_vehicle_min": min((v["changes"] for v in vehicles), default=0),
+        "silent.periods": len(silent), "silent.mean_s": round(sum(silent) / len(silent), 2) if silent else 0,
+        "silent.max_s": max(silent, default=0), "silent.configured_max_s": max(cfg_max, default=0) / 1000,
+        "silent.share": round(sum(silent) / (d["seconds"] * n), 4) if silent and d["seconds"] and n else 0,
+        "zone.count": len(zones), "zone.changes": sum(d["zone_changes"].values()), "zone.skipped": sum(d["zone_skipped"].values()),
+        "zone.min_vehicles": max((z.get("min_vehicles") or 1 for z in zones), default=0),
+        "dynamic": int(bool(dyn)), "dynamic.changes": sum(v["dynamic"] for v in vehicles),
+        "pki": int(bool(pki)), "pki.batches": (pki or {}).get("batches", 0),
+        "pki.starved": sum(v["refill"]["starved"] for v in vehicles if v["refill"]),
+        "pool.min": min((v["pool"] for v in vehicles), default=0),
+        "speeds.distinct": len(speeds - {None}), "random_turns": sum("random turns" in (v["movement"] or "") for v in vehicles),
+        "warnings": len(d["status"].get("warnings") or []), "repeats": repeats, "repeats.seeds": seeds,
+        "eavesdropper": int(score is not None), "chance": round(1 / n, 4) if n else 0,
+    }
+    # without an eavesdropper its facts are 0, so every rule can be evaluated; rules about it ask for eavesdropper==1
+    f.update({key: 0 for key in ("links", "links.correct", "links.wrong", "links.correct_share", "links.over_chance",
+                                 "pattern.explained", "pattern.share", "pattern.pairings", "followed.longest", "tracks",
+                                 "tracks.mixed", "eavesdropper.link_window_s", "eavesdropper.techniques")})
+    f.update({f"{kind}.{key}": 0 for kind in ("identifier", "position", "timing") for key in ("links", "correct", "correct_share")})
+    if score is not None:
+        cars = set(score["stations"])
+        tracks = [t for t in score["tracks"] if cars & set(t["stations"])]
+        links, correct, wrong = score["links"], score["correct"], score["wrong"]
+        pairs = Counter((link["old_station"], link["new_station"]) for link in score["link_list"] if not link["correct"])
+        explained = sum(max(c for (o, _), c in pairs.items() if o == old) for old in {o for o, _ in pairs})
+        share = correct / links if links else 0
+        f.update({
+            "links": links, "links.correct": correct, "links.wrong": wrong, "links.correct_share": round(share, 4),
+            "links.over_chance": round(share * n, 2) if n else 0,
+            "pattern.explained": explained, "pattern.share": round(explained / wrong, 4) if wrong else 0, "pattern.pairings": len(pairs),
+            "followed.longest": score["longest_followed"]["changes"],
+            "tracks": len(tracks), "tracks.mixed": sum(len(set(t["stations"])) > 1 for t in tracks),
+            "eavesdropper.link_window_s": eav.get("link_window", 3.0),
+            "eavesdropper.techniques": len(eav.get("link_by", ["position", "timing"])),
+        })
+        for kind in ("identifier", "position", "timing"):
+            k = score["by_technique"].get(kind, {"correct": 0, "wrong": 0})
+            total = k["correct"] + k["wrong"]
+            f.update({f"{kind}.links": total, f"{kind}.correct": k["correct"],
+                      f"{kind}.correct_share": round(k["correct"] / total, 4) if total else 0})
+    return f
+
+
+RE_CONDITION = re.compile(r"\s*([A-Za-z_][\w.]*)\s*(>=|<=|==|!=|>|<)\s*([\w.\-]+)\s*")
+RE_PLACEHOLDER = re.compile(r"\{([A-Za-z_][\w.]*)(?::([^{}]*))?\}")
+OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, "==": lambda a, b: a == b,
+       "!=": lambda a, b: a != b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
+
+
+def _holds(condition, f):
+    """(True/False, None) or (None, why the condition cannot be evaluated)."""
+    m = RE_CONDITION.fullmatch(condition) if isinstance(condition, str) else None
+    if not m:
+        return None, f"cannot parse {condition!r} (use: fact OP number|fact)"
+    left, op, right = m.groups()
+    if left not in f:
+        return None, f"no fact {left}"
+    try:
+        value = float(right)
+    except ValueError:
+        if right not in f:
+            return None, f"no fact {right}"
+        value = f[right]
+    return OPS[op](f[left], value), None
+
+
+def _fill(text, f):
+    def sub(m):
+        if m[1] not in f:
+            raise KeyError(m[1])
+        out = format(f[m[1]], m[2] or "")
+        return out[:-1] + " %" if out.endswith("%") else out   # as in the rest of the report
+    return RE_PLACEHOLDER.sub(sub, text)
+
+
+def recommend(f, catalogue=None):
+    """(the suggestions that hold: [(title, text)], one line per rule on what became of it)."""
+    try:
+        with open(catalogue or CATALOGUE, "rb") as file:
+            cat = tomllib.load(file)
+    except OSError:
+        return None, ["no catalogue"]
+    except tomllib.TOMLDecodeError as e:
+        return None, [f"catalogue not readable: {e}"]
+    chosen, notes = [], []
+    rules = [r for r in cat.get("rule", []) if isinstance(r, dict)]
+    for rule in sorted(rules, key=lambda r: -float(r.get("priority", 0) if isinstance(r.get("priority", 0), (int, float)) else 0)):
+        rid = rule.get("id", "?")
+        results = [_holds(c, f) for c in (rule.get("when") if isinstance(rule.get("when"), list) else [None])]
+        problems = [why for _, why in results if why]
+        if not problems and all(ok for ok, _ in results):
+            try:
+                chosen.append((str(rule.get("title", rid)), _fill(str(rule.get("text", "")), f)))
+                notes.append(f"{rid}: holds")
+            except (KeyError, ValueError) as e:
+                notes.append(f"{rid}: NOT USED, text: {'no fact ' + str(e.args[0]) if isinstance(e, KeyError) else e}")
+        elif problems:
+            notes.append(f"{rid}: NOT USED, {'; '.join(problems)}")
+        else:
+            failed = [c for c, (ok, _) in zip(rule["when"], results) if not ok]
+            notes.append(f"{rid}: no ({', '.join(failed)})")
+    limit = cat.get("limit", 6)
+    return chosen[:limit if isinstance(limit, int) and limit > 0 else 6], notes
+
+
+def build(d, suggestions=None):
     """The report as a list of blocks: (kind, ...) for write_docx."""
     run, status, score, scenario = d["run"], d["status"], d["score"], d["scenario"]
     vehicles, n = d["vehicles"], len(d["vehicles"])
@@ -243,7 +391,8 @@ def build(d):
     b.append(("p", run.get("description") or "No description was given for this run."))
     b.append(("p", "This summary was generated by the simulation service when the run stopped, from the collected results "
                    "(status, container logs and, with an eavesdropper, the scoring against ground truth). It states what was "
-                   "measured; it does not judge the scenario or recommend further ones."))
+                   "measured. The suggested next runs at the end are chosen by fixed rules from those measurements, "
+                   "not by judgement."))
 
     # ---- 2. setup
     b.append(("h1", "2. Setup"))
@@ -443,7 +592,7 @@ def build(d):
     if d["mobility"]:
         limits.append("Idealized motion: exact positions without GPS noise, and each vehicle at its configured constant speed.")
     if n > 1:
-        limits.append("The vehicles send the same dimensions in their CAMs unless the scenario sets them; real vehicles differ, "
+        limits.append("The vehicles send the same dimensions in their CAMs; real vehicles differ, "
                       "which an eavesdropper can use as a fingerprint.")
     if observer:
         limits.append("Simple attacker: the eavesdropper decides each new identity greedily. It does not use heading, turn "
@@ -455,6 +604,16 @@ def build(d):
         limits.append("Pool wrap-around: some changes returned to an already used certificate, which an eavesdropper can "
                       "recognise by identifier; reuse is a linking risk of its own.")
     b += [("bullet", text) for text in limits]
+
+    # ---- 6. suggested next runs (None: no catalogue)
+    if suggestions is not None:
+        b.append(("h1", "6. Suggested next runs"))
+        if suggestions:
+            b.append(("p", "Chosen by fixed rules (service/recommendations.toml) from the measurements above; each names the "
+                           "number that triggered it. They are starting points, not conclusions: one run is thin evidence."))
+            b += [("number", [(title.rstrip() + " ", True), (text, False)]) for title, text in suggestions]
+        else:
+            b.append(("p", "No rule of the catalogue (service/recommendations.toml) applies to this run."))
     return b
 
 
@@ -508,13 +667,17 @@ STYLES = (
     + _style("Heading2", "heading 2", '<w:keepNext/><w:spacing w:before="200" w:after="0"/><w:outlineLvl w:val="1"/>',
              f'<w:b/><w:color w:val="{ACCENT}"/><w:sz w:val="26"/><w:szCs w:val="26"/>')
     + _style("ListBullet", "List Bullet", '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:contextualSpacing/>')
+    + _style("ListNumber", "List Number", '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr><w:contextualSpacing/>')
     + "</w:styles>")
 NUMBERING = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     f'<w:numbering xmlns:w="{W_NS}"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="singleLevel"/>'
     '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/><w:lvlJc w:val="left"/>'
     '<w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>'
-    '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>')
+    '<w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="singleLevel"/>'
+    '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/>'
+    '<w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>'
+    '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>')
 
 
 def _runs(content, rpr=""):
@@ -565,7 +728,8 @@ def write_docx(blocks, path, title="Run summary"):
         elif kind == "subtitle":
             body += _paragraph(args[0], rpr="<w:i/>")
         else:
-            body += _paragraph(args[0], {"title": "Title", "h1": "Heading1", "h2": "Heading2", "bullet": "ListBullet"}.get(kind))
+            body += _paragraph(args[0], {"title": "Title", "h1": "Heading1", "h2": "Heading2", "bullet": "ListBullet",
+                                         "number": "ListNumber"}.get(kind))
     document = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                 f'<w:document xmlns:w="{W_NS}"><w:body>{body}'
                 f'<w:sectPr><w:pgSz w:w="{PAGE_W}" w:h="15840"/><w:pgMar w:top="1134" w:right="{MARGIN}" w:bottom="1134" '
@@ -585,15 +749,29 @@ def write_docx(blocks, path, title="Run summary"):
             z.writestr(name, data)
 
 
-def write_report(directory):
+def write_report(directory, catalogue=None):
     """Write report.docx into a results directory; returns its path."""
     d = gather(directory)
     path = os.path.join(directory, REPORT_NAME)
-    write_docx(build(d), path, title=f"{d['run'].get('name') or d['run'].get('id') or 'run'}: Run Summary")
+    suggestions, _ = recommend(facts(d), catalogue)
+    write_docx(build(d, suggestions), path, title=f"{d['run'].get('name') or d['run'].get('id') or 'run'}: Run Summary")
     return path
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or not os.path.isdir(sys.argv[1]):
-        sys.exit("usage: python3 -m vnapapi.report <results directory of a run>")
-    print(write_report(sys.argv[1]))
+    args = [a for a in sys.argv[1:] if a != "--rules"]
+    if len(args) != 1 or not os.path.isdir(args[0]):
+        sys.exit("usage: python3 -m vnapapi.report [--rules] <results directory of a run>\n"
+                 "  --rules: list the run's facts and what each rule of recommendations.toml made of them; write nothing")
+    if "--rules" in sys.argv[1:]:
+        run_facts = facts(gather(args[0]))
+        print("facts:")
+        for key in sorted(run_facts):
+            print(f"  {key} = {run_facts[key]:g}")
+        chosen, notes = recommend(run_facts)
+        print(f"rules ({CATALOGUE}), by priority:")
+        for note in notes:
+            print(f"  {note}")
+        print(f"printed in the report: {len(chosen or [])}")
+        sys.exit(1 if any("NOT USED" in note or "catalogue" in note for note in notes) else 0)
+    print(write_report(args[0]))
