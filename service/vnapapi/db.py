@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS runs (
     lan TEXT, ctl TEXT, vnap_run_id TEXT, image TEXT, seed INTEGER, error TEXT,
     created_at REAL NOT NULL, started_at REAL, stopped_at REAL, deadline REAL, stop_reason TEXT,
     start_status TEXT, name TEXT, description TEXT);
+CREATE TABLE IF NOT EXISTS run_counters (base TEXT PRIMARY KEY, n INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS run_shares (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id),
     PRIMARY KEY (run_id, user_id));
@@ -85,6 +86,12 @@ class Database:
     def execute(self, sql, args=()):
         with self.lock:
             return self.conn.execute(sql, args).lastrowid
+
+    def next_run_number(self, base):
+        """The next number for runs of this scenario name: 1, 2, ... (never given twice, also after deletions)."""
+        with self.lock:
+            self.conn.execute("INSERT INTO run_counters (base, n) VALUES (?, 1) ON CONFLICT(base) DO UPDATE SET n = n + 1", (base,))
+            return self.conn.execute("SELECT n FROM run_counters WHERE base = ?", (base,)).fetchone()[0]
 
     def audit(self, username, action, target=None, detail=None, address=None):
         self.execute("INSERT INTO audit (ts, username, action, target, detail, address) VALUES (?, ?, ?, ?, ?, ?)",

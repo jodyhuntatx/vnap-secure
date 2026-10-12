@@ -226,15 +226,43 @@ class RunManager:
         name = " ".join((name or "").split())
         if len(name) > 100:
             raise RunError("name: at most 100 characters")
-        run_id = secrets.token_hex(6)
-        path = self.scenario_path(user, scenario, template, scenario_text, run_id)
-        sc = self.validate(user, path, overrides)
+        # validate first, so that a refused scenario uses no run number
+        path = self.scenario_path(user, scenario, template, scenario_text)
+        try:
+            sc = self.validate(user, path, overrides)
+        except Exception:
+            if scenario_text is not None:
+                os.remove(path)
+            raise
+        unnamed = scenario_text is not None and sc["name"] == os.path.splitext(os.path.basename(path))[0]
+        run_id = self.new_id(user["username"], name or (None if unnamed else sc["name"]))
+        if scenario_text is not None:   # the run's own scenario file is named after the run
+            stored = os.path.join(self.scenario_dir, f"{run_id}.toml")
+            os.rename(path, stored)
+            path = stored
+        if unnamed:
+            sc["name"] = run_id
         self.db.execute("INSERT INTO runs (id, owner_id, scenario, scenario_file, overrides, state, created_at, deadline, "
                         "name, description) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
                         (run_id, user["id"], sc["name"], path, json.dumps(overrides), time.time(), minutes * 60,
                          name or sc["name"], sc["description"]))
         self.jobs.put(("start", run_id))
         return self.get(run_id)
+
+    def new_id(self, username, name):
+        """<user>-<scenario name>-<n>: n counts that user's runs of that name, from 1. User and name are reduced to
+        letters, digits, '.', '_' and '-' (the id is part of URLs and file names); without a name it is "run"."""
+        def part(text, length, default):
+            return re.sub(r"-{2,}", "-", re.sub(r"[^A-Za-z0-9._-]", "-", text or "")).strip("-.")[:length].strip("-.") or default
+        # one counter per "<user>-<name>": two pairs that give the same text would give the same ids, so they share it
+        base = f"{part(username, 30, 'user')}-{part(name, 60, 'run')}"
+        while True:
+            run_id = f"{base}-{self.db.next_run_number(base)}"
+            # an id is never reused: not one of a kept run, nor one whose files are still there
+            if not (self.db.one("SELECT id FROM runs WHERE id = ?", (run_id,))
+                    or os.path.exists(os.path.join(self.results_dir, run_id))
+                    or os.path.exists(os.path.join(self.scenario_dir, f"{run_id}.toml"))):
+                return run_id
 
     def get(self, run_id):
         run = self.db.one("SELECT r.*, u.username AS owner, u.role AS owner_role FROM runs r JOIN users u ON u.id = r.owner_id "
@@ -329,7 +357,8 @@ class RunManager:
             has_control = "control" in tomllib.load(f)
         if has_control:
             # the run's broker account: generated here, never shown to users
-            user_env, pass_env = f"VNAP_RUN_{run_id}_USER", f"VNAP_RUN_{run_id}_PASS"
+            token = secrets.token_hex(6)   # not the run id: environment variable names are letters, digits and '_'
+            user_env, pass_env = f"VNAP_RUN_{token}_USER", f"VNAP_RUN_{token}_PASS"
             os.environ[user_env], os.environ[pass_env] = f"run-{run_id}", secrets.token_urlsafe(24)
             env_names = [user_env, pass_env]
             service_sets.append(f'control.auth={{username_env = "{user_env}", password_env = "{pass_env}"}}')

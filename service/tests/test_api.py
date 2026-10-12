@@ -180,6 +180,32 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.runs.get(run["id"])["state"], "stopped")
         self.assertEqual(alice.delete(f"/api/runs/{run['id']}").status_code, 200)
 
+    def test_run_ids_are_the_scenario_name_and_a_counter(self):
+        alice, bob, root = self.client("alice"), self.client("bob"), self.client("root")
+        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
+        first = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        self.assertEqual(first["id"], "alice-pki-refill-1")
+        self.assertEqual(bob.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "bob-pki-refill-1")   # counted per user
+        # a deleted run's number is not given again
+        self.assertEqual(alice.post(f"/api/runs/{first['id']}/stop").status_code, 202)
+        self.assertEqual(alice.delete(f"/api/runs/{first['id']}").status_code, 200)
+        # the run's name comes first; characters outside letters, digits, . _ - become -
+        named = root.post("/api/runs", json={"scenario_text": text, "name": "  My run / ünï #2 "}).json()
+        self.assertEqual((named["id"], named["name"]), ("root-My-run-n-2-1", "My run / ünï #2"))
+        self.assertTrue(os.path.isfile(os.path.join(self.runs.scenario_dir, "root-My-run-n-2-1.toml")))
+        self.assertEqual(root.get("/api/runs/root-My-run-n-2-1").json()["id"], "root-My-run-n-2-1")
+        self.assertEqual(root.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "root-pki-refill-1")
+        self.assertEqual(alice.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "alice-pki-refill-2")
+        # a refused scenario uses no number and leaves no file; text without any name is "run"
+        before = set(os.listdir(self.runs.scenario_dir))
+        self.assertEqual(root.post("/api/runs", json={"scenario_text": "[[stations]]\nname = 1\n", "name": "My run / ünï #2"}).status_code, 400)
+        self.assertEqual(set(os.listdir(self.runs.scenario_dir)), before)
+        self.assertEqual(root.post("/api/runs", json={"scenario_text": text, "name": "My run / ünï #2"}).json()["id"], "root-My-run-n-2-2")
+        plain = root.post("/api/runs", json={"scenario_text": text}).json()
+        self.assertEqual((plain["id"], plain["scenario"], plain["name"]), ("root-run-1", "root-run-1", "root-run-1"))
+        self.assertEqual(self.runs.new_id("../x", "../../etc"), "x-etc-1")
+        self.assertEqual(self.runs.new_id("root", "---"), "root-run-2")
+
     def test_duration_limit(self):
         r = self.client("alice").post("/api/runs", json={"template": "pki-refill", "duration_minutes": 100000})
         self.assertEqual(r.status_code, 400)

@@ -20,6 +20,20 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-12: run identifiers from the scenario name
+
+A run's identifier is `<user>-<scenario name>-<n>` (e.g. `alice-mixzone-random-3`) instead of
+12 hex digits. `n` starts at 1 and counts that user's runs started under that name; the
+database keeps the counters (new table `run_counters`, made on the first start), so a number
+is never given twice. The name is the one the run is started with; user and name are reduced
+to letters, digits, `.`, `_` and `-`. Existing runs keep their identifiers.
+
+- A scenario is validated before the run gets its number, so a refused one uses none (and no
+  longer leaves its text in `data/scenarios`).
+- The broker account's environment variables no longer carry the run id.
+- Fixed on the way: a station `name` that is not text (`name = 1`) is reported as a scenario
+  error instead of failing the request.
+
 ## 2026-10-12: suggested next runs in the summary report
 
 The summary report ends with "6. Suggested next runs", chosen by rule from the run's

@@ -276,6 +276,9 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         if missing:
             errors.append(f"{where}: missing {', '.join(missing)}")
             continue
+        if not isinstance(raw["name"], str):
+            errors.append(f"{where}: name must be text in quotes")
+            continue
         st = {k: raw.get(k, defaults.get(k)) for k in ("security", "aa_cert", "root_cert")}
         st.update({"name": raw["name"] + suffix, "base_name": raw["name"], "ip": remap_ip(raw["ip"], instance),
                    "station_id": int(raw["station_id"]), "station_type": int(raw["station_type"]),

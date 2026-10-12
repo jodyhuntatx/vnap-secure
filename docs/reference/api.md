@@ -51,6 +51,7 @@ bodies; this page gives the overview.
 | `POST /api/runs/{id}/control` | owner | pseudonym change, trigger, lock, unlock; returns the station's answer |
 | `POST /api/runs/{id}/stations/{station}/position` | owner | move a station |
 | `POST /api/runs/{id}/check`, `GET /api/runs/{id}/checks` | owner / readers | run a check (verdict, metrics); earlier checks |
+| (run ids) | | `<user>-<scenario name>-<n>`, see [runs](../operations/service-deployment.md#runs) |
 | `GET /api/runs/{id}/results`, `GET /api/runs/{id}/results/{name}` | readers | files collected at stop, among them the summary `report.docx` |
 | `GET/POST /api/backups` | admin | list archives; back up now |
 | `GET /api/audit` | admin | audit log (`limit`, `username`) |
