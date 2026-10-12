@@ -47,8 +47,8 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
     certificate check, error), with pause. Hover a kind for its meaning.
   - *Control*: ID change trigger, lock and unlock, with each station's answer.
   - *Results*: run a check (extra expectations allowed) and see earlier checks. After the stop,
-    download the collected files and see the eavesdropper's score against ground truth; the
-    headings explain each column on hover.
+    download the summary report (`report.docx`) and the other collected files, and see the
+    eavesdropper's score against ground truth; the headings explain each column on hover.
 - **Account:**
   - change password;
   - turn the TOTP second factor on (QR code) or off, and make new recovery codes;

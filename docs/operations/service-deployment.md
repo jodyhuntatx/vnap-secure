@@ -179,12 +179,14 @@ from the command line.
   - the status;
   - the scoring (`score.json`; see [eavesdropper and scoring](../functional/eavesdropper-and-scoring.md));
   - the PKI's issue log (digests only, never keys);
-  - `run.json` and the scenario.
+  - `run.json` and the scenario;
+  - a summary report (`report.docx`), written from the files above. See
+    [summary report](../functional/eavesdropper-and-scoring.md#summary-report).
 
 ## Tests
 
 ```bash
-make test-service      # 33 tests, no Docker needed
+make test-service      # 35 tests, no Docker needed
 ```
 
 The endpoints are listed in [API](../reference/api.md); the browser UI is described in

@@ -14,6 +14,7 @@ import tomllib
 import traceback
 
 from .config import SIM_DIR
+from .report import write_report
 import sys
 sys.path.insert(0, SIM_DIR)
 from vnapsim.common import SCENARIO_DIR, ScenarioError, docker  # noqa: E402
@@ -407,8 +408,18 @@ class RunManager:
                                       "seed", "created_at", "started_at")}
         if sim.pki:   # the C-ITS-PKI version that issued the run's certificates
             record["cits_pki"] = (sim.pki["Config"].get("Labels") or {}).get("vnap.cits_pki")
+        record["stopped_at"], record["stop_reason"] = time.time(), run.get("stop_reason")
+        check = self.db.one("SELECT verdict, result, created_at FROM checks WHERE run_id = ? ORDER BY id DESC LIMIT 1", (run["id"],))
+        if check:
+            record["check"] = {"verdict": check["verdict"], "created_at": check["created_at"],
+                               "expectations": len(json.loads(check["result"]).get("expectations", []))}
         with open(os.path.join(out, "run.json"), "w") as f:
             json.dump(record, f, indent=1)
+        try:   # the summary is built from the files above; a failure must not lose them
+            write_report(out)
+        except Exception:
+            with open(os.path.join(out, "report-error.txt"), "w") as f:
+                f.write(traceback.format_exc())
 
     def results(self, run_id):
         d = os.path.join(self.results_dir, run_id)

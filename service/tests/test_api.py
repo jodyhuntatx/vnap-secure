@@ -216,6 +216,62 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(alice.get(f"/api/runs/{run['id']}/results/status.json").status_code, 200)
         self.assertEqual(alice.get(f"/api/runs/{run['id']}/results/..%2F..%2Fvnapapi.db").status_code, 404)
 
+    def test_summary_report_from_collected_results(self):
+        import json
+        import zipfile
+        from vnapapi.report import write_report
+        d = os.path.join(self.tmp, "results")
+        os.makedirs(d)
+
+        def station(name, sid, stype, pool):
+            return {"name": f"{name}-i1", "station_id": sid, "station_type": stype, "state": "running",
+                    "security": {"entity": "certs-v3", "pseudonym_pool": pool}, "chain": [{"ok": True}],
+                    "pseudonym": {"changes": 2, "rejected": 0, "refill": None, "id_change": {"scope": "full"}} if pool else None}
+
+        def link(old, new, ok):
+            return {"time": "2026-10-11T22:56:45.726Z", "track": "V2", "old_station": f"{old}-i1", "new_station": f"{new}-i1",
+                    "technique": "position", "evidence": ["position continuity (8.0 m, 5.94 s gap; old identity silent since)"],
+                    "correct": ok}
+        files = {
+            "run.json": {"id": "abc", "owner": "alice", "name": "two <cars> & a zone", "description": "a test", "instance": 1,
+                         "image": "vnap:latest", "seed": 7, "started_at": 1000.0, "stopped_at": 1120.0, "stop_reason": "user"},
+            "status.json": {"health": "ok", "warnings": [], "stations": [station("rsu", 1, 15, None), station("v1", 2, 5, 8),
+                                                                         station("v2", 3, 5, 8)],
+                            "control": {"mobility": {"name": "mobility-i1", "seed": 7, "dynamic_mix_zone": None,
+                                                     "mix_zones": [{"name": "zone1", "radius_m": 40, "min_vehicles": 2}]}},
+                            "observers": [{"name": "eavesdropper-i1", "counts": {"frames": 10, "errors": 0}}]},
+            "score.json": {"links": 2, "correct": 1, "wrong": 1, "by_technique": {"position": {"correct": 1, "wrong": 1}},
+                           "longest_followed": {"changes": 1, "station": "v1-i1", "track": "V2"}, "stations": ["v1-i1", "v2-i1"],
+                           "tracks": [{"track": "V2", "identities": 3, "stations": ["v1-i1", "v1-i1", "v2-i1"]}],
+                           "link_list": [link("v1", "v1", True), link("v1", "v2", False)]},
+        }
+        for name, content in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                json.dump(content, f)
+        with open(os.path.join(d, "scenario.toml"), "w") as f:
+            f.write('[[stations]]\nname = "v1"\npseudonyms = { silent_min_ms = 6000, silent_max_ms = 12000 }\n')
+        with open(os.path.join(d, "v1-i1.log"), "w") as f:
+            f.write("2026-10-11T22:56:40.1Z [IDCHANGE] silent period 9000 ms\n")
+        with open(os.path.join(d, "mobility-i1.log"), "w") as f:
+            f.write("2026-10-11T22:56:00.1Z [MOBILITY] station 2: 3 segment(s), 500 m loop, 36 km/h from t=0 s, topic vnap/position/2\n"
+                    "2026-10-11T22:56:39.1Z [MOBILITY] t=  39.0 s station 2 in mix zone zone1: change event mobility-1\n"
+                    "2026-10-11T22:56:50.1Z [MOBILITY] t=  50.0 s station 3 left mix zone zone1 without a change: fewer than 2 vehicles inside\n")
+        with zipfile.ZipFile(write_report(d)) as z:
+            self.assertIsNone(z.testzip())
+            doc = z.read("word/document.xml").decode()
+        import xml.dom.minidom
+        xml.dom.minidom.parseString(doc)                                    # well-formed
+        text = re.sub(r"<[^>]+>", " ", doc)
+        for expected in ("two &lt;cars&gt; &amp; a zone: Run Summary", "2 min of traffic", "500 m loop, 36 km/h from t=0 s",
+                         "1 entries with a change event, 1 passages without", "8.0 m, 5.94 s gap", "WRONG",
+                         "v1 -&gt; v1 -&gt; v2", "silent 6-12 s", "4. Conclusion", "5. Limitations of this run"):
+            self.assertIn(expected, text)
+        # without an eavesdropper and with nothing but run.json: still a report
+        for name in ("score.json", "status.json", "scenario.toml"):
+            os.remove(os.path.join(d, name))
+        with zipfile.ZipFile(write_report(d)) as z:
+            self.assertIn("No eavesdropper took part", z.read("word/document.xml").decode())
+
     def test_live_endpoints_need_a_running_run(self):
         alice = self.client("alice")
         run = alice.post("/api/runs", json={"template": "pki-refill"}).json()

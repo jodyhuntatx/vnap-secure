@@ -20,6 +20,20 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-12: summary report at the end of a run
+
+When a run stops, the service writes `report.docx` into its results, in the form of the test
+summaries in `results/`: header table, purpose, setup, results (with every link scored
+against ground truth, wrong links by vehicle pair and the content of each track),
+observations, conclusion and limitations. The *Results* tab links it first.
+
+- **Facts only:** no recommendations for further scenarios; those need judgement.
+- **Built from the collected files** (`service/vnapapi/report.py`, standard library only), so
+  `python3 -m vnapapi.report <results directory>` writes it again, also for earlier runs.
+- **`run.json`** gains `stopped_at`, `stop_reason` and the last check; **`score.json`** gains
+  each link's `evidence`.
+- Details: [summary report](docs/functional/eavesdropper-and-scoring.md#summary-report).
+
 ## 2026-10-11: run name and description
 
 A run has a name and a description of its own, which start as its scenario's. The owner (or

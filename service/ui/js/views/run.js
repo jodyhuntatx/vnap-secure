@@ -302,6 +302,10 @@ export async function runView(app, session, runId) {
     const files = await get(`/runs/${runId}/results`);
     if (files.length) {
       box.append(h("div", { class: "panel" }, h("h2", {}, "Collected results"),
+        files.some((f) => f.name === "report.docx")
+          ? h("p", {}, h("a", { href: `/api/runs/${runId}/results/report.docx` }, "Summary report"),
+            h("span", { class: "muted" }, " (Word document): setup, results, every link scored, conclusion and limitations of this run"))
+          : null,
         table(["File", "Size"], files.map((f) => [h("a", { href: `/api/runs/${runId}/results/${encodeURIComponent(f.name)}` }, f.name),
           `${(f.bytes / 1024).toFixed(1)} KB`]))));
       if (files.some((f) => f.name === "score.json")) {

@@ -55,7 +55,8 @@ def score(truth, events):
             k = by_kind.setdefault(kind, {"correct": 0, "wrong": 0})
             k["correct" if ok else "wrong"] += 1
             links.append({"time": e.get("time"), "track": e.get("track"), "old": e["old"], "new": e["new"],
-                          "old_station": old, "new_station": new, "technique": kind, "correct": ok})
+                          "old_station": old, "new_station": new, "technique": kind,
+                          "evidence": e.get("evidence") or [], "correct": ok})
             merged = e.get("merged_track")
             if merged and merged != e.get("track"):
                 tracks.setdefault(e["track"], []).extend(tracks.pop(merged, [e["new"]]))

@@ -105,3 +105,33 @@ python3 images/eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/  
   further scenarios, is in [results](../../results/README.md).
 - **Countermeasures:** the countermeasures it is measured against are described in
   [pseudonym change](pseudonym-change.md).
+
+## Summary report
+
+When a run stops, the service writes `report.docx` into the run's results, in the form of the
+test summaries in [results](../../results/README.md). Download it on the *Results* tab or with
+`GET /api/runs/<id>/results/report.docx`.
+
+| Section | Content |
+|---|---|
+| Header table | date and duration, run, mobility seed, station image, security and PKI, eavesdropper, health |
+| 1. Purpose | the run's description |
+| 2. Setup | every station with its role, movement and pseudonym pool; what triggered ID changes; the silent period, configured and measured; the eavesdropper's settings |
+| 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains, observations |
+| 4. Conclusion | the result in a few sentences, with the chance level for comparison |
+| 5. Limitations of this run | those that follow from the run's setup |
+
+- **Facts only:** the report states what was measured. It does not judge the scenario or
+  recommend further ones; that part of the hand-written summaries stays with the reader.
+- **Without an eavesdropper** the report has the setup and the counts, and no linkage.
+- **Pattern of the mistakes:** from 8 wrong links on, the report says how many of them one
+  fixed rule ("old vehicle X is really new vehicle Y") explains. At 80 % or more an attacker
+  who knows the traffic pattern could undo most of them.
+- **Source:** only the files in the run's results (`run.json`, `status.json`, `score.json`,
+  `scenario.toml`, the container logs). `run.json` therefore also records when and why the
+  run stopped and its last check, and each link in `score.json` its evidence.
+- **Again, or for an earlier run:** `python3 -m vnapapi.report <results directory>` in
+  `service/` writes the report for the results in `data/results/<run id>`. A run from before
+  this feature has no stop time in `run.json`; the last log line stands in for it, and the
+  links have no evidence column.
+- **If it fails**, the other results are kept and `report-error.txt` holds the reason.
