@@ -290,7 +290,8 @@ class ApiTest(unittest.TestCase):
         text = re.sub(r"<[^>]+>", " ", doc)
         for expected in ("two &lt;cars&gt; &amp; a zone: Run Summary", "2 min of traffic", "500 m loop, 36 km/h from t=0 s",
                          "1 entries with a change event, 1 passages without", "8.0 m, 5.94 s gap", "WRONG",
-                         "v1 -&gt; v1 -&gt; v2", "silent 6-12 s", "4. Conclusion", "5. Limitations of this run"):
+                         "v1 -&gt; v1 -&gt; v2", "67 % (v1)",
+                         "Station predictions in actual order across identity changes", "silent 6-12 s", "4. Conclusion", "5. Limitations of this run"):
             self.assertIn(expected, text)
         self.assertIn("6. Suggested next runs", text)
         self.assertIn("With 2 vehicles a guess is already right 50 % of the time", text)      # rule few-vehicles

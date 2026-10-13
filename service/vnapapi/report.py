@@ -201,6 +201,15 @@ def _evidence(link):
     return "; ".join(out) or "-"
 
 
+def _most_frequent(stations):
+    """'75 % (obu1)': the share of a track's identities that belong to its most frequent vehicle, and that
+    vehicle (all of them on a tie)."""
+    counts = Counter(_short(s) for s in stations)
+    top = max(counts.values(), default=0)
+    names = [s for s, n in counts.items() if n == top]
+    return f"{_pct(top, len(stations))} ({', '.join(names)})" if names else ""
+
+
 def _repeats(d):
     """Kept runs of the same owner with exactly this scenario (this one included), and their seeds."""
     try:
@@ -521,9 +530,12 @@ def build(d, suggestions=None):
         b.append(("h2", f"3.{section} What the eavesdropper's tracks contain"))
         section += 1
         b.append(("p", "Each row is one track at the end of the run; the vehicles are listed in the order its identities were seen."))
-        b.append(("table", ["Track", "Identities", "Vehicles behind them, in order"],
-                  [[t["track"], str(t["identities"]), " -> ".join(_short(s) for s in t["stations"])] for t in tracks],
-                  [0.12, 0.13, 0.75]))
+        b.append(("p", "Most Frequent is the vehicle behind most of the track's identities and its share of them; several "
+                       "names are a tie."))
+        b.append(("table", ["Track", "Identities", "Most Frequent", "Station predictions in actual order across identity changes"],
+                  [[t["track"], str(t["identities"]), _most_frequent(t["stations"]),
+                    " -> ".join(_short(s) for s in t["stations"])] for t in tracks],
+                  [0.1, 0.12, 0.2, 0.58]))
 
     # ---- observations and conclusion
     obs, conclusion = [], []

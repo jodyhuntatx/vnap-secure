@@ -70,11 +70,16 @@ stations' own logs):
   vehicle through a change.
 - **Per track:**
   - *Identities*: pseudonyms in the track.
-  - *Purity*: the share that belongs to its most common vehicle.
+  - *Most Frequent*: the share that belongs to its most frequent vehicle, with that vehicle
+    in parentheses, e.g. `75 % (obu1)`. Several names mean a tie.
   - *Followed*: changes followed without a mistake.
+  - *Station predictions in actual order across identity changes*: the real vehicle behind each pseudonym
+    the eavesdropper put into the track, in the order it added them, e.g.
+    `obu1 → obu1 → obu2`. One name throughout means it followed that vehicle; a change of
+    name is a wrong link.
 
-  Read purity together with identities. 1 identity is always 100 % and means nothing was
-  linked. Many identities at high purity means a vehicle was tracked. Low purity means
+  Read the share together with identities. 1 identity is always 100 % and means nothing was
+  linked. Many identities at a high share means that vehicle was tracked. A low share means
   different vehicles were mixed up, so the mix zone worked.
 
 Details are in [eavesdropper and scoring](../functional/eavesdropper-and-scoring.md#scoring-against-ground-truth).

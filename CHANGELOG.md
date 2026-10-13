@@ -20,6 +20,19 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-13: clearer column headers on the Results tab
+
+Two per-track columns on the *Results* tab have new headers:
+
+- *Purity* is now *Most Frequent* and names the vehicle the share belongs to, e.g.
+  `75 % (obu1)`; on a tie it names each of them.
+- *Stations, in order* is now *Station predictions in actual order across identity changes*.
+
+The values are the same, and `score.json` keeps its fields (`purity`, `main_station`,
+`stations`). The track table of the summary report (`report.docx`, section 3) has the same
+two columns; it had no *Most Frequent* column before. Reports already written are unchanged
+until they are made again (`python3 -m vnapapi.report <results directory>`).
+
 ## 2026-10-12: run identifiers from the scenario name
 
 A run's identifier is `<user>-<scenario name>-<n>` (e.g. `alice-mixzone-random-3`) instead of

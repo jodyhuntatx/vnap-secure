@@ -336,9 +336,19 @@ export async function runView(app, session, runId) {
       score.tracks && score.tracks.length ? table([
         hint("Track", "one vehicle as the eavesdropper sees it: the pseudonyms it believes belong together"),
         hint("Identities", "pseudonyms in the track; 1 means nothing was linked to it"),
-        hint("Purity", "share of the track's pseudonyms that belong to its most common vehicle. Read it with Identities: many identities at 100 % = a vehicle tracked through its changes (bad for privacy); low purity = different vehicles mixed up (the mix zone worked); 1 identity is always 100 % and means nothing"),
+        hint("Most Frequent", "the vehicle behind most of the track's pseudonyms (in parentheses) and its share of them; several names = a tie. Read it with Identities: many identities at 100 % = that vehicle tracked through its changes (bad for privacy); a low share = different vehicles mixed up (the mix zone worked); 1 identity is always 100 % and means nothing"),
         hint("Followed", "pseudonym changes through which this track followed one vehicle without a mistake"),
-        hint("Stations, in order", "the real vehicle behind each pseudonym of the track, in the order the eavesdropper added them")],
-        score.tracks.map((t) => [t.track, t.identities, `${Math.round(t.purity * 100)} %`, t.followed_changes ?? "", t.stations.join(" → ")])) : null);
+        hint("Station predictions in actual order across identity changes", "the real vehicle behind each pseudonym of the track, in the order the eavesdropper added them")],
+        score.tracks.map((t) => [t.track, t.identities, mostFrequent(t), t.followed_changes ?? "", t.stations.join(" → ")])) : null);
   }
+}
+
+// "75 % (obu1)": the share of a track's pseudonyms that belong to its most frequent vehicle, and
+// that vehicle (all of them on a tie)
+function mostFrequent(t) {
+  const counts = new Map();
+  for (const s of t.stations || []) counts.set(s, (counts.get(s) || 0) + 1);
+  const top = Math.max(0, ...counts.values());
+  const names = [...counts].filter(([, n]) => n === top).map(([s]) => s);
+  return `${Math.round(t.purity * 100)} %` + (names.length ? ` (${names.join(", ")})` : "");
 }

@@ -96,8 +96,9 @@ python3 images/eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/  
 | **Links** (correct / wrong, per technique) | each pseudonym change the eavesdropper linked; correct when both pseudonyms belong to the same vehicle | wrong links are the attacker's mistakes; correct ones are privacy failures |
 | **Longest chain followed** | the most pseudonym changes through which one track followed one vehicle without a mistake (consecutive identities of the same vehicle) | the privacy result in one number: 0 means no vehicle was followed through any change |
 | **Identities** (per track) | pseudonyms the eavesdropper put into the track | 1 means nothing was linked to it |
-| **Purity** (per track) | share of the track's pseudonyms that belong to its most common vehicle | read with Identities: many identities at high purity means a vehicle was tracked; low purity means vehicles were mixed up (the mix zone worked); 1 identity is always 100 % |
-| **Followed** (per track) | pseudonym changes through which this track stayed on one vehicle | purity can overstate tracking: a track alternating between two cars has 50 % purity but follows neither |
+| **Most Frequent** (per track) | share of the track's pseudonyms that belong to its most frequent vehicle, and that vehicle: `75 % (obu1)`. In `score.json`: `purity` and `main_station` | read with Identities: many identities at a high share means that vehicle was tracked; a low share means vehicles were mixed up (the mix zone worked); 1 identity is always 100 % |
+| **Station predictions in actual order across identity changes** (per track) | the real vehicle behind each pseudonym of the track, in the order the eavesdropper added them: `obu1 → obu1 → obu2`. In `score.json`: `stations` | one name throughout means that vehicle was followed; each change of name is a wrong link |
+| **Followed** (per track) | pseudonym changes through which this track stayed on one vehicle | the share can overstate tracking: a track alternating between two cars is 50 % one car but follows neither |
 
 ## Related
 
@@ -117,7 +118,7 @@ test summaries in [results](../../results/README.md). Download it on the *Result
 | Header table | date and duration, run, mobility seed, station image, security and PKI, eavesdropper, health |
 | 1. Purpose | the run's description |
 | 2. Setup | every station with its role, movement and pseudonym pool; what triggered ID changes; the silent period, configured and measured; the eavesdropper's settings |
-| 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains, observations |
+| 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains (with the same *Most Frequent* and *Station predictions in actual order across identity changes* columns as the *Results* tab), observations |
 | 4. Conclusion | the result in a few sentences, with the chance level for comparison |
 | 5. Limitations of this run | those that follow from the run's setup |
 | 6. Suggested next runs | suggestions chosen by rule, see [below](#suggested-next-runs) |
