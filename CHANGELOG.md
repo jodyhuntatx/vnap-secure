@@ -20,6 +20,14 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-17: documentation as one PDF
+
+`docs/vnap-secure-documentation.pdf` collects all Markdown documentation, with an introduction
+on the design intention of VNAP-Secure (`scripts/docs/pdf-intro.md`); the README links it at
+the top. `make docs-pdf` rebuilds it (`scripts/docs/build-pdf.py`, reportlab and markdown-it in
+`scripts/docs/.venv`), and `make test` now includes `make docs-pdf-check`, which fails when the
+PDF no longer matches its sources. See [build](docs/build.md#documentation-pdf).
+
 ## 2026-10-13: clearer column headers on the Results tab
 
 Two per-track columns on the *Results* tab have new headers:

@@ -87,9 +87,32 @@ make test-ui        # JavaScript syntax of the web UI (node in a container)
 make openapi-check  # docs/reference/openapi.json matches the API (regenerate with make openapi)
 make diffs-check
 make docs-check     # relative links and anchors in all Markdown files
+make docs-pdf-check # docs/vnap-secure-documentation.pdf is current (rebuild with make docs-pdf)
 ```
 
 Station behaviour is tested with live runs: a scenario, then `vnapctl check` with the
 scenario's expectations. C-ITS-PKI changes are tested from its side by
 `tests/test_vnap_secure_interface.py`, and here by a `[pki]` scenario (see
 [architecture](architecture.md#dependency-on-c-its-pki)).
+
+## Documentation PDF
+
+`docs/vnap-secure-documentation.pdf` holds all Markdown documentation in one file, with an
+introduction on the design intention of VNAP-Secure. After changing any Markdown file:
+
+```bash
+make docs-pdf       # rebuild the PDF (installs scripts/docs/requirements.txt into scripts/docs/.venv)
+git add docs/vnap-secure-documentation.pdf
+```
+
+- **Kept current by `make test`:** the PDF carries a digest of its sources (every Markdown file,
+  the introduction, `docs/images/`, the builder). `make docs-pdf-check` fails when they no
+  longer match. The check needs only the standard library.
+- **Reproducible:** the same sources give the same bytes, so rebuilding without a change leaves
+  git clean.
+- **Introduction:** `scripts/docs/pdf-intro.md`.
+- **A new Markdown file** must be added to a part in `PARTS` in `scripts/docs/build-pdf.py`; the
+  build and the check fail until it is. Links between documents become links within the PDF;
+  links to other repository files point to GitHub.
+- **Fonts:** DejaVu (`fonts-dejavu-core`, standard on Ubuntu). Italics use `fonts-dejavu-extra`
+  when installed, otherwise reportlab's Vera.

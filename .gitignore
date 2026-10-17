@@ -4,5 +4,7 @@ __pycache__/
 service/data/
 service/.deps/
 service/.venv/
+scripts/docs/.venv/
+scripts/docs/.deps/
 service/secrets/
 service/backups/

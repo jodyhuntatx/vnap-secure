@@ -1,5 +1,8 @@
 # VNAP-Secure
 
+**All documentation in one PDF:** [docs/vnap-secure-documentation.pdf](docs/vnap-secure-documentation.pdf),
+with an introduction to the design intention of VNAP-Secure.
+
 VNAP-Secure runs [Vanetza-NAP](https://github.com/nap-it/vanetza-nap) (`release2-main`)
 V2X stations with C-ITS security enabled (ETSI TS 103 097: `certs-v2` for V1.2.1
 certificates, `certs-v3` for V1.3.1 / IEEE 1609.2 certificates), and studies how well
@@ -161,7 +164,7 @@ then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 
 ```bash
 cd ${VNAP_HOME}
-make test        # vnapsim and service unit tests, web UI syntax, OpenAPI spec and patch diffs current, documentation links
+make test        # vnapsim and service unit tests, web UI syntax, OpenAPI spec and patch diffs current, documentation links, documentation PDF current
 ```
 
 None of these need a running simulation. Changes that affect running stations are checked

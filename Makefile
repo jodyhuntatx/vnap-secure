@@ -3,18 +3,20 @@
 #   make origs         the same image from the unpatched upstream sources, for comparison
 #   make pki-image     per-run PKI image (vnapctl also builds it on demand)
 #   make msgcheck      offline message checker vnap:msgcheck (after make image)
-#   make test          all tests that need no simulation: sim, service, UI syntax, OpenAPI, diffs, docs
+#   make test          all tests that need no simulation: sim, service, UI syntax, OpenAPI, diffs, docs, docs PDF
 #   make service-deps  the service's virtualenv service/.venv with requirements.txt (make test runs it first)
 #   make diffs         regenerate patches/vanetza-nap/diffs/ after editing the patch set
 #   make openapi       regenerate docs/reference/openapi.json after changing the API
+#   make docs-pdf      rebuild docs/vnap-secure-documentation.pdf after changing any Markdown file
 #   make submodule     fetch C-ITS-PKI (external/C-ITS-PKI) at the pinned commit
 # Variables: IMAGE (default vnap:latest), VANETZA_NAP_DIR (default ~/vanetza-nap), CITS_PKI_DIR.
 
 SHELL := /bin/bash
 # expanded when a recipe runs, so after service-deps has created the virtualenv
 SERVICE_PY = $(shell [ -x service/.venv/bin/python ] && echo .venv/bin/python || echo "PYTHONPATH=.deps python3")
+DOCS_PY = $(shell [ -x scripts/docs/.venv/bin/python ] && echo scripts/docs/.venv/bin/python || echo "PYTHONPATH=scripts/docs/.deps python3")
 
-.PHONY: image origs pki-image msgcheck test test-sim test-service service-deps test-ui openapi openapi-check diffs diffs-check docs-check submodule
+.PHONY: image origs pki-image msgcheck test test-sim test-service service-deps test-ui openapi openapi-check diffs diffs-check docs-check docs-pdf docs-pdf-check docs-deps submodule
 
 image:
 	scripts/build/docker-build.sh
@@ -28,7 +30,7 @@ pki-image:
 msgcheck:
 	sim/images/msgcheck/build-msgcheck.sh
 
-test: test-sim test-service test-ui openapi-check diffs-check docs-check
+test: test-sim test-service test-ui openapi-check diffs-check docs-check docs-pdf-check
 
 test-sim:
 	cd sim && python3 -m unittest discover -s tests
@@ -67,6 +69,24 @@ diffs-check:
 
 docs-check:
 	scripts/docs-check.py
+
+# all Markdown documentation as one PDF, with the introduction in scripts/docs/pdf-intro.md.
+# The same sources give the same bytes, so an unchanged PDF stays unchanged in git.
+docs-pdf: docs-deps
+	$(DOCS_PY) scripts/docs/build-pdf.py
+
+# part of make test, standard library only: the PDF's source digest matches the Markdown files
+docs-pdf-check:
+	scripts/docs/build-pdf.py --check
+
+# the PDF builder's packages (scripts/docs/requirements.txt), installed like service-deps
+docs-deps:
+	@cd scripts/docs && if .venv/bin/python -m pip --version >/dev/null 2>&1 || python3 -m venv --clear .venv 2>/dev/null; then \
+	  [ .venv/.installed -nt requirements.txt ] || { .venv/bin/python -m pip install -q -r requirements.txt && touch .venv/.installed; }; \
+	else \
+	  rm -rf .venv; \
+	  [ .deps/.installed -nt requirements.txt ] || { python3 -m pip install -q --target .deps -r requirements.txt && touch .deps/.installed; }; \
+	fi
 
 submodule:
 	git submodule update --init
