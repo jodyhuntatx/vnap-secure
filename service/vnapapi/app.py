@@ -557,6 +557,14 @@ def create_app(cfg=None, start_workers=True):
         sim = runs.simulation(run_for(user, run_id))
         return {"reports": observer_reports(sim), "score": score_run(sim)}
 
+    @app.get("/api/runs/{run_id}/overhead")
+    def overhead(run_id: str, user=Depends(principal)):
+        """Privacy and cost of the run's pseudonym changes (vnapsim.overhead), once the run has stopped."""
+        data = runs.overhead(run_for(user, run_id))
+        if data is None:
+            raise HTTPException(409, "available when the run has stopped and its results are collected")
+        return data
+
     class Control(BaseModel):
         action: str
         station: str = Field(max_length=64)

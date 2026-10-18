@@ -83,7 +83,7 @@ changes nothing.
 make test           # all of the following
 make test-sim       # vnapsim unit tests (no docker)
 make test-service   # service unit tests (no docker; installs service/requirements.txt first)
-make test-ui        # JavaScript syntax of the web UI (node in a container)
+make test-ui        # JavaScript syntax of the web UI and unit tests of its scenario builder (node in a container)
 make openapi-check  # docs/reference/openapi.json matches the API (regenerate with make openapi)
 make diffs-check
 make docs-check     # relative links and anchors in all Markdown files

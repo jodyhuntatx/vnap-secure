@@ -20,6 +20,7 @@ sys.path.insert(0, SIM_DIR)
 from vnapsim.common import SCENARIO_DIR, ScenarioError, docker  # noqa: E402
 from vnapsim.lifecycle import allocate_instance, scenario_down, scenario_up  # noqa: E402
 from vnapsim.scenario import catalogue_refs, load_policy, load_scenario, resolve_scenario_path, variant_overrides  # noqa: E402
+from vnapsim.overhead import load_or_analyse, write as write_overhead  # noqa: E402
 from vnapsim.scoring import score_run  # noqa: E402
 from vnapsim.status import Simulation, build_status  # noqa: E402
 
@@ -447,11 +448,24 @@ class RunManager:
                                "expectations": len(json.loads(check["result"]).get("expectations", []))}
         with open(os.path.join(out, "run.json"), "w") as f:
             json.dump(record, f, indent=1)
+        try:   # privacy and cost of the pseudonym changes, from the files above (overhead.json)
+            write_overhead(out)
+        except Exception:
+            with open(os.path.join(out, "overhead-error.txt"), "w") as f:
+                f.write(traceback.format_exc())
         try:   # the summary is built from the files above; a failure must not lose them
             write_report(out)
         except Exception:
             with open(os.path.join(out, "report-error.txt"), "w") as f:
                 f.write(traceback.format_exc())
+
+    def overhead(self, run):
+        """The run's overhead.json (privacy and cost of its pseudonym changes). Computed and kept on first
+        request for runs stopped before it existed; None while the run has no collected results."""
+        d = os.path.join(self.results_dir, run["id"])
+        if run["state"] in ACTIVE or not os.path.isfile(os.path.join(d, "status.json")):
+            return None
+        return load_or_analyse(d)
 
     def results(self, run_id):
         d = os.path.join(self.results_dir, run_id)

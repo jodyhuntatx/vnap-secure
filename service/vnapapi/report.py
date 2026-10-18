@@ -1,7 +1,8 @@
 """Summary report of a stopped run (report.docx), in the form of the test summaries in results/.
 
 Built only from the files collected in the run's results directory (run.json, status.json,
-score.json, scenario.toml and the container logs), so it can be made again later:
+score.json, scenario.toml, the container logs, and overhead.json for the cost of the pseudonym
+changes, computed from them when missing), so it can be made again later:
 
     python3 -m vnapapi.report <results directory>
 
@@ -93,6 +94,19 @@ def _short(name):
     return re.sub(r"-i\d+$", "", name or "?")
 
 
+def _overhead(directory):
+    """overhead.json of the run (privacy and cost of its pseudonym changes, vnapsim.overhead): read, or
+    computed and written when missing or of an older version; None when that is not possible."""
+    sim = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "sim")
+    if sim not in sys.path:
+        sys.path.insert(0, sim)
+    try:
+        from vnapsim.overhead import load_or_analyse
+        return load_or_analyse(directory)
+    except Exception:  # noqa: BLE001  (the report goes on without the cost section)
+        return _json(directory, "overhead.json")
+
+
 def gather(directory):
     """Everything the report needs, from the files of a results directory."""
     run = _json(directory, "run.json") or {}
@@ -145,7 +159,7 @@ def gather(directory):
     return {"directory": directory, "run": run, "status": status, "score": score, "scenario": scenario, "stations": stations,
             "vehicles": [s for s in stations if s["pool"]], "control": control, "mobility": mobility,
             "started": started, "stopped": stopped, "seconds": max(0.0, stopped - started) if started else 0.0,
-            "zone_changes": zone_changes, "zone_skipped": zone_skipped}
+            "zone_changes": zone_changes, "zone_skipped": zone_skipped, "overhead": _overhead(directory)}
 
 
 # ---------------------------------------------------------------- content
@@ -265,6 +279,16 @@ def facts(d):
         "warnings": len(d["status"].get("warnings") or []), "repeats": repeats, "repeats.seeds": seeds,
         "eavesdropper": int(score is not None), "chance": round(1 / n, 4) if n else 0,
     }
+    # cost of the pseudonym changes (overhead.json); 0 without a reference receiver, rules ask for cost.available==1
+    o = d.get("overhead") or {}
+    cs = o.get("summary") or {}
+    unexplained = _unexplained(o)
+    f.update({"cost.available": int(bool(o.get("reference_receiver"))),
+              "cost.gap_ms_mean": cs.get("gap_ms_mean") or 0, "cost.gap_ms_max": cs.get("gap_ms_max") or 0,
+              "cost.stale_share": cs.get("stale_share") or 0, "cost.delivery_ratio": cs.get("delivery_ratio") or 0,
+              "cost.sync_ratio": cs.get("sync_ratio") or 0, "cost.tracking_success": cs.get("tracking_success") or 0,
+              "cost.full_cert_share": cs.get("full_cert_share") or 0, "cost.unexplained_gaps": len(unexplained),
+              "cost.unexplained_gap_ms_max": max((excess for _, excess in unexplained), default=0)})
     # without an eavesdropper its facts are 0, so every rule can be evaluated; rules about it ask for eavesdropper==1
     f.update({key: 0 for key in ("links", "links.correct", "links.wrong", "links.correct_share", "links.over_chance",
                                  "pattern.explained", "pattern.share", "pattern.pairings", "followed.longest", "tracks",
@@ -292,6 +316,98 @@ def facts(d):
             f.update({f"{kind}.links": total, f"{kind}.correct": k["correct"],
                       f"{kind}.correct_share": round(k["correct"] / total, 4) if total else 0})
     return f
+
+
+TOLERANCE_MS = 250   # scheduling slack before a gap counts as longer than its causes explain
+
+
+def _unexplained(o):
+    """Changes whose reception gap is longer than the silent period plus two CAM intervals (the CAM timer
+    restarts at a random phase) explain: [(change, excess ms)]."""
+    interval = {v["vehicle"]: v.get("cam_interval_ms_median") for v in o.get("vehicles", [])}
+    out = []
+    for c in o.get("changes", []):
+        cam = interval.get(c["vehicle"])
+        if c.get("gap_ms") is not None and cam:
+            excess = c["gap_ms"] - (c.get("silent_ms") or 0) - 2 * cam
+            if excess > TOLERANCE_MS:
+                out.append((c, excess))
+    return out
+
+
+def _cost_section(d, number):
+    """Section `number`: the cost of the pseudonym changes, from overhead.json."""
+    o, b = d.get("overhead"), [("h1", f"{number}. Cost of the pseudonym changes")]
+    if not o:
+        b.append(("p", "Not available: the analysis of the pseudonym changes (overhead.json) could not be made from the "
+                       "collected results."))
+        return b
+    s, recv = o["summary"], bool(o.get("reference_receiver"))
+    pct = lambda x: "-" if x is None else f"{round(100 * x)} %"   # noqa: E731
+    ms = lambda x: "-" if x is None else f"{x} ms"   # noqa: E731
+    b.append(("p", "What each pseudonym change cost: what the other stations missed of the vehicle around it, against what "
+                   "the eavesdropper made of it. "
+                   + ("Reception is measured at the eavesdropper, which hears every frame on the lossless link like any "
+                      "receiver; the stations' logs give the ground truth." if recv else
+                      "No CAMs were recorded by an eavesdropper, so only the figures from the stations' logs are given.")))
+    rows = [["Pseudonym changes", str(s["changes"])]]
+    if s.get("tracking_success") is not None:
+        rows.append(["Tracking success", f"{pct(s['tracking_success'])} ({s['linked_correctly']} of {s['changes']} changes followed, "
+                                         f"{s['linked_wrongly']} linked to another vehicle)"])
+    rows.append(["Changes synchronized", f"{pct(s['sync_ratio'])} (another vehicle changed within {o['settings']['sync_window_s']:g} s)"])
+    lifetimes = [v["lifetime_s_mean"] for v in o["vehicles"] if v.get("lifetime_s_mean") is not None]
+    if lifetimes:
+        rows.append(["Pseudonym lifetime", f"{sum(lifetimes) / len(lifetimes):.1f} s on average"])
+    if recv:
+        missing = sum(c["cams_missing"] or 0 for c in o["changes"])
+        rows += [["Reception gap per change", f"mean {ms(s['gap_ms_mean'])}, longest {ms(s['gap_ms_max'])}"],
+                 ["CAMs missing around changes", str(missing)],
+                 ["Time information was stale", f"{pct(s['stale_share'])} (latest CAM of a vehicle older than {o['settings']['stale_s']:g} s)"],
+                 ["Delivery ratio", f"{pct(s['delivery_ratio'])} of the CAMs expected at each vehicle's usual rate"],
+                 ["Certificate overhead", f"{pct(s['full_cert_share'])} of the CAMs carry the full certificate; "
+                                          f"mean CAM {s['cam_bytes_mean']} bytes"]]
+    b.append(("table", ["Measure", "Value"], rows, [0.35, 0.65]))
+    if not recv:
+        return b
+    b.append(("h2", f"{number}.1 Per vehicle"))
+    b.append(("table", ["Vehicle", "Changes", "Lifetime", "CAM interval", "Gap p95 / max", "Stale", "Delivery", "Full cert.", "CAM bytes"],
+              [[_short(v["vehicle"]), str(v["changes"]) + (f" ({v['rejected']} refused)" if v["rejected"] else ""),
+                "-" if v["lifetime_s_mean"] is None else f"{v['lifetime_s_mean']:.1f} s",
+                ms(v["cam_interval_ms_median"]), "-" if v["gap_ms_p95"] is None else f"{v['gap_ms_p95']} / {v['gap_ms_max']} ms",
+                pct(v["stale_share"]), pct(v["delivery_ratio"]), pct(v["full_cert_share"]), str(v["cam_bytes_mean"] or "-")]
+               for v in o["vehicles"]], [0.12, 0.11, 0.1, 0.11, 0.15, 0.09, 0.1, 0.1, 0.12]))
+    measured = [c for c in o["changes"] if c["gap_ms"] is not None]
+    if measured:
+        b.append(("h2", f"{number}.2 Reception gap and the eavesdropper's outcome"))
+        b.append(("p", "Each change's reception gap runs from the last CAM under the old pseudonym to the first under the new one. "
+                       "Without a silent period it should be at most two CAM intervals, because the CAM timer restarts at a "
+                       "random phase; with one, the silent period plus that much."))
+        rows = []
+        for outcome in ("not linked", "linked wrongly", "linked correctly"):
+            group = [c for c in measured if c["outcome"] == outcome]
+            if group:
+                rows.append([outcome, str(len(group)), f"{round(sum(c['gap_ms'] for c in group) / len(group))} ms",
+                             f"{round(sum(c['silent_ms'] for c in group) / len(group))} ms"])
+        b.append(("table", ["Eavesdropper's outcome", "Changes", "Mean gap", "Mean silent period"], rows, [0.34, 0.18, 0.24, 0.24]))
+        unexplained = {id(c): excess for c, excess in _unexplained(o)}
+        longest = sorted(measured, key=lambda c: -c["gap_ms"])[:5]
+        b.append(("h2", f"{number}.3 Longest gaps"))
+        b.append(("table", ["Time", "Vehicle", "Gap", "Silent period", "Outcome", "Explained"],
+                  [[f"{c['t']:.1f} s" if c["t"] is not None else "-", _short(c["vehicle"]), f"{c['gap_ms']} ms",
+                    f"{c['silent_ms']} ms" if c["silent_ms"] else "-", c["outcome"],
+                    f"no: {unexplained[id(c)]} ms longer" if id(c) in unexplained else "yes"] for c in longest],
+                  [0.12, 0.14, 0.14, 0.16, 0.22, 0.22]))
+        n_un = len(unexplained)
+        b.append(("p", "Time is counted from the start of the recording (the first frame or the first change, whichever came "
+                       f"first). 'Explained' compares the gap with the silent period plus two of the vehicle's CAM intervals "
+                       f"({TOLERANCE_MS} ms tolerance). "
+                       + ((f"{_plural(n_un, 'change')} in the run had a longer gap; the station's log around "
+                           + ("it shows" if n_un == 1 else "them shows") + " what else kept the vehicle off the air.")
+                          if n_un else "Every gap of the run is explained.")))
+    b.append(("p", "Not measured in this run: position error and conflict exposure during gaps (they need the vehicles' true "
+                   "positions), verification failures at the receivers, delayed or lost warnings, and CPU load "
+                   "(Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx)."))
+    return b
 
 
 RE_CONDITION = re.compile(r"\s*([A-Za-z_][\w.]*)\s*(>=|<=|==|!=|>|<)\s*([\w.\-]+)\s*")
@@ -583,20 +699,31 @@ def build(d, suggestions=None):
                                     "minimum number of vehicles) if changes were expected."))
     if silent and d["seconds"]:
         share = _pct(sum(silent), d["seconds"] * n)
-        obs.append(("Safety cost. ", f"While silent a vehicle sends no CAMs: the vehicles were off the air for {share} of the run."))
+        obs.append(("Safety cost. ", f"While silent a vehicle sends no CAMs: the vehicles were off the air for {share} of the run "
+                                     "(section 4 measures what the receivers missed)."))
         conclusion.append(f"The silent periods took the vehicles off the air for {share} of the time.")
     for w in (status.get("warnings") or [])[:10]:
         obs.append(("Warning at stop. ", w))
     if (status.get("warnings") or []):
         conclusion.append(f"The status at stop had {_plural(len(status['warnings']), 'warning')}, listed above.")
+    o = d.get("overhead") or {}
+    if o.get("reference_receiver") and o["summary"].get("gap_ms_max") is not None:
+        cs = o["summary"]
+        conclusion.append(f"Around the changes the receivers missed each vehicle for {cs['gap_ms_mean']} ms on average and "
+                          f"{cs['gap_ms_max']} ms at most, and their information was stale {round(100 * (cs['stale_share'] or 0))} % "
+                          "of the time (section 4).")
     if obs:
         b.append(("h2", f"3.{section} Observations"))
         b += [("bullet", [(head, True), (text, False)]) for head, text in obs]
-    b.append(("h1", "4. Conclusion"))
+
+    # ---- 4. cost of the pseudonym changes
+    if n:
+        b += _cost_section(d, 4)
+    b.append(("h1", "5. Conclusion"))
     b.append(("p", " ".join(conclusion)))
 
     # ---- 5. limitations
-    b.append(("h1", "5. Limitations of this run"))
+    b.append(("h1", "6. Limitations of this run"))
     limits = [f"One run of {_duration(d['seconds'])}"
               + (f" with {_plural(n, 'vehicle')}" if n else "")
               + (f" and one mobility seed ({run['seed']})" if run.get("seed") is not None else "")
@@ -615,11 +742,14 @@ def build(d, suggestions=None):
     if any(v["wrapped"] for v in vehicles):
         limits.append("Pool wrap-around: some changes returned to an already used certificate, which an eavesdropper can "
                       "recognise by identifier; reuse is a linking risk of its own.")
+    if o.get("reference_receiver"):
+        limits.append("Reception is measured at one reference receiver on a lossless link without range: the gaps and stale "
+                      "time are the part the pseudonym changes cause, a lower bound of what receivers on a road would miss.")
     b += [("bullet", text) for text in limits]
 
-    # ---- 6. suggested next runs (None: no catalogue)
+    # ---- 7. suggested next runs (None: no catalogue)
     if suggestions is not None:
-        b.append(("h1", "6. Suggested next runs"))
+        b.append(("h1", "7. Suggested next runs"))
         if suggestions:
             b.append(("p", "Chosen by fixed rules (service/recommendations.toml) from the measurements above; each names the "
                            "number that triggered it. They are starting points, not conclusions: one run is thin evidence."))

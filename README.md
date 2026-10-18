@@ -166,7 +166,7 @@ then [docs/operations/web-ui.md](docs/operations/web-ui.md) for users.
 
 ```bash
 cd ${VNAP_HOME}
-make test        # vnapsim and service unit tests, web UI syntax, OpenAPI spec and patch diffs current, documentation links, documentation PDF current
+make test        # vnapsim and service unit tests, web UI syntax and builder tests, OpenAPI spec and patch diffs current, documentation links, documentation PDF current
 ```
 
 None of these need a running simulation. Changes that affect running stations are checked

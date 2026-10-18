@@ -48,6 +48,7 @@ bodies; this page gives the overview.
 | `GET /api/runs/{id}/events`, `GET /api/runs/{id}/events/stream` | readers | events from the logs (optionally live MQTT for up to 30 s); server-sent events: the last `since_s` seconds (default 5, at most 3600), an event `ready`, then new events |
 | `GET /api/runs/{id}/positions` | readers | current position of every moving station |
 | `GET /api/runs/{id}/eavesdropper` | readers | the eavesdropper's report and the score against ground truth |
+| `GET /api/runs/{id}/overhead` | readers | privacy and cost of the run's pseudonym changes (`overhead.json`: summary, per vehicle, per change, timeline); 409 until the run has stopped and its results are collected ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
 | `POST /api/runs/{id}/control` | owner | pseudonym change, trigger, lock, unlock; returns the station's answer |
 | `POST /api/runs/{id}/stations/{station}/position` | owner | move a station |
 | `POST /api/runs/{id}/check`, `GET /api/runs/{id}/checks` | owner / readers | run a check (verdict, metrics); earlier checks |

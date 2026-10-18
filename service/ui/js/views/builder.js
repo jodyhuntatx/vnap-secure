@@ -5,6 +5,8 @@ import { clear, h } from "../dom.js";
 import { crossingLayer, getUiConfig, makeMap, offset, stationColor, zoneColor } from "./mapview.js";
 
 let CENTER = [40.208106, -8.4197756];   // replaced by the service's origin (ui-config)
+const SILENT_ALL = "Radio silence after each identity change, for every vehicle with pseudonyms ([defaults] pseudonyms). A vehicle's own value replaces it. Empty: 0, no silence.";
+const SILENT_OWN = "This vehicle's own silent period. Empty: the value for all vehicles (shown in grey).";
 const DMZ_HELP = "A mix zone that travels with the vehicles: a vehicle changes its pseudonym when at least 'min cars' participating vehicles, itself included, are within the radius of it, at most once per cooldown. Needs pseudonyms and movement.";
 
 function newStation(kind, n) {
@@ -13,7 +15,7 @@ function newStation(kind, n) {
     extra: {}, envExtra: {}, pseudoExtra: {}, hasPosition: !vehicle, dmzOn: false, dmzMin: "", color: "",
     kind, name: vehicle ? `car${n}` : (n > 1 ? `rsu${n}` : "rsu"),
     position: vehicle ? offset(CENTER, 0, 60 * n) : [...CENTER],
-    pseudonyms: vehicle, silent_min_ms: 0, silent_max_ms: 0,
+    pseudonyms: vehicle, silent_min_ms: "", silent_max_ms: "",   // "": the value for all vehicles
     mobility: "none", route: [], speed_kmh: 36, loop: true, start_s: 1.5 * (n - 1),
     crossing: [...CENTER], arm_m: 150, start_arm: ["east", "north", "west", "south"][(n - 1) % 4],
   };
@@ -39,6 +41,11 @@ function pairs(obj) {
 }
 const inline = (parts) => (parts.length ? `{ ${parts.join(", ")} }` : "{}");
 
+// silent_min_ms / silent_max_ms that are set ("" leaves the key out, so the value comes from elsewhere)
+function silent(obj) {
+  return ["silent_min_ms", "silent_max_ms"].filter((k) => obj[k] !== "" && obj[k] !== undefined).map((k) => `${k} = ${n(obj[k])}`);
+}
+
 // `obj` without `known` keys: what the forms do not show
 function rest(obj, known) {
   return Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !known.includes(k)));
@@ -52,7 +59,11 @@ export function canMix(m, s) {
 export function toToml(m) {
   const lines = [`description = ${q(m.description)}`];
   lines.push(...pairs(Object.fromEntries(Object.entries(m.extra).filter(([, v]) => !isTable(v)))));
-  lines.push("", "[defaults]", `security = ${q(m.signed ? m.security : "none")}`, ...pairs(m.defaultsExtra), "");
+  lines.push("", "[defaults]", `security = ${q(m.signed ? m.security : "none")}`);
+  // [defaults] pseudonyms: keys for every vehicle with pseudonyms; a vehicle writes only what it sets itself
+  const shared = [...pairs(m.pseudo.extra), ...silent(m.pseudo)];
+  if (shared.length) lines.push(`pseudonyms = ${inline(shared)}`);
+  lines.push(...pairs(m.defaultsExtra), "");
   const anyPseudo = m.signed && m.stations.some((s) => s.kind === "vehicle" && s.pseudonyms);
   if (m.signed && m.hasPki) {
     lines.push("[pki]", `initial = ${n(m.pki.initial)}`, `refill_at = ${n(m.pki.refill_at)}`, `batch = ${n(m.pki.batch)}`, ...pairs(m.pkiExtra), "");
@@ -68,7 +79,7 @@ export function toToml(m) {
     if (!moves || s.hasPosition) env.unshift(`VANETZA_LATITUDE = ${q(f(s.position[0]))}`, `VANETZA_LONGITUDE = ${q(f(s.position[1]))}`);
     if (env.length) lines.push(`env = ${inline(env)}`);
     if (s.kind === "vehicle" && s.pseudonyms && m.signed) {
-      lines.push(`pseudonyms = ${inline([...pairs(s.pseudoExtra), `silent_min_ms = ${n(s.silent_min_ms)}`, `silent_max_ms = ${n(s.silent_max_ms)}`])}`);
+      lines.push(`pseudonyms = ${inline([...pairs(s.pseudoExtra), ...silent(s)])}`);
     }
     if (moves && s.mobility === "route") {
       lines.push(`mobility = ${inline([`route = [${s.route.map(pt).join(", ")}]`, `speed_kmh = ${n(s.speed_kmh)}`, `start_s = ${n(s.start_s)}`, `loop = ${!!s.loop}`])}`);
@@ -113,6 +124,8 @@ export function fromScenario(sc, center) {
   const point = (p, fallback) => (Array.isArray(p) && p.length === 2 && p.every((x) => typeof x === "number") ? [p[0], p[1]] : [...fallback]);
   const num = (v, fallback) => (typeof v === "number" ? v : fallback);
   const defaults = table(sc.defaults), pki = table(sc.pki), control = table(sc.control), client = table(control.client);
+  const shared = table(defaults.pseudonyms);
+  const opt = (v) => (typeof v === "number" ? v : "");   // a key that is not there stays ""
   const eav = table(sc.eavesdropper);
   const security = typeof defaults.security === "string" ? defaults.security : "none";
   const zone = control.dynamic_mix_zone;
@@ -133,7 +146,7 @@ export function fromScenario(sc, center) {
       dmzMin: num(table(st.dynamic_mix_zone).min_vehicles, ""),
       envExtra: rest(env, ["VANETZA_LATITUDE", "VANETZA_LONGITUDE"]), hasPosition,
       position: hasPosition ? [lat, lon] : [...center],
-      pseudonyms: !!pseudo, silent_min_ms: num(pseudo && pseudo.silent_min_ms, 0), silent_max_ms: num(pseudo && pseudo.silent_max_ms, 0),
+      pseudonyms: !!pseudo, silent_min_ms: opt(pseudo && pseudo.silent_min_ms), silent_max_ms: opt(pseudo && pseudo.silent_max_ms),
       pseudoExtra: rest(pseudo, ["silent_min_ms", "silent_max_ms"]),
       mobility: "route" in mob ? "route" : ("crossing" in mob ? "crossing" : "none"),
       route, speed_kmh: num(mob.speed_kmh, 50), loop: mob.loop === true, start_s: num(mob.start_s, 0),
@@ -144,7 +157,9 @@ export function fromScenario(sc, center) {
   return {
     description: typeof sc.description === "string" ? sc.description : "",
     extra: rest(sc, ["description", "defaults", "pki", "stations", "control", "eavesdropper"]),
-    signed: security !== "none", security: security !== "none" ? security : "certs-v3", defaultsExtra: rest(defaults, ["security"]),
+    signed: security !== "none", security: security !== "none" ? security : "certs-v3", defaultsExtra: rest(defaults, ["security", "pseudonyms"]),
+    pseudo: { silent_min_ms: opt(shared.silent_min_ms), silent_max_ms: opt(shared.silent_max_ms),
+      extra: rest(shared, ["silent_min_ms", "silent_max_ms"]) },
     hasPki: isTable(sc.pki) && pki.enabled !== false,
     pki: { initial: num(pki.initial, 8), refill_at: num(pki.refill_at, 2), batch: num(pki.batch, 8) },
     pkiExtra: rest(pki, ["initial", "refill_at", "batch", "enabled"]),
@@ -178,6 +193,10 @@ export async function builder(pane, sc) {
 
   // ------------------------------------------------------------ inputs bound to the model
   const num = (obj, key, attrs) => h("input", { type: "number", value: obj[key], onchange: (e) => { obj[key] = Number(e.target.value); draw(); }, ...attrs });
+  // a number that may be left empty ("": the key is not written); the placeholder shows what applies then
+  const optNum = (obj, key, placeholder, after) => h("input", { type: "number", min: 0, value: obj[key], placeholder,
+    onchange: (e) => { obj[key] = e.target.value === "" ? "" : Math.max(0, Math.floor(Number(e.target.value) || 0)); (after || draw)(); } });
+  const inherited = (key) => String(m.pseudo[key] === "" ? 0 : m.pseudo[key]);
   const txt = (obj, key) => h("input", { value: obj[key], onchange: (e) => { obj[key] = e.target.value.trim(); renderCards(); } });
   const chk = (obj, key, after) => h("input", { type: "checkbox", checked: obj[key], onchange: (e) => { obj[key] = e.target.checked; (after || draw)(); } });
   const pick = (obj, key, options, after) => h("select", { onchange: (e) => { obj[key] = e.target.value; (after || draw)(); } },
@@ -206,8 +225,9 @@ export async function builder(pane, sc) {
       if (s.kind === "vehicle") {
         parts.push(h("div", { class: "row" },
           h("label", { class: "inline" }, chk(s, "pseudonyms", renderCards), "pseudonyms (ID changes)"),
-          s.pseudonyms ? [h("label", {}, "silent min ms", num(s, "silent_min_ms", { min: 0 })),
-            h("label", {}, "silent max ms", num(s, "silent_max_ms", { min: 0 }))] : null,
+          s.pseudonyms ? [
+            h("label", { title: SILENT_OWN }, "silent min ms", optNum(s, "silent_min_ms", inherited("silent_min_ms"))),
+            h("label", { title: SILENT_OWN }, "silent max ms", optNum(s, "silent_max_ms", inherited("silent_max_ms")))] : null,
           h("label", {}, "Movement", pick(s, "mobility", ["none", "route", "crossing"], renderCards)),
           h("label", { title: "Colour of this vehicle and its route on the maps, here and in the run." }, "Colour",
             h("input", { type: "color", value: s.color || stationColor(5), onchange: (e) => { s.color = e.target.value; renderCards(); } })),
@@ -309,6 +329,9 @@ export async function builder(pane, sc) {
       h("label", {}, "certificates at start", num(m.pki, "initial", { min: 1, max: 256 })),
       h("label", {}, "refill at", num(m.pki, "refill_at", { min: 0, max: 255 })),
       h("label", {}, "batch", num(m.pki, "batch", { min: 1, max: 256 }))),
+    h("div", { class: "row" },
+      h("label", { title: SILENT_ALL }, "silent min ms, all vehicles", optNum(m.pseudo, "silent_min_ms", "0", renderCards)),
+      h("label", { title: SILENT_ALL }, "silent max ms, all vehicles", optNum(m.pseudo, "silent_max_ms", "0", renderCards))),
     h("div", { class: "row" },
       h("label", {}, "Pseudonym change events", pick(m.client, "mode", ["manual", "periodic", "random", "once"])),
       h("label", {}, "every s (periodic)", num(m.client, "interval", { min: 1 }))),

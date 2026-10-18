@@ -311,9 +311,10 @@ class ApiTest(unittest.TestCase):
         for expected in ("two &lt;cars&gt; &amp; a zone: Run Summary", "2 min of traffic", "500 m loop, 36 km/h from t=0 s",
                          "1 entries with a change event, 1 passages without", "8.0 m, 5.94 s gap", "WRONG",
                          "v1 -&gt; v1 -&gt; v2", "67 % (v1)",
-                         "Station predictions in actual order across identity changes", "silent 6-12 s", "4. Conclusion", "5. Limitations of this run"):
+                         "Station predictions in actual order across identity changes", "silent 6-12 s", "4. Cost of the pseudonym changes",
+                         "5. Conclusion", "6. Limitations of this run"):
             self.assertIn(expected, text)
-        self.assertIn("6. Suggested next runs", text)
+        self.assertIn("7. Suggested next runs", text)
         self.assertIn("With 2 vehicles a guess is already right 50 % of the time", text)      # rule few-vehicles
         # the catalogue: every shipped rule can be evaluated; own rules, priorities, limit and mistakes
         from vnapapi.report import facts, gather, recommend
@@ -599,6 +600,44 @@ class ApiTest(unittest.TestCase):
         con.close()
         row = Database(path).one("SELECT * FROM users WHERE username = 'old'")
         self.assertEqual((row["totp_enabled"], row["totp_last_step"], row["totp_secret"]), (0, 0, None))
+
+    # ------------------------------------------------------------ privacy and cost (overhead.json)
+    def test_overhead_of_a_stopped_run(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "sim", "tests"))
+        from test_overhead import results_dir
+        alice, bob = self.client("alice"), self.client("bob")
+        run = alice.post("/api/runs", json={"template": "refill"}).json()
+        url = f"/api/runs/{run['id']}/overhead"
+        self.assertEqual(alice.get(url).status_code, 409)                          # not stopped yet
+        self.db.execute("UPDATE runs SET state = 'stopped' WHERE id = ?", (run["id"],))
+        self.assertEqual(alice.get(url).status_code, 409)                          # no collected results
+        shutil.copytree(results_dir(silent_ms=2000), os.path.join(self.runs.results_dir, run["id"]))
+        r = alice.get(url)
+        self.assertEqual(r.status_code, 200, r.text)
+        o = r.json()
+        self.assertEqual((o["summary"]["changes"], o["summary"]["tracking_success"]), (2, 0.5))
+        self.assertTrue(os.path.isfile(os.path.join(self.runs.results_dir, run["id"], "overhead.json")))   # kept for next time
+        self.assertEqual(bob.get(url).status_code, 404)                            # not shared with bob
+
+    def test_report_cost_section(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "sim", "tests"))
+        from test_overhead import results_dir
+        import zipfile
+        from vnapapi.report import facts, gather, recommend, write_report
+        d = results_dir(silent_ms=4000)
+        with open(os.path.join(d, "car1.log")) as f:                     # logged 1 s of silence, but 4 s of CAMs are missing
+            log = f.read().replace("silent period 4000 ms", "silent period 1000 ms")
+        with open(os.path.join(d, "car1.log"), "w") as f:
+            f.write(log)
+        with zipfile.ZipFile(write_report(d)) as z:
+            text = re.sub(r"<[^>]+>", " ", z.read("word/document.xml").decode())
+        for expected in ("4. Cost of the pseudonym changes", "Tracking success", "50 % (1 of 2 changes followed, 1 linked to another vehicle)",
+                         "Changes synchronized", "4.1 Per vehicle", "4.2 Reception gap and the eavesdropper", "4.3 Longest gaps",
+                         "no: 2000 ms longer", "1 change in the run had a longer gap", "5. Conclusion"):
+            self.assertIn(expected, text)
+        f = facts(gather(d))
+        self.assertEqual((f["cost.available"], f["cost.unexplained_gaps"], f["cost.unexplained_gap_ms_max"]), (1, 1, 2000))
+        self.assertIn("Look into the long reception gaps.", [title for title, _ in recommend(f)[0]])
 
     # ------------------------------------------------------------ test certificates
     def test_test_certificates(self):

@@ -119,11 +119,12 @@ test summaries in [results](../../results/README.md). Download it on the *Result
 | 1. Purpose | the run's description |
 | 2. Setup | every station with its role, movement and pseudonym pool; what triggered ID changes; the silent period, configured and measured; the eavesdropper's settings |
 | 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains (with the same *Most Frequent* and *Station predictions in actual order across identity changes* columns as the *Results* tab), observations |
-| 4. Conclusion | the result in a few sentences, with the chance level for comparison |
-| 5. Limitations of this run | those that follow from the run's setup |
-| 6. Suggested next runs | suggestions chosen by rule, see [below](#suggested-next-runs) |
+| 4. Cost of the pseudonym changes | what each change cost against what the eavesdropper made of it: tracking success, synchronized changes, pseudonym lifetime, reception gap, CAMs missing, stale time, delivery ratio, certificate overhead; per vehicle; gap by the eavesdropper's outcome; the longest gaps, each marked whether its silent period and the CAM timer explain it ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
+| 5. Conclusion | the result in a few sentences, with the chance level for comparison and the cost |
+| 6. Limitations of this run | those that follow from the run's setup |
+| 7. Suggested next runs | suggestions chosen by rule, see [below](#suggested-next-runs) |
 
-- **Facts, and rules:** sections 1 to 5 state what was measured. Section 6 is chosen by fixed
+- **Facts, and rules:** sections 1 to 6 state what was measured. Section 7 is chosen by fixed
   rules from those measurements, not by judgement; an insight that nobody has written down as
   a rule stays with the reader.
 - **Without an eavesdropper** the report has the setup and the counts, and no linkage.
@@ -131,7 +132,8 @@ test summaries in [results](../../results/README.md). Download it on the *Result
   fixed rule ("old vehicle X is really new vehicle Y") explains. At 80 % or more an attacker
   who knows the traffic pattern could undo most of them.
 - **Source:** only the files in the run's results (`run.json`, `status.json`, `score.json`,
-  `scenario.toml`, the container logs). `run.json` therefore also records when and why the
+  `scenario.toml`, the container logs, and `overhead.json`, which the report computes from
+  them when it is missing). `run.json` therefore also records when and why the
   run stopped and its last check, and each link in `score.json` its evidence.
 - **Again, or for an earlier run:** `python3 -m vnapapi.report <results directory>` in
   `service/` writes the report for the results in `data/results/<run id>`. A run from before
@@ -141,7 +143,7 @@ test summaries in [results](../../results/README.md). Download it on the *Result
 
 ### Suggested next runs
 
-Section 6 of the report comes from the catalogue `service/recommendations.toml`. Each rule is
+Section 7 of the report comes from the catalogue `service/recommendations.toml`. Each rule is
 a fixed suggestion with conditions on the run's facts; the report prints the rules whose
 conditions all hold, highest priority first, up to `limit` (6). The file is read each time a
 report is written, so a change needs no restart.
@@ -169,6 +171,8 @@ The shipped rules, by priority:
 | `no-changes` | no vehicle changed its pseudonym | check the trigger |
 | `pattern-reversible` | 8 or more wrong links, 80 % of them explained by one fixed pairing | random turns or uneven arrivals |
 | `starved` | changes refused for lack of certificates | a larger `refill_at` or `batch` |
+| `unexplained-gaps` | a change left a reception gap longer than its silent period and the CAM timer explain | checking the logs before comparing costs |
+| `silence-without-privacy` | silent 5 % of the time or more, yet half or more of the changes followed | a mix zone or a dynamic mix zone |
 | `timing-leak` | 5 or more timing links, half or more correct and above chance | an image that rephases the CAM timer |
 | `followed` | a vehicle followed through 3 or more changes in a row | a longer silent period, or a mix zone with `min_vehicles` |
 | `above-chance` | 8 or more links, correct twice as often as guessing | more vehicles changing together, longer silence |
@@ -198,6 +202,10 @@ Facts (all numbers; 0 where the run has no eavesdropper):
 | `eavesdropper`, `eavesdropper.link_window_s`, `eavesdropper.techniques` | present (1), its link window, and how many of position and timing it uses |
 | `chance` | 1 / vehicles: how often a guess is right |
 | `links`, `links.correct`, `links.wrong`, `links.correct_share`, `links.over_chance` | the score; `over_chance` is `correct_share` / `chance` |
+| `cost.available` | 1 when reception was measured (an eavesdropper recorded CAMs); the other `cost.*` facts are 0 otherwise |
+| `cost.tracking_success`, `cost.sync_ratio` | share of changes followed correctly; share with another vehicle changing within 2 s |
+| `cost.gap_ms_mean`, `cost.gap_ms_max`, `cost.stale_share`, `cost.delivery_ratio`, `cost.full_cert_share` | section 4's figures (shares from 0 to 1) |
+| `cost.unexplained_gaps`, `cost.unexplained_gap_ms_max` | changes whose gap exceeds the silent period plus two CAM intervals by more than 250 ms, and the largest excess |
 | `identifier.*`, `position.*`, `timing.*` | per technique: `links`, `correct`, `correct_share` |
 | `pattern.explained`, `pattern.share`, `pattern.pairings` | wrong links one fixed pairing explains, as a share of the wrong links, and the number of pairings |
 | `followed.longest`, `tracks`, `tracks.mixed` | longest correct chain; vehicle tracks, and those joining several vehicles |

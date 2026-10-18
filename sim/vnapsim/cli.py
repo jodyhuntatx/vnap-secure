@@ -152,6 +152,11 @@ def main():
 
     p = sub.add_parser("schema", help="print the JSON Schema of the scenario format")
 
+    p = sub.add_parser("overhead", help="privacy and cost of a stopped run's pseudonym changes (from its results directory)")
+    p.add_argument("dir", help="a results directory, e.g. a service run's data/results/<run id>")
+    p.add_argument("--write", action="store_true", help="also write overhead.json into it")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("certs", help="the committed test certificate sets: validity, regeneration")
     p.add_argument("action", nargs="?", choices=("status", "regenerate"), default="status")
     p.add_argument("set", nargs="?", choices=("v2", "v3"), help="regenerate: which set")
@@ -202,6 +207,14 @@ def main():
                         print(f"{'':<24}   :{name:<17} {text}")
                 else:
                     print(f"{it['name']:<24} INVALID: {it['error']}")
+        return EXIT_OK
+
+    if args.cmd == "overhead":
+        from . import overhead
+        if not os.path.isfile(os.path.join(args.dir, "status.json")):
+            return fail(f"{args.dir}: not a results directory (no status.json)", EXIT_USAGE)
+        result = overhead.write(args.dir) if args.write else overhead.analyse(args.dir)
+        print(json.dumps(result, indent=1) if args.json else overhead.format_text(result))
         return EXIT_OK
 
     if args.cmd == "certs":

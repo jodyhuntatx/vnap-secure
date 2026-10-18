@@ -2,6 +2,7 @@
 import { get, patch, post } from "../api.js";
 import { badge, clear, every, h, notice, onLeave, remaining, table, time } from "../dom.js";
 import { crossingLayer, makeMap, stationColor, zoneColor } from "./mapview.js";
+import { overheadPanel } from "./overhead.js";
 
 const TABS = ["Overview", "Map", "Events", "Control", "Results"];
 
@@ -313,6 +314,13 @@ export async function runView(app, session, runId) {
           const r = await fetch(`/api/runs/${runId}/results/score.json`, { credentials: "same-origin" });
           if (r.ok) box.append(scorePanel(await r.json()));
         } catch (e) { /* optional */ }
+      }
+      if (!running()) {
+        const panel = h("div", { class: "panel" }, h("h2", {}, "Privacy and cost of the pseudonym changes"),
+          h("p", { class: "muted" }, "analysing the run ..."));
+        box.append(panel);
+        try { overheadPanel(panel, await get(`/runs/${runId}/overhead`)); }
+        catch (e) { clear(panel).append(h("h2", {}, "Privacy and cost of the pseudonym changes"), h("p", { class: "muted" }, e.message)); }
       }
     } else if (!running()) {
       box.append(h("p", { class: "panel muted" }, "Results are collected when the run stops."));

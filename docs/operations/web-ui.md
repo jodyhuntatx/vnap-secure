@@ -16,7 +16,9 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
      edited.
   2. Edit the scenario in either tab; both edit the same scenario:
      - *Scenario text*: TOML ([scenario format](../reference/scenario-format.md)).
-     - *Builder*: RSUs and vehicles, pseudonyms and silent periods, routes or random-turn
+     - *Builder*: RSUs and vehicles, pseudonyms and silent periods (for all vehicles, in
+       `[defaults] pseudonyms`, and a vehicle's own value; an empty field shows in grey what
+       applies), routes or random-turn
        crossings, mix zones, the run's PKI (certificates at start, refill) and the
        eavesdropper. Positions, routes, crossings and zones are set by clicking the map.
        Each vehicle has a colour, used for the vehicle and its route here and on the run's map.
@@ -51,8 +53,10 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
     certificate check, error), with pause. Hover a kind for its meaning.
   - *Control*: ID change trigger, lock and unlock, with each station's answer.
   - *Results*: run a check (extra expectations allowed) and see earlier checks. After the stop,
-    download the summary report (`report.docx`) and the other collected files, and see the
-    eavesdropper's score against ground truth; the headings explain each column on hover.
+    download the summary report (`report.docx`) and the other collected files, see the
+    eavesdropper's score against ground truth, and the privacy and cost of every pseudonym
+    change ([below](#privacy-and-cost-of-the-pseudonym-changes)); the headings explain each
+    column on hover.
 - **Account:**
   - change password;
   - turn the TOTP second factor on (QR code) or off, and make new recovery codes;
@@ -92,6 +96,54 @@ stations' own logs):
   different vehicles were mixed up, so the mix zone worked.
 
 Details are in [eavesdropper and scoring](../functional/eavesdropper-and-scoring.md#scoring-against-ground-truth).
+
+## Privacy and cost of the pseudonym changes
+
+After a run stops, the *Results* tab puts every pseudonym change next to what it cost: what
+the eavesdropper made of the change, and what the other stations missed meanwhile. This is the
+first iteration of the measures in `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`.
+It uses only data every run keeps, so runs stopped before it existed show it too.
+
+- **Reference receiver:** reception is measured at the eavesdropper. On the lossless link it
+  hears every frame, like any other receiver. Runs without an eavesdropper show only the
+  figures from the stations' logs.
+- **Headline figures:**
+  - *tracking success*: the share of changes the eavesdropper linked correctly (lower is
+    more private);
+  - changes linked to the wrong vehicle;
+  - *changes synchronized*: the share with another vehicle changing within 2 s;
+  - *longest reception gap* and its mean;
+  - *time information was stale*: the share of time the latest CAM of a vehicle was older
+    than 1 s;
+  - *delivery ratio*: CAMs received against CAMs expected at the vehicle's usual rate;
+  - the share of CAMs carrying the full certificate, and the mean CAM size.
+- **Timeline:** one lane per vehicle, showing reception, silent periods (amber) and other gaps
+  (red). Each change is a dot: green when not linked, red when followed, purple when linked to
+  another vehicle. Hover for details.
+- **Changes:** one row per change: time, vehicle, logged silent period, reception gap (last
+  CAM under the old pseudonym to the first under the new one), CAMs missing in it, the
+  eavesdropper's outcome with its technique, and the vehicles that changed at the same time.
+  Click a heading to sort.
+- **Vehicles:** per vehicle:
+  - changes, and changes refused;
+  - pseudonym lifetime;
+  - usual CAM interval;
+  - gaps between CAMs (95th percentile, longest);
+  - stale share and delivery ratio;
+  - full-certificate share and CAM size;
+  - certificate refill.
+
+Without a silent period, no gap should be longer than two CAM intervals, because the CAM timer
+restarts at a random phase. With one, a gap is the silent period plus up to that much.
+Position error, conflict exposure, verification failures, warnings and CPU load need data
+that runs do not record yet.
+
+The summary report has the same figures in its section 4, *Cost of the pseudonym changes*
+([summary report](../functional/eavesdropper-and-scoring.md#summary-report)).
+
+The figures come from `sim/vnapsim/overhead.py`, which writes `overhead.json` to the run's
+results when it stops (`GET /api/runs/{id}/overhead`; for older runs on first request), and
+from `./vnapctl overhead <results dir>`.
 
 ## Browser notes
 

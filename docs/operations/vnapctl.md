@@ -98,6 +98,7 @@ rejection happens.
 ./vnapctl events [--duration 10s] [--since 10m] [--kind K,...] [--station S] [--count N] [--json]
 ./vnapctl check [--duration 15s] [--expect EXPR ...] [--no-defaults] [--no-scenario] [--json]
 ./vnapctl down [--force] [--dry-run]
+./vnapctl overhead RESULTS_DIR [--json] [--write]    # privacy and cost of a stopped run's pseudonym changes
 ./vnapctl certs [status] [v2|v3] [--json]           # the committed test certificates' validity
 ./vnapctl certs regenerate v2|v3 [--lifetime KEY=N ...]   # a new set; see docs/certificates.md
 ```

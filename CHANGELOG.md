@@ -20,6 +20,35 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-19: privacy and cost of the pseudonym changes, per run
+
+This is the first iteration of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`. The
+*Results* tab of a stopped run shows every pseudonym change with what the eavesdropper made of
+it and what the receivers missed meanwhile:
+- headline figures: tracking success, wrong links, synchronized changes, reception gap, stale
+  share, delivery ratio, certificate overhead;
+- a timeline per vehicle;
+- sortable tables of changes and vehicles.
+
+`sim/vnapsim/overhead.py` computes the figures from what every run already keeps (station logs,
+the eavesdropper's frames, `score.json`, `status.json`) and writes `overhead.json`. It runs when
+a run stops; for older runs it runs on the first request of `GET /api/runs/{id}/overhead`.
+`vnapctl overhead <dir>` does the same for any results directory. See
+[web UI](docs/operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes).
+
+**Summary report:** `report.docx` has a new section 4, *Cost of the pseudonym changes*, with
+the same figures, per vehicle and per outcome. Its list of the longest gaps marks each gap the
+silent period and the CAM timer do not explain. Conclusion, limitations and suggested next runs
+are now sections 5 to 7. The facts gain `cost.*`, and there are two new rules:
+- `unexplained-gaps`: look into gaps that nothing explains;
+- `silence-without-privacy`: silent periods that cost without protecting.
+
+**Fix:** the scenario builder wrote `silent_min_ms = 0` and `silent_max_ms = 0` into every
+vehicle. That overrode `[defaults] pseudonyms`, so scenarios edited in the builder lost their
+shared silent period, and variants that set it had no effect. The builder now shows the
+silent period for all vehicles and, per vehicle, writes only a value that is set there.
+`make test-ui` runs unit tests of the builder's TOML.
+
 ## 2026-10-18: regenerating the test certificates
 
 `vnapctl certs` shows the validity of every certificate in the committed sets (`certs/c-its-pki`,

@@ -1,4 +1,4 @@
-# Suggested next runs in a run's summary report (report.docx, section 6).
+# Suggested next runs in a run's summary report (report.docx, section 7).
 #
 # Each [[rule]] is one suggestion. It is printed when every condition in `when` holds for the
 # run; the report prints the `limit` rules with the highest priority.
@@ -32,6 +32,21 @@ priority = 70
 when = ["zone.skipped>=3", "zone.skipped>zone.changes"]
 title = "Bring the vehicles into the mix zone together."
 text = "{zone.skipped} passages through a mix zone caused no change because too few vehicles were inside, against {zone.changes} entries that did. Lower min_vehicles, or adjust start times and speeds so that the vehicles reach the zone at the same time."
+
+# ---------------------------------------------------------------- the cost of the changes (section 4)
+[[rule]]
+id = "unexplained-gaps"
+priority = 75
+when = ["cost.available==1", "cost.unexplained_gaps>=1"]
+title = "Look into the long reception gaps."
+text = "{cost.unexplained_gaps} pseudonym change(s) left a reception gap longer than the silent period plus two CAM intervals explain, by up to {cost.unexplained_gap_ms_max:.0f} ms (section 4.3). Check the stations' logs around those changes before comparing this run's cost with others."
+
+[[rule]]
+id = "silence-without-privacy"
+priority = 65
+when = ["cost.available==1", "eavesdropper==1", "silent.share>=0.05", "cost.tracking_success>=0.5"]
+title = "The silence costs without protecting."
+text = "Receivers had stale information {cost.stale_share:.0%} of the time, yet the eavesdropper still followed {cost.tracking_success:.0%} of the changes. Silence pays off where other vehicles change at the same time ({cost.sync_ratio:.0%} of the changes here were synchronized): try a mix zone or a dynamic mix zone."
 
 # ---------------------------------------------------------------- a weakness the results show
 [[rule]]

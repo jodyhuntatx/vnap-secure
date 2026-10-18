@@ -51,8 +51,9 @@ service-deps:
 
 # JavaScript syntax of the web UI (node in a container; no build step)
 test-ui:
-	tar -C service/ui -c js | docker run --rm -i node:20-alpine sh -c \
-	  'mkdir /w && tar -C /w -x && for f in /w/js/*.js /w/js/views/*.js; do node --check "$$f" || exit 1; done && echo "UI syntax ok"'
+	tar -C service/ui -c js tests | docker run --rm -i node:20-alpine sh -c \
+	  'mkdir /w && tar -C /w -x && for f in /w/js/*.js /w/js/views/*.js; do node --check "$$f" || exit 1; done && echo "UI syntax ok" \
+	   && node --test --test-reporter=dot /w/tests/'
 
 # the API's OpenAPI description, as the service serves it at /api/openapi.json
 openapi: service-deps

@@ -88,3 +88,22 @@ textarea.prose { font-family: inherit; font-size: inherit; }
 .dot.rsu { background: var(--rsu); } .dot.car { background: var(--car); } .dot.zone { background: var(--zone); }
 .station-label { background: var(--panel); color: var(--text); border: 1px solid var(--line); font-size: 11px; }
 .hidden, [hidden] { display: none !important; }
+/* Results: privacy and cost of the pseudonym changes */
+.figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+.figure { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.figure .value { font-size: 1.35rem; font-weight: 600; }
+.figure .label { color: var(--muted); font-size: 0.8rem; }
+.timeline { width: 100%; height: auto; display: block; }
+.timeline text { fill: var(--muted); font-size: 11px; }
+.timeline .axis { stroke: var(--line); }
+.timeline .recv { fill: var(--accent); opacity: 0.35; }
+.timeline .silent { fill: var(--warn); opacity: 0.75; }
+.timeline .gap { fill: var(--bad); opacity: 0.6; }
+.timeline .kept, .dot.kept { fill: var(--ok); background: var(--ok); }
+.timeline .followed, .dot.followed { fill: var(--bad); background: var(--bad); }
+.timeline .confused, .dot.confused { fill: var(--zone); background: var(--zone); }
+.badge.confused { background: var(--code); color: var(--zone); }
+.timeline .change-line { stroke: var(--text); opacity: 0.35; }
+.swatch { display: inline-block; width: 14px; height: 8px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
+.swatch.recv { background: var(--accent); opacity: 0.35; } .swatch.silent { background: var(--warn); } .swatch.gap { background: var(--bad); opacity: 0.6; }
+th.sortable { cursor: pointer; user-select: none; }
