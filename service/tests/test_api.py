@@ -107,7 +107,7 @@ class ApiTest(unittest.TestCase):
         bearer = TestClient(self.app)
         bearer.headers["Authorization"] = f"Bearer {made['token']}"
         self.assertEqual(bearer.get("/api/auth/me").json()["username"], "alice")
-        self.assertEqual(bearer.post("/api/scenarios/validate", json={"template": "pki-refill"}).status_code, 200)  # no CSRF
+        self.assertEqual(bearer.post("/api/scenarios/validate", json={"template": "refill"}).status_code, 200)  # no CSRF
         c.delete(f"/api/tokens/{made['id']}")
         self.assertEqual(bearer.get("/api/auth/me").status_code, 401)
         stored = self.db.one("SELECT token_hash FROM tokens WHERE id = ?", (made["id"],))["token_hash"]
@@ -133,14 +133,34 @@ class ApiTest(unittest.TestCase):
         self.assertIn("user.changed", actions)
 
     def test_viewers_cannot_start_runs(self):
-        r = self.client("vera").post("/api/runs", json={"template": "pki-refill"})
+        r = self.client("vera").post("/api/runs", json={"template": "refill"})
         self.assertEqual(r.status_code, 403)
 
     # ------------------------------------------------------------ scenarios and policy
     def test_users_get_templates_admins_the_catalogue(self):
         self.assertNotIn("scenarios", self.client("alice").get("/api/scenarios").json())
-        self.assertIn("c-its-pki", self.client("root").get("/api/scenarios").json()["scenarios"])
-        self.assertEqual(self.client("alice").post("/api/runs", json={"scenario": "c-its-pki"}).status_code, 403)
+        self.assertIn("trust", self.client("root").get("/api/scenarios").json()["scenarios"])
+        self.assertEqual(self.client("alice").post("/api/runs", json={"scenario": "trust"}).status_code, 403)
+        root = self.client("root")
+        self.assertIn("controls/none", root.get("/api/scenarios").json()["scenarios"])     # controls, by their folder
+        self.assertEqual(root.get("/api/scenarios/scenarios/controls/none").status_code, 200)
+        self.assertTrue(root.post("/api/scenarios/validate", json={"scenario": "controls/none"}).json()["valid"])
+        run = root.post("/api/runs", json={"scenario": "controls/none"}).json()
+        self.assertEqual((run["id"], run["scenario"]), ("root-none-1", "none"))
+        self.assertEqual(root.get("/api/scenarios/scenarios/..%2Fpolicy").status_code, 400)
+        self.assertEqual(self.client("alice").get("/api/scenarios/scenarios/controls/none").status_code, 403)
+
+    def test_variants(self):
+        alice = self.client("alice")
+        r = alice.post("/api/scenarios/validate", json={"template": "crossing", "variant": "nope"})
+        self.assertFalse(r.json()["valid"])
+        self.assertIn("no variant 'nope'", r.text)
+        run = alice.post("/api/runs", json={"template": "crossing", "variant": "min3", "overrides": ["control.mobility_seed=7"]}).json()
+        self.assertEqual((run["id"], run["scenario"]), ("alice-crossing-min3-1", "crossing:min3"))
+        # the run keeps the variant as its overrides, then the user's own
+        self.assertEqual(run["overrides"], ["control.mix_zones.crossing.min_vehicles=3", "control.mobility_seed=7"])
+        lay = alice.get(f"/api/runs/{run['id']}/layout").json()
+        self.assertEqual(lay["mix_zones"][0]["min_vehicles"], 3)
 
     def test_user_policy_field_errors(self):
         text = '[[stations]]\nname = "a"\nip = "192.168.98.10"\nenv = { LD_PRELOAD = "/x" }\n'
@@ -152,14 +172,14 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(r.json()["errors"])
 
     def test_overrides_go_through_the_policy(self):
-        r = self.client("alice").post("/api/runs", json={"template": "pki-refill", "overrides": ['image="busybox"']})
+        r = self.client("alice").post("/api/runs", json={"template": "refill", "overrides": ['image="busybox"']})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["errors"][0]["path"], "image")
 
     # ------------------------------------------------------------ runs
     def test_run_lifecycle_with_service_credentials_and_limits(self):
         alice = self.client("alice")
-        run = alice.post("/api/runs", json={"template": "pki-refill", "duration_minutes": 5}).json()
+        run = alice.post("/api/runs", json={"template": "refill", "duration_minutes": 5}).json()
         self.assertEqual(run["state"], "queued")
         self.start(run["id"])
         got = self.runs.get(run["id"])
@@ -171,7 +191,7 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(any(k.startswith("VNAP_RUN_") for k in os.environ))     # gone after the start
         self.assertEqual(call["limits"], self.app.state.cfg["containers"])
         # one concurrent run for users
-        self.assertEqual(alice.post("/api/runs", json={"template": "pki-refill"}).status_code, 429)
+        self.assertEqual(alice.post("/api/runs", json={"template": "refill"}).status_code, 429)
         # stop: results collected, simulation removed
         with mock.patch.object(runs_module, "scenario_down") as down, mock.patch.object(self.runs, "collect_results") as collect:
             self.assertEqual(alice.post(f"/api/runs/{run['id']}/stop").status_code, 202)
@@ -182,10 +202,10 @@ class ApiTest(unittest.TestCase):
 
     def test_run_ids_are_the_scenario_name_and_a_counter(self):
         alice, bob, root = self.client("alice"), self.client("bob"), self.client("root")
-        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
-        first = alice.post("/api/runs", json={"template": "pki-refill"}).json()
-        self.assertEqual(first["id"], "alice-pki-refill-1")
-        self.assertEqual(bob.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "bob-pki-refill-1")   # counted per user
+        text = alice.get("/api/scenarios/templates/crossing").json()["text"]
+        first = alice.post("/api/runs", json={"template": "refill"}).json()
+        self.assertEqual(first["id"], "alice-refill-1")
+        self.assertEqual(bob.post("/api/runs", json={"template": "refill"}).json()["id"], "bob-refill-1")   # counted per user
         # a deleted run's number is not given again
         self.assertEqual(alice.post(f"/api/runs/{first['id']}/stop").status_code, 202)
         self.assertEqual(alice.delete(f"/api/runs/{first['id']}").status_code, 200)
@@ -194,8 +214,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((named["id"], named["name"]), ("root-My-run-n-2-1", "My run / ünï #2"))
         self.assertTrue(os.path.isfile(os.path.join(self.runs.scenario_dir, "root-My-run-n-2-1.toml")))
         self.assertEqual(root.get("/api/runs/root-My-run-n-2-1").json()["id"], "root-My-run-n-2-1")
-        self.assertEqual(root.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "root-pki-refill-1")
-        self.assertEqual(alice.post("/api/runs", json={"template": "pki-refill"}).json()["id"], "alice-pki-refill-2")
+        self.assertEqual(root.post("/api/runs", json={"template": "refill"}).json()["id"], "root-refill-1")
+        self.assertEqual(alice.post("/api/runs", json={"template": "refill"}).json()["id"], "alice-refill-2")
         # a refused scenario uses no number and leaves no file; text without any name is "run"
         before = set(os.listdir(self.runs.scenario_dir))
         self.assertEqual(root.post("/api/runs", json={"scenario_text": "[[stations]]\nname = 1\n", "name": "My run / ünï #2"}).status_code, 400)
@@ -207,11 +227,11 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.runs.new_id("root", "---"), "root-run-2")
 
     def test_duration_limit(self):
-        r = self.client("alice").post("/api/runs", json={"template": "pki-refill", "duration_minutes": 100000})
+        r = self.client("alice").post("/api/runs", json={"template": "refill", "duration_minutes": 100000})
         self.assertEqual(r.status_code, 400)
 
     def test_time_limit_stops_runs(self):
-        run = self.client("alice").post("/api/runs", json={"template": "pki-refill", "duration_minutes": 1}).json()
+        run = self.client("alice").post("/api/runs", json={"template": "refill", "duration_minutes": 1}).json()
         self.start(run["id"])
         self.db.execute("UPDATE runs SET deadline = ? WHERE id = ?", (time.time() - 1, run["id"]))
         due = self.db.query("SELECT id FROM runs WHERE state = 'running' AND deadline < ?", (time.time(),))
@@ -223,7 +243,7 @@ class ApiTest(unittest.TestCase):
 
     def test_runs_are_private_unless_shared(self):
         alice, bob, vera = self.client("alice"), self.client("bob"), self.client("vera")
-        run = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        run = alice.post("/api/runs", json={"template": "refill"}).json()
         self.assertEqual(bob.get(f"/api/runs/{run['id']}").status_code, 404)
         self.assertEqual(bob.get("/api/runs").json(), [])
         alice.post(f"/api/runs/{run['id']}/share", json={"username": "vera"})
@@ -233,7 +253,7 @@ class ApiTest(unittest.TestCase):
 
     def test_result_downloads_only_listed_files(self):
         alice = self.client("alice")
-        run = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        run = alice.post("/api/runs", json={"template": "refill"}).json()
         d = os.path.join(self.runs.results_dir, run["id"])
         os.makedirs(d)
         with open(os.path.join(d, "status.json"), "w") as f:
@@ -324,13 +344,13 @@ class ApiTest(unittest.TestCase):
 
     def test_live_endpoints_need_a_running_run(self):
         alice = self.client("alice")
-        run = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        run = alice.post("/api/runs", json={"template": "refill"}).json()
         self.assertEqual(alice.get(f"/api/runs/{run['id']}/events").status_code, 409)
         self.assertEqual(alice.post(f"/api/runs/{run['id']}/control", json={"action": "change", "station": "obu1-i7"}).status_code, 409)
 
     def test_event_stream_sends_earlier_events_then_ready(self):
         alice = self.client("alice")
-        run = alice.post("/api/runs", json={"template": "pki-refill"}).json()
+        run = alice.post("/api/runs", json={"template": "refill"}).json()
         self.start(run["id"])
         self.assertEqual(alice.get(f"/api/runs/{run['id']}/events/stream?since_s=4000").status_code, 400)
         asked, now = [], time.time()
@@ -371,11 +391,11 @@ class ApiTest(unittest.TestCase):
 
     def test_layout_for_the_map(self):
         alice = self.client("alice")
-        run = alice.post("/api/runs", json={"template": "mixzone-random"}).json()
+        run = alice.post("/api/runs", json={"template": "crossing"}).json()
         r = alice.get(f"/api/runs/{run['id']}/layout")
         self.assertEqual(r.status_code, 200, r.text)
         lay = r.json()
-        self.assertIn("random-turn intersection mix zone", lay["description"])
+        self.assertIn("four OBUs pass a crossing with random turns", lay["description"])
         names = [s["name"].split("-")[0] for s in lay["stations"]]
         self.assertEqual(names[:2], ["rsu", "obu1"])
         rsu, obu1 = lay["stations"][0], lay["stations"][1]
@@ -493,9 +513,9 @@ class ApiTest(unittest.TestCase):
 
     def test_run_name_and_description_can_be_changed(self):
         alice, bob, vera = self.client("alice"), self.client("bob"), self.client("vera")
-        run = alice.post("/api/runs", json={"template": "mixzone-random"}).json()
+        run = alice.post("/api/runs", json={"template": "crossing"}).json()
         self.assertEqual(run["name"], run["scenario"])
-        self.assertIn("random-turn intersection mix zone", run["description"])
+        self.assertIn("four OBUs pass a crossing", run["description"])
         url = f"/api/runs/{run['id']}"
         r = alice.patch(url, json={"name": "  Friday   demo ", "description": "four cars\nthreshold 3\n"})
         self.assertEqual(r.status_code, 200, r.text)
@@ -516,7 +536,7 @@ class ApiTest(unittest.TestCase):
         r = alice.post("/api/scenarios/validate", json={"scenario_text": 'description = "two\nlines"\n'})
         self.assertEqual(r.status_code, 400)
         self.assertIn('write several lines as """..."""', r.text.replace('\\"', '"'))
-        text = alice.get("/api/scenarios/templates/pki-refill").json()["text"]
+        text = alice.get("/api/scenarios/templates/refill").json()["text"]
         text = re.sub(r'(?m)^description = "[^"\n]*"$', 'description = """two\nlines"""', text, count=1)
         self.assertIn('"""two', text)
         r = alice.post("/api/scenarios/validate", json={"scenario_text": text})
@@ -524,7 +544,7 @@ class ApiTest(unittest.TestCase):
 
     def test_saved_templates(self):
         alice, bob, vera, root = (self.client(u) for u in ("alice", "bob", "vera", "root"))
-        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
+        text = alice.get("/api/scenarios/templates/crossing").json()["text"]
         r = alice.post("/api/templates", json={"name": "my zone", "scenario_text": text})
         self.assertEqual(r.status_code, 400)                                           # name: no spaces
         r = alice.post("/api/templates", json={"name": "my-zone", "scenario_text": text})
@@ -550,7 +570,7 @@ class ApiTest(unittest.TestCase):
 
     def test_genericized_template(self):
         alice = self.client("alice")
-        text = alice.get("/api/scenarios/templates/mixzone-random").json()["text"]
+        text = alice.get("/api/scenarios/templates/crossing").json()["text"]
         text = text.replace('name = "obu2"', "name = 'vehicle1'").replace(
             'expect = ["eavesdropper.decode_errors==0"', 'expect = ["obu1.pki.starved==0", "rsu.cam.rx>=1", "eavesdropper.decode_errors==0"')
         r = alice.post("/api/templates", json={"name": "generic", "scenario_text": text, "genericize": True})
@@ -580,11 +600,51 @@ class ApiTest(unittest.TestCase):
         row = Database(path).one("SELECT * FROM users WHERE username = 'old'")
         self.assertEqual((row["totp_enabled"], row["totp_last_step"], row["totp_secret"]), (0, 0, None))
 
+    # ------------------------------------------------------------ test certificates
+    def test_test_certificates(self):
+        from vnapsim import testcerts
+        root, alice = self.client("root"), self.client("alice")
+        self.assertEqual(alice.get("/api/admin/certs").status_code, 403)
+        self.assertEqual(alice.post("/api/admin/certs/v3/regenerate", json={}).status_code, 403)
+
+        def fake_inspect(name, directory=None):
+            return {"set": name, "dir": f"certs/{testcerts.SETS[name]['dir']}", "certs": [], "expires": None,
+                    "expired": False, "missing": [], "generated": None}
+        done = []
+
+        def fake_regenerate(name, values, by=None):
+            done.append((name, values, by))
+            return {**fake_inspect(name), "expires": "2027-10-18T00:00:00Z"}
+        with mock.patch.object(testcerts, "inspect", fake_inspect), mock.patch.object(testcerts, "regenerate", fake_regenerate):
+            sets = root.get("/api/admin/certs").json()
+            self.assertEqual([s["set"] for s in sets], ["v3", "v2"])
+            v3 = sets[0]
+            self.assertEqual({l["key"]: l["default"] for l in v3["lifetimes"]},
+                             {"root_years": 10, "tlm_years": 10, "ea_years": 5, "aa_years": 5, "at_hours": 168})
+            self.assertIn("no ETSI default", v3["basis"])
+            r = root.post("/api/admin/certs/v3/regenerate", json={"lifetimes": {"aa_years": 20}})
+            self.assertEqual(r.status_code, 400)                                         # outlives the root CA
+            self.assertIn("exceeds root_years", r.text)
+            self.assertEqual(root.post("/api/admin/certs/v9/regenerate", json={}).status_code, 404)
+            r = root.post("/api/admin/certs/v3/regenerate", json={"lifetimes": {"at_hours": 8760}})
+            self.assertEqual(r.status_code, 202, r.text)
+            self.assertEqual(r.json()["lifetimes"]["at_hours"], 8760)
+            for _ in range(50):
+                job = root.get("/api/admin/certs").json()[0]["job"]
+                if job["state"] != "running":
+                    break
+                time.sleep(0.1)
+            self.assertEqual((job["state"], job["expires"]), ("done", "2027-10-18T00:00:00Z"))
+            self.assertEqual(done, [("v3", {"root_years": 10, "tlm_years": 10, "ea_years": 5, "aa_years": 5, "at_hours": 8760}, "root")])
+        actions = [a["action"] for a in root.get("/api/audit").json()]
+        self.assertIn("certs.regenerate", actions)
+        self.assertIn("certs.regenerated", actions)
+
     # ------------------------------------------------------------ backups
     def test_backup_create_verify_restore(self):
         cfg = self.app.state.cfg
         alice = self.client("alice")
-        with open(os.path.join(runs_module.TEMPLATE_DIR, "pki-refill.toml")) as f:
+        with open(os.path.join(runs_module.TEMPLATE_DIR, "refill.toml")) as f:
             run = alice.post("/api/runs", json={"scenario_text": f.read()}).json()
         res = os.path.join(self.runs.results_dir, run["id"])
         os.makedirs(res)

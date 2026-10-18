@@ -50,9 +50,9 @@ At startup, each station checks its configured chain and its own AT(s), and logs
 - **Rates:** `check` computes per-station success rates from these, and expects a CAM success
   rate of 1 with security enabled ([vnapctl](../operations/vnapctl.md#checks)).
 - **Non-strict decapsulation:** socktap delivers messages even when they fail verification.
-- **Negative controls:** `c-its-pki-badroot` (trusts the TLM certificate instead of the root)
-  and `naive-v3` (self-made certificates) must show failing reports; their scenarios expect
-  exactly that.
+- **Negative controls:** `trust:badroot` (trusts the TLM certificate instead of the root)
+  and `controls/naive-v3` (self-made certificates) must show failing reports; their
+  expectations require exactly that.
 
 ## Robustness
 
@@ -63,7 +63,7 @@ data races there crashed socktap under load. They were found with ThreadSanitize
 - the runtime clock and ASN.1 descriptors;
 - the routers, PubSub/MQTT/DDS and the RSSI reader.
 
-See [thread safety](../patches/thread-safety.md). `stress-naive-v3` (4 stations at 50 Hz)
+See [thread safety](../patches/thread-safety.md). `controls/stress-naive-v3` (4 stations at 50 Hz)
 reproduces the load.
 
 ## Related

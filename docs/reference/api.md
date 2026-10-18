@@ -35,13 +35,13 @@ bodies; this page gives the overview.
 | `POST /api/auth/totp/setup`, `/enable`, `/disable`, `/recovery-codes` | session | TOTP second factor ([service deployment](../operations/service-deployment.md#accounts-and-authentication)) |
 | `GET/POST /api/tokens`, `DELETE /api/tokens/{id}` | all | own API tokens |
 | `GET/POST /api/users`, `PATCH /api/users/{name}`, `POST /api/users/{name}/password` | admin | accounts: create, role, disable, unlock, reset TOTP, reset password |
-| `GET /api/scenarios`, `GET /api/scenarios/{kind}/{name}` | all | templates, saved templates (and, for admins, the catalogue); the text of a template or catalogue scenario |
+| `GET /api/scenarios`, `GET /api/scenarios/{kind}/{name}` | all | templates, saved templates (and, for admins, the catalogue, controls as `controls/<name>`); the text of a template or catalogue scenario |
 | `POST /api/scenarios/parse` | all | scenario text as JSON (TOML syntax only, no validation) |
 | `POST /api/templates` | users | save scenario text as a template of one's own: `name`, `scenario_text`, `shared` (readable by every user), `genericize` (generic station and mix zone names), `replace` |
 | `GET/DELETE /api/templates/{id}` | readers / owner | a saved template's text; delete it |
 | `GET /api/schema` | all | JSON Schema of the scenario format |
-| `POST /api/scenarios/validate` | all | field-level validation against the user policy |
-| `GET/POST /api/runs`, `GET/DELETE /api/runs/{id}` | all | list, start (template, catalogue or scenario text, overrides, duration, name), details with live status, delete |
+| `POST /api/scenarios/validate` | all | field-level validation against the user policy; `variant` as for runs |
+| `GET/POST /api/runs`, `GET/DELETE /api/runs/{id}` | all | list, start (template, catalogue or scenario text, `variant`, overrides, duration, name), details with live status, delete. A variant's overrides are stored in front of the run's own |
 | `PATCH /api/runs/{id}` | owner | change the run's `name` (at most 100 characters; empty: the scenario's name again) and `description` (at most 2000) |
 | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/share` | owner | stop; share read-only with another user |
 | `GET /api/runs/{id}/layout` | readers | description, stations, routes, crossings, mix zones (for the map) |
@@ -54,6 +54,8 @@ bodies; this page gives the overview.
 | (run ids) | | `<user>-<scenario name>-<n>`, see [runs](../operations/service-deployment.md#runs) |
 | `GET /api/runs/{id}/results`, `GET /api/runs/{id}/results/{name}` | readers | files collected at stop, among them the summary `report.docx` |
 | `GET/POST /api/backups` | admin | list archives; back up now |
+| `GET /api/admin/certs` | admin | the committed test certificate sets: each certificate's validity, missing files, `generated.json`, the lifetimes with their defaults and basis, the last regeneration job |
+| `POST /api/admin/certs/{v2\|v3}/regenerate` | admin | `{"lifetimes": {"at_hours": 8760, ...}}` (keys left out take their defaults); 202 with the job, which runs in the background; 400 for a lifetime out of range or longer than its signer's, 409 while another runs ([certificates](../certificates.md#validity-and-regeneration)) |
 | `GET /api/audit` | admin | audit log (`limit`, `username`) |
 | `GET /api/ui-config` | public | map tiles and origin for the web UI |
 | `GET /api/healthz` | public | liveness |
@@ -74,7 +76,7 @@ runs they cannot see.
 T=vnap_…                                            # API token
 curl -s -H "Authorization: Bearer $T" https://vnap.example.org/api/scenarios
 RUN=$(curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
-  -d '{"template": "pki-refill", "duration_minutes": 10}' https://vnap.example.org/api/runs | jq -r .id)
+  -d '{"template": "refill", "duration_minutes": 10}' https://vnap.example.org/api/runs | jq -r .id)
 curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"duration_s": 15}' \
   https://vnap.example.org/api/runs/$RUN/check | jq .verdict
 curl -s -X POST -H "Authorization: Bearer $T" https://vnap.example.org/api/runs/$RUN/stop

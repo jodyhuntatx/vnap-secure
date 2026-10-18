@@ -1,0 +1,51 @@
+description = "trust: signed CAMs between an RSU and an OBU, accepted only when the signer's certificate chains AT -> AA -> trusted root (committed C-ITS-PKI test set, certs-v3)"
+
+# Foundational scenario 1 of 5: certificate-chain verification. Every station verifies the
+# other's authorization ticket locally against the configured AA and root (no PKI at run
+# time). The default expectations require chain.fail == 0 and every CAM verified.
+# Measures: <station>.chain.fail, <station>.cam.success_rate.
+# Uses the committed test certificates (certs/c-its-pki/), so it starts in seconds and is the
+# first check after a build. Certificate files are an administrator's setting: catalogue only.
+
+[network]
+name = "vanetzalan0"
+subnet = "192.168.98.0/24"
+
+[defaults]
+security = "certs-v3"
+aa_cert = "/vnap-certs/c-its-pki/aa.cert"
+root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
+
+[[stations]]
+name = "rsu"
+ip = "192.168.98.10"
+station_id = 1
+station_type = 15
+mac = "6e:06:e0:03:00:01"
+at_cert = "/vnap-certs/c-its-pki/at.cert"
+at_key = "/vnap-certs/c-its-pki/at.der"
+
+[[stations]]
+name = "obu"
+ip = "192.168.98.20"
+station_id = 2
+station_type = 5
+mac = "6e:06:e0:03:00:02"
+at_cert = "/vnap-certs/c-its-pki/bke_at_0.cert"
+at_key = "/vnap-certs/c-its-pki/bke_at_0_sign.der"
+
+[variants.badroot]
+description = "negative control: the OBU trusts the TLM certificate instead of the root and must reject the RSU's CAMs (was c-its-pki-badroot)"
+set = ['stations.obu.root_cert="/vnap-certs/c-its-pki/tlm.cert"',
+       'check.defaults=false',
+       'check.expect=["stations.running==stations.total", "rsu.cam.success_rate==1", "obu.cam.rx>=1", "obu.cam.success_rate==0", "obu.chain.fail>=1", "rsu.chain.fail==0"]']
+
+[variants.v2]
+description = "certs-v2 (ETSI TS 103 097 V1.2.1) with the certify root, AA and per-station ATs in certs/certify (vnapctl certs shows their validity) (was certify-fresh)"
+set = ['defaults.security="certs-v2"',
+       'defaults.aa_cert="/vnap-certs/certify/aa_vnap.cert"',
+       'defaults.root_cert="/vnap-certs/certify/root_ca_vnap.cert"',
+       'stations.rsu.at_cert="/vnap-certs/certify/ticket_vnap_rsu.cert"',
+       'stations.rsu.at_key="/vnap-certs/certify/ticket_vnap_rsu.key"',
+       'stations.obu.at_cert="/vnap-certs/certify/ticket_vnap_obu.cert"',
+       'stations.obu.at_key="/vnap-certs/certify/ticket_vnap_obu.key"']

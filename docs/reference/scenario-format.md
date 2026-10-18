@@ -1,7 +1,9 @@
 # Scenario format
 
-One TOML file per scenario in `sim/scenarios/` (templates for the service's users in
-`sim/scenarios/templates/`). `vnapctl up <name>` starts one, `vnapctl scenarios` lists them,
+One TOML file per scenario in `sim/scenarios/`: the five foundational scenarios, pass/fail
+controls in `controls/`, and in `templates/` links to the scenarios the service's users may
+start ([vnapctl](../operations/vnapctl.md#walkthrough)). `vnapctl up <name>` starts one,
+`vnapctl up <name>:<variant>` one of its variants, `vnapctl scenarios` lists them,
 `vnapctl schema` prints the whole format as JSON Schema, and `vnapctl validate --json`
 reports errors by field.
 
@@ -26,6 +28,8 @@ security = "certs-v3"             # none | dummy[-v2|-v3] | certs-v2 | certs-v3
 aa_cert = "/vnap-certs/c-its-pki/aa.cert"
 root_cert = "/vnap-certs/c-its-pki/root_ca.cert"
 env = { }                         # extra container environment
+pseudonyms = { silent_min_ms = 3000, silent_max_ms = 13000 }   # optional: keys for every station that
+                                  # has a pseudonyms table; the station's own keys win
 
 # ip, station_id, mac and station_type are optional: left out, vnapctl assigns the next free
 # station ID, address (.10, .20, ...), a MAC derived from the ID and type 5 (an RSU needs 15).
@@ -115,6 +119,10 @@ verbose = false                   # log every frame to the console
 [check]                           # used by "vnapctl check" while this scenario runs
 defaults = true                   # include vnapctl's default expectations
 expect = ["rsu.cam.rx_per_s>=0.8"]
+
+[variants.silent]                 # optional, repeatable: a named set of overrides (see Variants)
+description = "3-13 s silent period"
+set = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000"]
 ```
 
 ## Overrides
@@ -122,13 +130,44 @@ expect = ["rsu.cam.rx_per_s>=0.8"]
 Any value can be overridden at start, without editing the file:
 
 ```bash
-./vnapctl up c-its-pki --set defaults.security=certs-v2 --set certs_dir=/home/demo/pki-test-v2 \
+./vnapctl up trust --set defaults.security=certs-v2 --set certs_dir=/home/demo/pki-test-v2 \
     --set stations.obu.root_cert=/vnap-certs/c-its-pki/tlm.cert
 ```
 
-Values are TOML (`--set 'stations.obu2.pseudonyms={initial=4}'`). Overrides are stored in the
-container labels, so `vnapctl status` and `check` see them; the service records them with the
-run.
+- **Values** are TOML (`--set 'stations.obu2.pseudonyms={initial=4}'`); a whole array too
+  (`--set control.mix_zones=[]` removes the mix zones).
+- **Entries of arrays of tables** are addressed by name or by index from 0:
+  `stations.obu2.color`, `control.mix_zones.crossing.min_vehicles`,
+  `control.mix_zones.0.radius_m`.
+- **Every pseudonym station at once:** `defaults.pseudonyms.<key>`. This reaches only stations
+  that do not set the key themselves, so the foundational scenarios keep shared pseudonym
+  settings in `[defaults]`.
+
+Overrides are stored in the container labels, so `vnapctl status` and `check` see them; the
+service records them with the run.
+
+## Variants
+
+A variant is a named set of overrides kept in the scenario file, so that the settings studied
+in the test summaries stay one name away:
+
+```toml
+[variants.min3]
+description = "a car that entered changes only once 3 cars are inside the zone"
+set = ["control.mix_zones.crossing.min_vehicles=3"]
+```
+
+- **Starting one:** `vnapctl up crossing:min3`; in the web UI, the Variant list under the
+  scenario; in the API, `"variant": "min3"` next to the template or scenario.
+- **Order:** the variant's overrides first, then `--set` or the run's overrides.
+- **Recording:** the run is named `<scenario>:<variant>` (`<user>-crossing-min3-<n>` in the
+  service). `vnapctl` records the variant in the container labels; the service stores the
+  variant's overrides in front of the run's own, so a stored run starts and reloads without
+  the scenario's variant table.
+- **Checks:** `make test` loads every scenario with each of its variants, so a variant that
+  no longer applies fails the tests.
+- **User policy:** a variant's overrides are checked like any others: one that sets an
+  administrator's field is refused for users.
 
 ## Validation
 

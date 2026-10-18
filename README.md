@@ -105,18 +105,20 @@ docker run --rm --entrypoint /usr/local/bin/socktap vnap:latest --help | grep ps
 
 ```bash
 cd ${VNAP_HOME}/sim
-./vnapctl scenarios                       # the scenario catalogue
-./vnapctl up c-its-pki                    # validate, start, wait until the stations exchange messages
+./vnapctl scenarios                       # the five foundational scenarios, their variants, controls
+./vnapctl up trust                        # validate, start, wait until the stations exchange messages
 ./vnapctl status                          # stations, certificates, chain checks
 ./vnapctl check                           # observe 15 s: PASS/FAIL against the expectations
 ./vnapctl events --duration 10s           # received/sent messages, pseudonym and PKI events
 ./vnapctl down                            # remove containers, networks and the run's keys
 ```
 
-Other scenarios to try:
-- `c-its-pki-mixzone-random`: four cars changing identity in a mix zone, watched by an
-  eavesdropper.
-- `templates/pki-refill`: the run's own PKI with certificate refill.
+The scenarios each isolate one phenomenon, and each has variants (`<scenario>:<variant>`):
+- `trust`: certificate-chain verification (`trust:badroot` is the negative control).
+- `linkability`: what a pseudonym change leaks when a vehicle is alone.
+- `crossing`: four cars changing identity in a mix zone, watched by an eavesdropper.
+- `convoy`: cars that change together but never separate.
+- `refill`: the run's own PKI with certificate refill.
 
 `--instance auto` runs a second, independent simulation next to the default one.
 

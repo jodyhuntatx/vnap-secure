@@ -1,0 +1,13 @@
+{
+ "generated_at": "2026-10-18T15:34:17Z",
+ "by": "root",
+ "tool": "C-ITS-PKI",
+ "lifetimes": {
+  "root_years": 10,
+  "tlm_years": 10,
+  "ea_years": 5,
+  "aa_years": 5,
+  "at_hours": 168
+ },
+ "cits_pki": "7b70d8f"
+}

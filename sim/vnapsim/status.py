@@ -270,6 +270,7 @@ def build_status(sim):
             "scenario_file": labels.get("vnap.scenario_file"),
             "run_id": labels.get("vnap.run_id"),
             "instance": int(labels.get("vnap.instance", "0")),
+            "variant": labels.get("vnap.variant"),
             "overrides": json.loads(labels.get("vnap.overrides", "[]")),
         },
         "networks": {n: (v.get("IPAM", {}).get("Config") or [{}])[0].get("Subnet") for n, v in sim.networks.items()},

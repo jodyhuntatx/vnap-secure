@@ -14,6 +14,13 @@ cycle therefore carried over to its new identity. Matching on that timing alone 
 that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on every ID change
 (the same matching then linked 1 of 13). See [pseudonym change](../docs/functional/pseudonym-change.md#cam-timing).
 
+**Scenario names.** The results name the scenario files as they were when measured. Since
+2026-10-18 these are five foundational scenarios with variants, e.g. `c-its-pki-mixzone` is
+now `crossing:blocks` and `c-its-pki-convoy` is `convoy:periodic`. The table in
+[vnapctl](../docs/operations/vnapctl.md#scenario-names-before-2026-10-18) maps every earlier
+name and says where the setup differs (several now take their certificates from the run's
+PKI); the earlier files are in the git history.
+
 ## Documents
 
 | Document | Scenario | Result |

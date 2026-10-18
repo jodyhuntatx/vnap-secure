@@ -43,7 +43,8 @@ import tomllib
 from datetime import datetime, timezone
 
 from . import common as shared
-from .common import EVENT_KINDS, EXIT_CONFLICT, EXIT_DEGRADED, EXIT_DOWN, EXIT_FAIL, EXIT_OK, EXIT_USAGE, ScenarioError, clock, parse_duration, progress
+from .common import (EVENT_KINDS, EXIT_CONFLICT, EXIT_DEGRADED, EXIT_DOWN, EXIT_FAIL, EXIT_OK, EXIT_USAGE, ScenarioError, clock,
+                     current_user, parse_duration, progress)
 from .status import Simulation, build_status, observer_reports, print_status
 from .events import collect_events, describe
 from .check import compute_metrics, default_expectations, evaluate
@@ -61,7 +62,8 @@ def scenario_expectations(sim):
     if not path or not os.path.isfile(path):
         return None
     try:
-        sc = load_scenario(path, json.loads(labels.get("vnap.overrides", "[]")), int(labels.get("vnap.instance", "0")))
+        sc = load_scenario(path, json.loads(labels.get("vnap.overrides", "[]")), int(labels.get("vnap.instance", "0")),
+                           variant=labels.get("vnap.variant"))
     except (ScenarioError, ValueError):
         return None
     expect = sc["check"]["expect"]
@@ -150,6 +152,13 @@ def main():
 
     p = sub.add_parser("schema", help="print the JSON Schema of the scenario format")
 
+    p = sub.add_parser("certs", help="the committed test certificate sets: validity, regeneration")
+    p.add_argument("action", nargs="?", choices=("status", "regenerate"), default="status")
+    p.add_argument("set", nargs="?", choices=("v2", "v3"), help="regenerate: which set")
+    p.add_argument("--lifetime", action="append", default=[], metavar="KEY=N",
+                   help="regenerate: e.g. at_hours=8760 (status lists the keys and defaults)")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("down", help="stop the simulation and remove its networks")
     p.add_argument("scenario", nargs="?", help="scenario whose networks to use (default: --lan/--ctl)")
     p.add_argument("--force", action="store_true", help="also stop runs started by someone else or unlabelled runs")
@@ -189,9 +198,54 @@ def main():
                     ctl_text = (" + control channel" if it["control"] else "") + (" + run PKI" if it.get("pki") else "") \
                         + (" + eavesdropper" if it.get("eavesdropper") else "")
                     print(f"{it['name']:<24} {' '.join(it['stations'])}{ctl_text}\n{'':<24} {it['description']}")
+                    for name, text in it.get("variants", {}).items():
+                        print(f"{'':<24}   :{name:<17} {text}")
                 else:
                     print(f"{it['name']:<24} INVALID: {it['error']}")
         return EXIT_OK
+
+    if args.cmd == "certs":
+        from . import testcerts
+        if args.action == "regenerate":
+            if not args.set:
+                return fail("certs regenerate needs a set: v2 or v3", EXIT_USAGE)
+            given = {}
+            for item in args.lifetime:
+                key, eq, value = item.partition("=")
+                if not eq:
+                    return fail(f"--lifetime needs KEY=N, got '{item}'", EXIT_USAGE)
+                given[key.strip()] = value.strip()
+            try:
+                progress(f"regenerating the {args.set} test certificates ...")
+                reports = [testcerts.regenerate(args.set, given, by=current_user())]
+            except (ValueError, ScenarioError) as e:
+                return fail(str(e), EXIT_USAGE if isinstance(e, ValueError) else EXIT_CONFLICT)
+        else:
+            try:
+                reports = [testcerts.inspect(name) for name in (args.set,) if name] or \
+                          [testcerts.inspect(name) for name in ("v3", "v2")]
+            except ScenarioError as e:
+                return fail(str(e), EXIT_CONFLICT)
+        if args.json:
+            print(json.dumps(reports if len(reports) > 1 else reports[0], indent=2))
+            return EXIT_OK
+        for rep in reports:
+            spec = testcerts.SETS[rep["set"]]
+            state = "EXPIRED" if rep["expired"] else f"valid until {rep['expires']}" if rep["expires"] else "empty"
+            print(f"{rep['set']}  {rep['dir']}  {rep['security']}, {rep['format']}, made with {rep['tool']}: {state}")
+            if rep["generated"]:
+                g = rep["generated"]
+                print(f"    generated {g['generated_at']} by {g.get('by') or '?'}: "
+                      + ", ".join(f"{k}={v}" for k, v in g["lifetimes"].items()))
+            for c in rep["certs"]:
+                print(f"    {c['file']:<26} " + (f"ERROR {c['error']}" if "error" in c else
+                      f"{c['valid_from']} .. {c['valid_until']}{'  EXPIRED' if c['expired'] else ''}"))
+            if rep["missing"]:
+                print(f"    missing: {', '.join(rep['missing'])}")
+            print("    lifetimes (vnapctl certs regenerate " + rep["set"] + " --lifetime KEY=N): "
+                  + ", ".join(f"{s['key']}={s['default']} ({s['entity']}, {s['unit']})" for s in spec["lifetimes"]))
+            print(f"    defaults: {spec['basis']}")
+        return EXIT_OK if args.action == "regenerate" or not any(r["expired"] for r in reports) else EXIT_FAIL
 
     if args.cmd == "schema":
         print(json.dumps(SCENARIO_SCHEMA, indent=2))

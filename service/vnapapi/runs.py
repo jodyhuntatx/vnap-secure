@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, SIM_DIR)
 from vnapsim.common import SCENARIO_DIR, ScenarioError, docker  # noqa: E402
 from vnapsim.lifecycle import allocate_instance, scenario_down, scenario_up  # noqa: E402
-from vnapsim.scenario import load_policy, load_scenario, resolve_scenario_path  # noqa: E402
+from vnapsim.scenario import catalogue_refs, load_policy, load_scenario, resolve_scenario_path, variant_overrides  # noqa: E402
 from vnapsim.scoring import score_run  # noqa: E402
 from vnapsim.status import Simulation, build_status  # noqa: E402
 
@@ -121,7 +121,7 @@ class RunManager:
         names = {"templates": sorted(f[:-5] for f in os.listdir(TEMPLATE_DIR) if f.endswith(".toml"))
                  if os.path.isdir(TEMPLATE_DIR) else []}
         if user["role"] == "admin":
-            names["scenarios"] = sorted(f[:-5] for f in os.listdir(SCENARIO_DIR) if f.endswith(".toml"))
+            names["scenarios"] = catalogue_refs()   # the foundational scenarios, then controls/<name>
         return names
 
     def scenario_path(self, user, scenario=None, template=None, text=None, run_id=None):
@@ -136,8 +136,8 @@ class RunManager:
                 f.write(text)
             return path
         name = template or scenario
-        if not name.replace("-", "").replace("_", "").isalnum():
-            raise RunError("scenario names are letters, digits, '-' and '_'")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+" if template else r"(controls/)?[A-Za-z0-9_-]+", name):
+            raise RunError("scenario names are letters, digits, '-' and '_' (catalogue controls: controls/<name>)")
         if template:
             path = os.path.join(TEMPLATE_DIR, name + ".toml")
             if not os.path.isfile(path):
@@ -198,14 +198,15 @@ class RunManager:
         self.saved_template(user, template_id, write=True)
         self.db.execute("DELETE FROM templates WHERE id = ?", (template_id,))
 
-    def validate(self, user, path, overrides):
+    def validate(self, user, path, overrides, variant=None):
         try:
-            return load_scenario(path, overrides, 0, policy_role(user), self.policy)
+            return load_scenario(path, overrides, 0, policy_role(user), self.policy, variant=variant)
         except ScenarioError as e:
             raise RunError("invalid scenario", e.errors or [{"path": "", "message": str(e), "text": str(e)}])
 
     # ------------------------------------------------------------ runs
-    def create(self, user, scenario=None, template=None, scenario_text=None, overrides=(), duration_minutes=None, name=None):
+    def create(self, user, scenario=None, template=None, scenario_text=None, overrides=(), duration_minutes=None, name=None,
+               variant=None):
         if user["role"] == "viewer":
             raise RunError("viewers cannot start runs", status=403)
         limits = self.cfg["limits"]["admin" if user["role"] == "admin" else "user"]
@@ -229,11 +230,13 @@ class RunManager:
         # validate first, so that a refused scenario uses no run number
         path = self.scenario_path(user, scenario, template, scenario_text)
         try:
-            sc = self.validate(user, path, overrides)
+            sc = self.validate(user, path, overrides, variant)
         except Exception:
             if scenario_text is not None:
                 os.remove(path)
             raise
+        # the run keeps the variant as the overrides it stands for, so that it starts and reloads without it
+        overrides = variant_overrides(path, variant) + overrides
         unnamed = scenario_text is not None and sc["name"] == os.path.splitext(os.path.basename(path))[0]
         run_id = self.new_id(user["username"], name or (None if unnamed else sc["name"]))
         if scenario_text is not None:   # the run's own scenario file is named after the run

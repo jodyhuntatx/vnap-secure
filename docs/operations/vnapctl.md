@@ -7,35 +7,36 @@ only `python3`, the Docker CLI and the `eclipse-mosquitto:2` image. All commands
 ## Walkthrough
 
 **1. Choose a scenario.** Each file in `scenarios/` describes the stations, their certificates,
-and optionally a control channel, movement, the run's own PKI and an eavesdropper.
+and optionally a control channel, movement, the run's own PKI and an eavesdropper. There are
+five foundational scenarios, one per phenomenon. Each has named **variants**: sets of overrides
+that switch one thing on or off, started as `<scenario>:<variant>`.
 
 ```bash
 cd ${VNAP_HOME}/sim
-./vnapctl scenarios          # name, stations and features of every scenario
+./vnapctl scenarios          # name, stations, features and variants of every scenario
 ```
 
-| Scenario | Use it to |
-|---|---|
-| `none` | check the link and CAM path without security |
-| `c-its-pki` | run v3 security with the fixed C-ITS-PKI set (RSU regular AT, OBU butterfly AT) |
-| `certify-fresh` | run v2 security with certificates from Vanetza's `certify` |
-| `c-its-pki-pseudo`, `c-its-pki-pseudo-manual` | let the OBU change pseudonym on control-channel events |
-| `c-its-pki-tracking`, `c-its-pki-tracking-silent` | add a passive eavesdropper (with silent periods) |
-| `c-its-pki-traffic`, `c-its-pki-convoy` | moving vehicles; a convoy watched by an eavesdropper |
-| `c-its-pki-mixzone`, `c-its-pki-mixzone-random` | four cars changing identity in an intersection mix zone (fixed or random turns) |
-| `c-its-pki-convoy-dynamic` | a convoy with a dynamic mix zone: cars change when three are within 80 m of each other |
-| `c-its-pki-mixzone-min3` | the same mix zone with a threshold: cars change only once three are inside |
-| `c-its-pki-refill`, `c-its-pki-refill-sweep`, `c-its-pki-mixzone-pki` | the run's own PKI with certificate refill |
-| `c-its-pki-badroot`, `naive-v3` | negative controls: messages must be rejected |
-| `stress-naive-v3` | stress test: 4 stations at 50 Hz |
-| `templates/pki-refill`, `templates/mixzone-random` | the templates users of the service start |
+| Scenario | Phenomenon | Measures | Variants |
+|---|---|---|---|
+| `trust` | signed CAMs accepted only when the signer's certificate chains AT → AA → trusted root (committed test certificates) | `chain.fail`, `cam.success_rate` | `badroot` (negative control), `v2` |
+| `linkability` | what a pseudonym change leaks when the vehicle is alone: identifiers, CAM timing, position | links by technique, tracks | `certificate-only`, `silent`, `silent-patient`, `identifiers-only`, `manual` |
+| `crossing` | privacy from other vehicles: four cars change together in a mix zone and leave in different directions | correct and wrong links, tracks | `min2`, `min3`, `blocks`, `blocks-min3`, `periodic`, `no-silence` |
+| `convoy` | cars that change together but never separate: order and spacing survive the change | correct and wrong links, followed changes | `periodic`, `min2`, `no-silence` |
+| `refill` | certificate supply from the run's PKI: refill latency, queueing, starvation | `pki.refresh_ms_*`, `pki.queue_ms_max`, `pki.starved` | `slow`, `batch4`, `batch16`, `batch32`, `pki-derives`, `no-refill` |
+
+The `controls/` folder holds pass/fail checks that measure nothing: `controls/none` (the link
+and CAM path without security), `controls/naive-v3` (self-signed certificates: every CAM
+rejected) and `controls/stress-naive-v3` (4 stations at 50 Hz, a regression test of the
+thread-safety fixes). `templates/` links the four foundational scenarios users of the service
+may start (all but `trust`, which uses certificate files). Where the scenarios before
+2026-10-18 went is listed in [scenario names](#scenario-names-before-2026-10-18).
 
 **2. Start it.** `--dry-run` validates and prints the Docker commands. `up` returns when every
 station exchanges messages.
 
 ```bash
-./vnapctl up c-its-pki --dry-run
-./vnapctl up c-its-pki
+./vnapctl up trust --dry-run
+./vnapctl up trust
 ```
 
 **3. Check it.** `status` shows the stations, their certificates and chain checks. `check`
@@ -54,7 +55,7 @@ frames and MQTT are covered in [monitoring](monitoring.md).
 periodically; you can also send one by hand.
 
 ```bash
-./vnapctl down && ./vnapctl up c-its-pki-pseudo
+./vnapctl down && ./vnapctl up linkability
 docker exec pseudo-client change 2          # station 2: next pseudonym
 ./vnapctl events --duration 10s --kind pseudonym,control
 ```
@@ -65,16 +66,20 @@ The client's commands and the event format are in
 **6. Play the attacker.**
 
 ```bash
-./vnapctl down && ./vnapctl up c-its-pki-mixzone-random
+./vnapctl down && ./vnapctl up crossing
 ./vnapctl status                    # includes the eavesdropper's tracks and linked changes
 docker logs -f eavesdropper
 ```
 
 See [eavesdropper and scoring](../functional/eavesdropper-and-scoring.md).
 
-**7. Run a negative control.** In `c-its-pki-badroot` the OBU trusts the wrong root and must
-reject the RSU's CAMs. The scenario defines its own expectations, so `check` passes when the
+**7. Run a negative control.** In `trust:badroot` the OBU trusts the wrong root and must
+reject the RSU's CAMs. The variant sets its own expectations, so `check` passes when the
 rejection happens.
+
+```bash
+./vnapctl down && ./vnapctl up trust:badroot && ./vnapctl check
+```
 
 **8. Tear down.**
 
@@ -88,11 +93,13 @@ rejection happens.
 ./vnapctl scenarios [--json]                         # list scenario files
 ./vnapctl validate my.toml [--json] [--as-user]      # field-level errors; --as-user applies the user policy
 ./vnapctl schema                                     # JSON Schema of the scenario format
-./vnapctl up NAME|FILE [--set KEY=VALUE ...] [--dry-run] [--wait 30] [--instance N|auto] [--as-user]
+./vnapctl up NAME[:VARIANT]|FILE [--set KEY=VALUE ...] [--dry-run] [--wait 30] [--instance N|auto] [--as-user]
 ./vnapctl status [--json]
 ./vnapctl events [--duration 10s] [--since 10m] [--kind K,...] [--station S] [--count N] [--json]
 ./vnapctl check [--duration 15s] [--expect EXPR ...] [--no-defaults] [--no-scenario] [--json]
 ./vnapctl down [--force] [--dry-run]
+./vnapctl certs [status] [v2|v3] [--json]           # the committed test certificates' validity
+./vnapctl certs regenerate v2|v3 [--lifetime KEY=N ...]   # a new set; see docs/certificates.md
 ```
 
 Every command finishes on its own (none waits for Ctrl-C). Text output by default; `--json`
@@ -111,8 +118,17 @@ result stays on stdout. `-q`/`--quiet` and `--json` turn these messages off.
   - missing certificate files;
   - certificate combinations the entrypoint cannot use.
 - **Overrides:** `--set` changes any value without editing the file, e.g.
-  `--set control.client.interval=10 --set defaults.security=certs-v2`. Overrides are recorded
-  in the container labels, so `status` and `check` see them.
+  `--set control.client.interval=10 --set defaults.security=certs-v2`:
+  - an entry of an array of tables by its name or its index from 0:
+    `--set stations.obu1.color="#ff0000"`, `--set control.mix_zones.crossing.min_vehicles=3`;
+  - a whole value, arrays included, as TOML: `--set control.mix_zones=[]`;
+  - every pseudonym station at once through `defaults.pseudonyms`:
+    `--set defaults.pseudonyms.silent_max_ms=0` (a station's own key wins).
+
+  Overrides are recorded in the container labels, so `status` and `check` see them.
+- **Variants:** `up crossing:min3` applies the overrides of the scenario's `[variants.min3]`
+  first, then any `--set`. The run is named `crossing:min3`, and the variant is recorded in
+  the labels.
 - **Refusals:** `up` does not start when a simulation already runs on the network, a
   container name is in use, a network exists with another subnet, or less than 0.5 GB of disk
   is free.
@@ -218,3 +234,23 @@ are in [scenario format](../reference/scenario-format.md):
 ./vnapctl validate my.toml --json            # {"valid": false, "errors": [{"path": "stations[obu1].ip", ...}]}
 ./vnapctl up my.toml --instance auto
 ```
+
+## Scenario names before 2026-10-18
+
+The catalogue was reduced to five foundational scenarios with variants. The earlier files are
+in the git history; each maps to a scenario and variant as follows.
+
+| Before | Now | Difference |
+|---|---|---|
+| `c-its-pki` | `trust` | none |
+| `c-its-pki-badroot` | `trust:badroot` | none |
+| `certify-fresh` | `trust:v2` | none |
+| `c-its-pki-pseudo`, `c-its-pki-pseudo-manual` | `linkability`, `linkability:manual` | the OBU moves; certificates from the run's PKI |
+| `c-its-pki-tracking`, `c-its-pki-tracking-silent` | `linkability`, `linkability:silent` | the OBU moves; certificates from the run's PKI |
+| `c-its-pki-traffic` | `crossing:periodic` | four cars on the crossing instead of two on straight roads |
+| `c-its-pki-mixzone`, `c-its-pki-mixzone-min3` | `crossing:blocks`, `crossing:blocks-min3` | certificates from the run's PKI |
+| `c-its-pki-mixzone-random`, `c-its-pki-mixzone-pki`, `templates/mixzone-random` | `crossing` | `mixzone-random` used committed certificates |
+| `c-its-pki-convoy`, `c-its-pki-convoy-dynamic` | `convoy:periodic`, `convoy` | certificates from the run's PKI, so no pool is reused |
+| `c-its-pki-refill-sweep` | `refill` (`batch4` … `batch32`) | none |
+| `c-its-pki-refill`, `templates/pki-refill` | `refill:slow` | four OBUs instead of two |
+| `none`, `naive-v3`, `stress-naive-v3` | `controls/none`, `controls/naive-v3`, `controls/stress-naive-v3` | none |

@@ -1,0 +1,66 @@
+description = "linkability: one OBU driving past an RSU changes pseudonym every 10 s with a full ID change, watched by an eavesdropper; with one vehicle, only the change itself can hide it"
+
+# Foundational scenario 2 of 5: what a pseudonym change leaks when there is no crowd. The
+# eavesdropper links old and new identity by identifiers that did not change, by the rhythm
+# of the CAMs, or by position continuity. Variants switch the countermeasures on and off one
+# at a time: certificate-only change, silent period, a patient attacker.
+# Measures: links by technique (score.json), eavesdropper.linked_changes, tracks.
+# A template users may start: no addresses, networks or certificate files.
+
+[defaults]
+security = "certs-v3"
+# every pseudonym station: the variants change these in one place
+pseudonyms = { min_interval_ms = 1000, id_change = "full", silent_min_ms = 0, silent_max_ms = 0 }
+
+[[stations]]
+name = "rsu"
+station_type = 15
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
+
+# east-west road through the RSU, about 260 m either side, back and forth at 50 km/h
+[[stations]]
+name = "obu"
+station_type = 5
+pseudonyms = {}
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, loop = true }
+
+[pki]
+# defaults: 8 initial certificates, a batch of 8 requested at 2 unused
+validity_hours = 24
+
+[control]
+mobility_rate_hz = 5
+
+[control.client]
+mode = "periodic"
+interval = 10
+
+[eavesdropper]
+# untrusted party: raw frames on the message network only (no keys, no control network)
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=2"]
+
+[variants.certificate-only]
+description = "only the certificate changes; MAC, GN address and stationId stay, and link every change"
+set = ['defaults.pseudonyms.id_change="certificate"']
+
+# The silent variants change every 20 s: with a change every 10 s, silences of up to 13 s would
+# leave the one OBU silent for whole check windows. Check them with vnapctl check --duration 30s.
+[variants.silent]
+description = "a random 3-13 s silent period after each full ID change (SAE J2735 values, ETSI TR 103 415), a change every 20 s (was c-its-pki-tracking-silent)"
+set = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000", "control.client.interval=20"]
+
+[variants.silent-patient]
+description = "the silent period against a patient attacker that continues a track up to 15 s after it went silent"
+set = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000", "control.client.interval=20",
+       "eavesdropper.link_window=15.0"]
+
+[variants.identifiers-only]
+description = "an attacker that links by identifiers alone, without timing or position"
+set = ["eavesdropper.link_by=[]"]
+
+[variants.manual]
+description = "no clock-driven changes: change with vnapctl or the web UI's control (was c-its-pki-pseudo-manual)"
+set = ['control.client.mode="manual"']

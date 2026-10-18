@@ -8,7 +8,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from vnapsim.common import PKI_KEYS, STATION_KEYS, ScenarioError  # noqa: E402
-from vnapsim.scenario import assign_identities, error_path, load_scenario, policy_violations  # noqa: E402
+from vnapsim.scenario import (assign_identities, catalogue_refs, error_path, load_policy, load_scenario, policy_violations,  # noqa: E402
+                              resolve_scenario_path, scenario_variants)
 from vnapsim.schema import SCENARIO_SCHEMA  # noqa: E402
 
 POLICY = {"approved_images": ["vnap:latest"], "allowed_env": ["VANETZA_LATITUDE"]}
@@ -31,10 +32,115 @@ class SchemaTest(unittest.TestCase):
     def test_every_scenario_file_uses_known_top_level_keys(self):
         import tomllib
         known = set(SCENARIO_SCHEMA["properties"])
-        for name in os.listdir(os.path.join(os.path.dirname(HERE), "scenarios")):
-            if name.endswith(".toml"):
-                with open(os.path.join(os.path.dirname(HERE), "scenarios", name), "rb") as f:
-                    self.assertLessEqual(set(tomllib.load(f)), known, name)
+        for ref in catalogue_refs():
+            with open(resolve_scenario_path(ref), "rb") as f:
+                self.assertLessEqual(set(tomllib.load(f)), known, ref)
+
+
+class CatalogueTest(unittest.TestCase):
+    """The foundational scenarios, their variants and the controls."""
+
+    def test_every_scenario_and_variant_validates(self):
+        for ref in catalogue_refs():
+            for variant in [None, *scenario_variants(resolve_scenario_path(ref))]:
+                try:
+                    load_scenario(ref, variant=variant)
+                except ScenarioError as e:
+                    if "C-ITS-PKI" in str(e) and "pki:" in str(e):
+                        self.skipTest("needs the C-ITS-PKI submodule or the vnap-pki image")
+                    self.fail(f"{ref}:{variant}: {e}")
+
+    def test_templates_are_foundational_scenarios_users_may_start(self):
+        import tomllib
+        templates = os.path.join(os.path.dirname(HERE), "scenarios", "templates")
+        names = sorted(f[:-5] for f in os.listdir(templates) if f.endswith(".toml"))
+        self.assertEqual(names, ["convoy", "crossing", "linkability", "refill"])
+        for name in names:
+            path = os.path.join(templates, name + ".toml")
+            self.assertEqual(os.path.realpath(path), resolve_scenario_path(name), name)   # a link, not a copy
+            with open(path, "rb") as f:
+                self.assertEqual(policy_violations(tomllib.load(f), load_policy()), [], name)   # the real policy
+
+    def test_variant_names_and_descriptions(self):
+        sc = load_scenario(scenario_file(VARIANT_TEXT) + ":fast", sets=["control.client.interval=7"])
+        self.assertEqual((sc["name"], sc["variant"]), ("v:fast", "fast"))
+        self.assertEqual(sc["control"]["client"]["interval"], 7)   # --set applies after the variant
+        self.assertIn("variant fast: every 2 s", sc["description"])
+        self.assertEqual(load_scenario(scenario_file(VARIANT_TEXT), variant="fast")["control"]["client"]["interval"], 2)
+        with self.assertRaises(ScenarioError) as ctx:
+            load_scenario(scenario_file(VARIANT_TEXT), variant="nope")
+        self.assertIn("no variant 'nope' (variants: broken, fast)", str(ctx.exception))
+        with self.assertRaises(ScenarioError) as ctx:
+            load_scenario(scenario_file(VARIANT_TEXT), variant="broken")
+        self.assertIn("variant broken", str(ctx.exception))
+
+
+VARIANT_TEXT = ('name = "v"\ndescription = "d"\n[defaults]\nsecurity = "certs-v3"\n[pki]\n'
+                '[[stations]]\nname = "rsu"\nstation_type = 15\n[[stations]]\nname = "car"\npseudonyms = {}\n'
+                '[control]\n[control.client]\ninterval = 10\n'
+                '[variants.fast]\ndescription = "every 2 s"\nset = ["control.client.interval=2"]\n'
+                '[variants.broken]\nset = ["stations.nobody.x=1"]\n')
+
+
+class TestCertsTest(unittest.TestCase):
+    """Lifetimes of the committed test certificate sets (generation itself needs docker)."""
+
+    def test_defaults_and_nesting(self):
+        from vnapsim import testcerts
+        self.assertEqual(testcerts.lifetimes("v2"), {"root_days": 365, "aa_days": 180, "at_days": 7})
+        self.assertEqual(testcerts.lifetimes("v3", {"at_hours": "8760"})["at_hours"], 8760)
+        for name, given, message in (("v3", {"aa_years": 11}, "exceeds root_years"),
+                                     ("v3", {"aa_years": 1, "at_hours": 9000}, "exceeds the AA"),
+                                     ("v2", {"at_days": 200}, "exceeds aa_days"),
+                                     ("v2", {"root_days": 0}, "from 1 to"),
+                                     ("v2", {"at_hours": 5}, "unknown lifetime 'at_hours'")):
+            with self.assertRaises(ValueError) as ctx:
+                testcerts.lifetimes(name, given)
+            self.assertIn(message, str(ctx.exception), (name, given))
+
+    def test_expected_files_match_what_scenarios_use(self):
+        from vnapsim import testcerts
+        import re as _re
+        used = set()
+        for ref in catalogue_refs():
+            for variant in [None, *scenario_variants(resolve_scenario_path(ref))]:
+                with open(resolve_scenario_path(ref)) as f:
+                    used |= set(_re.findall(r"/vnap-certs/((?:c-its-pki|certify)/[\w.]+)", f.read()))
+        known = {f"{testcerts.SETS[n]['dir']}/{f}" for n in testcerts.SETS for f in testcerts.expected_files(n)}
+        self.assertLessEqual(used, known)   # a regeneration makes every file a scenario names
+
+
+class OverrideTest(unittest.TestCase):
+    def test_entries_of_arrays_by_name_or_index(self):
+        from vnapsim.scenario import apply_override
+        data = {"stations": [{"name": "a"}, {"name": "b"}],
+                "control": {"mix_zones": [{"name": "crossing", "min_vehicles": 1}, {"center": [0, 0]}]}}
+        apply_override(data, "stations.b.color=\"#000000\"")
+        apply_override(data, "control.mix_zones.crossing.min_vehicles=3")
+        apply_override(data, "control.mix_zones.1.radius_m=20")
+        self.assertEqual(data["stations"][1]["color"], "#000000")
+        self.assertEqual(data["control"]["mix_zones"], [{"name": "crossing", "min_vehicles": 3}, {"center": [0, 0], "radius_m": 20}])
+        for bad, message in (("control.mix_zones.2.radius_m=1", "no entry of mix_zones"), ("stations.c.x=1", "no station 'c'"),
+                             ("control.mix_zones.0=1", "give a key of the entry")):
+            with self.assertRaises(ScenarioError) as ctx:
+                apply_override(data, bad)
+            self.assertIn(message, str(ctx.exception))
+        apply_override(data, "control.mix_zones=[]")
+        self.assertEqual(data["control"]["mix_zones"], [])
+
+    def test_defaults_pseudonyms(self):
+        text = ('[defaults]\nsecurity = "certs-v3"\npseudonyms = { silent_min_ms = 3000, silent_max_ms = 5000 }\n[pki]\n'
+                '[[stations]]\nname = "rsu"\nstation_type = 15\n[[stations]]\nname = "a"\npseudonyms = {}\n'
+                '[[stations]]\nname = "b"\npseudonyms = { silent_max_ms = 9000 }\n[control]\n')
+        sc = load_scenario(scenario_file(text), role="user", policy=POLICY)
+        rsu, a, b = sc["stations"]
+        self.assertNotIn("pseudonyms", rsu)   # no pseudonyms table: no pool
+        self.assertEqual((a["pseudonyms"]["silent_min_ms"], a["pseudonyms"]["silent_max_ms"]), (3000, 5000))
+        self.assertEqual((b["pseudonyms"]["silent_min_ms"], b["pseudonyms"]["silent_max_ms"]), (3000, 9000))   # its own key wins
+        sc = load_scenario(scenario_file(text), sets=["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"])
+        self.assertEqual(sc["stations"][1]["pseudonyms"]["silent_max_ms"], 0)
+        self.assertEqual(policy_violations({"defaults": {"pseudonyms": {"cert": "x{i}"}}}, POLICY),
+                         ["defaults.pseudonyms.cert: only administrators may set this"])
 
 
 class ErrorPathTest(unittest.TestCase):

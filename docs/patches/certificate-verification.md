@@ -13,7 +13,7 @@ How the stations use these checks is described in
   - `straight_verify_service.{hpp,cpp}` uses it for received messages;
   - `tools/socktap/security.cpp` loads the AA chain and the trusted root for v3.
 - **Effect:** messages from ATs of another hierarchy fail with a certificate error.
-  `c-its-pki-badroot` (OBU trusts the TLM certificate) and `naive-v3` (self-made
+  `trust:badroot` (OBU trusts the TLM certificate) and `controls/naive-v3` (self-made
   certificates) are the negative controls.
 - **Upstream:** candidate.
 

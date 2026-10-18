@@ -59,9 +59,9 @@ channel in [control channels](../reference/control-channels.md#pseudonym-change)
 ## Testing
 
 - **Scenarios:**
-  - `c-its-pki-pseudo` and `c-its-pki-pseudo-manual`: changes, rejections, answers;
-  - `c-its-pki-tracking` and `c-its-pki-tracking-silent`: an eavesdropper against full ID
-    changes, with and without silence;
-  - the mix zone and convoy scenarios ([results](../../results/README.md)).
+  - `linkability` and `linkability:manual`: changes, rejections, answers;
+  - `linkability`, `linkability:silent` and `linkability:certificate-only`: an eavesdropper
+    against full ID changes, with and without silence, and against certificate-only changes;
+  - `crossing` and `convoy` with their variants ([results](../../results/README.md)).
 - **Checks:** `<station>.pseudonym.changed`, `.rejected`, `control.changed`, and
   `vnapctl events --kind idchange`.

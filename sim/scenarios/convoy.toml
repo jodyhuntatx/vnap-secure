@@ -1,0 +1,79 @@
+description = "convoy: three OBUs driving together (about 28 m apart at 50 km/h) change identity whenever all three are within 80 m (a dynamic mix zone), 3-13 s silence; patient eavesdropper (15 s link window)"
+
+# Foundational scenario 4 of 5: vehicles that change together but never separate. Their
+# order and spacing survive the change, so synchronized changes alone do not hide them; this
+# is the contrast to the crossing, where cars leave the zone in different directions.
+# Measures: correct and wrong links (score.json), tracks, how many changes were followed.
+# A template users may start: no addresses, networks or certificate files.
+#
+# The convoy: one route about 260 m either side of the RSU, driven back and forth at
+# 50 km/h (13.9 m/s). Starting 2 s apart puts the cars about 28 m apart.
+
+[defaults]
+security = "certs-v3"
+# every pseudonym station: the variants change these in one place
+pseudonyms = { min_interval_ms = 1000, silent_min_ms = 3000, silent_max_ms = 13000 }
+
+[[stations]]
+name = "rsu"
+station_type = 15
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
+
+[[stations]]
+name = "obu1"
+station_type = 5
+pseudonyms = {}
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, start_s = 4, loop = true }
+
+[[stations]]
+name = "obu2"
+station_type = 5
+pseudonyms = {}
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, start_s = 6, loop = true }
+
+[[stations]]
+name = "obu3"
+station_type = 5
+pseudonyms = {}
+mobility = { route = [[40.208106, -8.4227848], [40.208106, -8.4167664]], speed_kmh = 50, start_s = 8, loop = true }
+
+[pki]
+# defaults: 8 initial certificates per car, a batch of 8 requested at 2 unused; no
+# certificate is used twice
+validity_hours = 24
+
+[control]
+mobility_rate_hz = 5
+
+[control.dynamic_mix_zone]
+# run scope: every OBU takes part. A car gets a change event when 3 cars (itself included)
+# are within 80 m of it, at most every 20 s: the convoy changes in the same position update,
+# and each car then stays silent for its own random 3-13 s. A single car could opt out or
+# take another threshold with dynamic_mix_zone = { enabled = false } or { min_vehicles = 2 }.
+min_vehicles = 3
+radius_m = 80
+cooldown_s = 20
+
+[control.client]
+# no clock-driven changes: identities change only in the dynamic mix zone
+mode = "manual"
+
+[eavesdropper]
+# patient attacker: continues a track up to 15 s after it went silent
+link_window = 15.0
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=4"]
+
+[variants.periodic]
+description = "no dynamic mix zone: one periodic loop per car, all started together, every 20 s (was c-its-pki-convoy)"
+set = ["control.dynamic_mix_zone.enabled=false", 'control.client.mode="periodic"', "control.client.interval=20"]
+
+[variants.min2]
+description = "a car changes when 2 cars (itself included) are within 80 m"
+set = ["control.dynamic_mix_zone.min_vehicles=2"]
+
+[variants.no-silence]
+description = "the dynamic mix zone without a silent period"
+set = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]

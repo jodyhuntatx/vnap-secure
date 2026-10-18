@@ -40,7 +40,7 @@ client drives the vehicles.
   - starts the mobility client.
 
   The scenario needs a `[control]` section ([scenario format](../reference/scenario-format.md);
-  examples: `c-its-pki-traffic`, `c-its-pki-convoy`, `c-its-pki-mixzone-random`).
+  examples: `linkability`, `convoy`, `crossing`).
 
 ## Mix zones
 
@@ -71,7 +71,7 @@ The privacy gained is roughly the number of vehicles that could plausibly be the
 |---|---|
 | `[[control.mix_zones]]` | the zone: the mobility client sends a change event to each vehicle entering it, which stands in for a vehicle knowing it is in a designated zone |
 | `silent_min_ms`, `silent_max_ms` (`pseudonyms`) | the random radio silence after a full ID change ([pseudonym change](pseudonym-change.md)) |
-| crossing mobility with random turns | unpredictable exits (`c-its-pki-mixzone-random`). With fixed turns (`c-its-pki-mixzone`) the eavesdropper's mistakes form a pattern an attacker could undo |
+| crossing mobility with random turns | unpredictable exits (`crossing`). With fixed turns (`crossing:blocks`) the eavesdropper's mistakes form a pattern an attacker could undo |
 | `min_vehicles` | the "many vehicles together" condition: a vehicle does not spend a pseudonym on a change that would be linked anyway |
 | the eavesdropper and its score | the test of the zone: it links old and new identities by position and CAM timing, and the score against ground truth says how well the zone worked ([eavesdropper and scoring](eavesdropper-and-scoring.md)) |
 
@@ -84,7 +84,7 @@ pseudonym change event to a vehicle each time it enters the zone, instead of on 
 and show up in `vnapctl events`.
 
 **Threshold.** `min_vehicles = n` makes the change conditional on company in the zone
-(example: `c-its-pki-mixzone-min3`):
+(examples: `crossing:min3`, `crossing:blocks-min3`):
 
 - A vehicle that enters waits while fewer than `n` vehicles are inside.
 - When the `n`-th vehicle is inside, every waiting vehicle gets its change event in the same
@@ -120,7 +120,7 @@ Two scopes select who takes part and with which threshold:
 | Run | `[control.dynamic_mix_zone]` with `enabled`, `min_vehicles`, `radius_m`, `cooldown_s` | every station with mobility and pseudonyms takes part (`enabled = false`: only the stations that say so) |
 | Station | `dynamic_mix_zone = { enabled = …, min_vehicles = … }` in a station | this station takes part or not, with its own threshold; replaces the run scope for it |
 
-Example: `c-its-pki-convoy-dynamic` (three cars, all three within 80 m, every 20 s). Fixed
+Example: `convoy` (three cars, all three within 80 m, every 20 s). Fixed
 mix zones and a dynamic one can be used together.
 
 **It is an oracle.** The mobility client knows every vehicle's true position, so vehicles

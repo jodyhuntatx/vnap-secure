@@ -110,7 +110,7 @@ python3 -m venv .venv                        # needs python3.12-venv (step 1); p
 cd ${VNAP_HOME}
 make image                                   # about 20 minutes the first time
 make test                                    # unit tests, UI syntax, patch diffs, documentation links
-cd ${VNAP_HOME}/sim && ./vnapctl up c-its-pki && ./vnapctl check && ./vnapctl down
+cd ${VNAP_HOME}/sim && ./vnapctl up trust && ./vnapctl check && ./vnapctl down
 ```
 
 `./vnapctl check` should end with `PASS`.

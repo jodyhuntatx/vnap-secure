@@ -185,7 +185,9 @@ def parse_value(text):
 
 
 def apply_override(data, assignment):
-    """--set a.b.c=value; stations.<name>.<key> addresses a station by name."""
+    """--set a.b.c=value. An entry of an array of tables is addressed by its name or its index from 0:
+    stations.<name>.<key>, control.mix_zones.0.min_vehicles. A whole value, an array included, is
+    replaced with its TOML text: control.mix_zones=[]."""
     path, eq, raw = assignment.partition("=")
     if not eq or not path:
         raise ScenarioError(f"--set needs path=value, got '{assignment}'")
@@ -194,13 +196,18 @@ def apply_override(data, assignment):
     i = 0
     while i < len(keys) - 1:
         key = keys[i]
-        if key == "stations" and isinstance(node.get("stations"), list):
-            name = keys[i + 1]
-            match = [s for s in node["stations"] if s.get("name") == name]
+        if isinstance(node.get(key), list):
+            entry, items = keys[i + 1], node[key]
+            match = [s for s in items if isinstance(s, dict) and s.get("name") == entry]
+            if not match and entry.isdigit() and int(entry) < len(items) and isinstance(items[int(entry)], dict):
+                match = [items[int(entry)]]
             if not match:
-                raise ScenarioError(f"--set {path}: no station '{name}'")
+                what = "station" if key == "stations" else f"entry of {key} (a name or an index from 0)"
+                raise ScenarioError(f"--set {path}: no {what} '{entry}'")
             node = match[0]
             i += 2
+            if i == len(keys):
+                raise ScenarioError(f"--set {path}: give a key of the entry, or replace the whole {key}")
             continue
         node = node.setdefault(key, {})
         if not isinstance(node, dict):
@@ -216,14 +223,70 @@ def resolve_scenario_path(ref):
     raise ScenarioError(f"scenario '{ref}' not found (vnapctl scenarios lists them)")
 
 
-def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_sets=()):
-    """Read, override, validate and resolve a scenario file into a flat description."""
+def split_variant(ref):
+    """"crossing:min3" -> ("crossing", "min3"); a reference without a variant -> (ref, None)."""
+    base, sep, variant = ref.rpartition(":")
+    if sep and base and re.fullmatch(r"[A-Za-z0-9_-]+", variant):
+        return base, variant
+    return ref, None
+
+
+def variant_sets(data, variant, where=""):
+    """The overrides of [variants.<variant>], checked; [] without a variant."""
+    variants = data.get("variants", {})
+    if not isinstance(variants, dict):
+        raise ScenarioError(f"{where}variants must be a table of [variants.<name>] tables")
+    if variant is None:
+        return []
+    v = variants.get(variant)
+    if v is None:
+        known = ", ".join(sorted(variants)) or "none"
+        raise ScenarioError(f"{where}no variant '{variant}' (variants: {known})")
+    if not isinstance(v, dict) or set(v) - {"description", "set"} or not (
+            isinstance(v.get("set", []), list) and all(isinstance(s, str) for s in v.get("set", []))):
+        raise ScenarioError(f"{where}variants.{variant} needs description = \"...\" and set = [\"key=value\", ...]")
+    return list(v.get("set", []))
+
+
+def variant_overrides(path, variant):
+    """The overrides a variant of the scenario file stands for ([] without a variant)."""
+    if not variant:
+        return []
+    with open(path, "rb") as f:
+        try:
+            return variant_sets(tomllib.load(f), variant)
+        except tomllib.TOMLDecodeError as e:
+            raise ScenarioError(f"{path}: {e}")
+
+
+def scenario_variants(path):
+    """{name: description} of a scenario file's variants (empty when it has none or cannot be read)."""
+    try:
+        with open(path, "rb") as f:
+            variants = tomllib.load(f).get("variants", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    if not isinstance(variants, dict):
+        return {}
+    return {name: (v.get("description", "") if isinstance(v, dict) else "") for name, v in variants.items()}
+
+
+def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_sets=(), variant=None):
+    """Read, override, validate and resolve a scenario file into a flat description. A variant
+    ("name:variant" or `variant`) applies the overrides of [variants.<variant>] before `sets`."""
+    if variant is None:
+        ref, variant = split_variant(ref) if not os.path.isfile(ref) else (ref, None)
     path = resolve_scenario_path(ref)
     with open(path, "rb") as f:
         try:
             data = tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
             raise ScenarioError(f"{path}: {e}")
+    for assignment in variant_sets(data, variant, f"{path}: "):
+        try:
+            apply_override(data, assignment)
+        except ScenarioError as e:
+            raise ScenarioError(f"{path}: variant {variant}: {e}")
     for assignment in sets:
         apply_override(data, assignment)
 
@@ -262,6 +325,11 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         return value
 
     defaults = data.get("defaults", {})
+    # defaults.pseudonyms: keys for every station that has a pseudonyms table (an RSU without one gets no pool)
+    pseudo_defaults = defaults.get("pseudonyms", {})
+    if not isinstance(pseudo_defaults, dict):
+        errors.append("defaults.pseudonyms must be a table", "defaults.pseudonyms")
+        pseudo_defaults = {}
     pki_raw = data.get("pki")
     pki_on = isinstance(pki_raw, dict) and pki_raw.get("enabled", True)
     pki_defaults = {k: (pki_raw or {}).get(k, v) for k, v in (("initial", 8), ("refill_at", 2), ("batch", 8))}
@@ -293,6 +361,8 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         if bool(st["at_cert"]) != bool(st["at_key"]):
             errors.append(f"{where}: at_cert and at_key go together")
         pseudo = raw.get("pseudonyms")
+        if pseudo is not None and isinstance(pseudo, dict) and isinstance(pseudo_defaults, dict):
+            pseudo = {**pseudo_defaults, **pseudo}   # the station's own keys win
         if pki_on:
             # certificates come from the run's own PKI, not from files
             given = sorted(k for k in ("at_cert", "at_key", "aa_cert", "root_cert") if k in raw or k in defaults)
@@ -500,9 +570,13 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
     check = data.get("check", {})
     if errors:
         raise ScenarioError(f"{path}:\n  " + "\n  ".join(errors), errors.records)
+    name = data.get("name", os.path.splitext(os.path.basename(path))[0])
+    description = data.get("description", "")
+    if variant:
+        description = f"{description} · variant {variant}: {data['variants'][variant].get('description', '')}".rstrip(": ")
     return {
-        "name": data.get("name", os.path.splitext(os.path.basename(path))[0]),
-        "description": data.get("description", ""), "path": path, "instance": instance,
+        "name": f"{name}:{variant}" if variant else name, "variant": variant,
+        "description": description, "path": path, "instance": instance,
         "image": data.get("image", "vnap:latest"), "entrypoint": entrypoint, "certs_dir": certs_dir,
         "network": {"name": lan_name, "subnet": str(lan_subnet)}, "stations": stations, "control": control,
         "eavesdropper": eavesdropper, "pki": pki,
@@ -672,15 +746,26 @@ def check_crossing(mob, where, errors, common):
     return {"crossing": [float(c) for c in center], "arm_m": arm, "start_arm": start_arm, **common, "start": first}
 
 
+CONTROLS_SUBDIR = "controls"   # pass/fail controls, outside the foundational scenarios
+
+
+def catalogue_refs(controls=True):
+    """Names of the catalogue: the foundational scenarios, then the controls as controls/<name>."""
+    def names(directory):
+        return sorted(f[:-5] for f in os.listdir(directory) if f.endswith(".toml")) if os.path.isdir(directory) else []
+    refs = names(SCENARIO_DIR)
+    if controls:
+        refs += [f"{CONTROLS_SUBDIR}/{n}" for n in names(os.path.join(SCENARIO_DIR, CONTROLS_SUBDIR))]
+    return refs
+
+
 def list_scenarios():
     out = []
-    for fname in sorted(os.listdir(SCENARIO_DIR)) if os.path.isdir(SCENARIO_DIR) else []:
-        if not fname.endswith(".toml"):
-            continue
-        ref = fname[:-5]
+    for ref in catalogue_refs():
         try:
             sc = load_scenario(ref)
             out.append({"name": ref, "description": sc["description"], "image": sc["image"],
+                        "variants": scenario_variants(sc["path"]),
                         "stations": [f"{s['name']}:{s['security']}" + (f"+pool{len(s['pseudonyms']['pool'])}" if s.get("pseudonyms") else "")
                                      for s in sc["stations"]],
                         "control": bool(sc["control"]), "eavesdropper": bool(sc["eavesdropper"]), "pki": bool(sc["pki"]),

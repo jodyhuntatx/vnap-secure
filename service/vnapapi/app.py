@@ -9,7 +9,7 @@ import os
 import re
 import threading
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -32,6 +32,7 @@ from vnapsim.schema import SCENARIO_SCHEMA  # noqa: E402
 from vnapsim.status import Simulation, build_status, observer_reports  # noqa: E402
 from vnapsim.scenario import load_scenario  # noqa: E402
 from vnapsim.scoring import score_run  # noqa: E402
+from vnapsim import testcerts  # noqa: E402
 
 UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "ui")
 
@@ -373,7 +374,7 @@ def create_app(cfg=None, start_workers=True):
         audit(user, "template.deleted", request, str(template_id))
         return {"ok": True}
 
-    @app.get("/api/scenarios/{kind}/{name}")
+    @app.get("/api/scenarios/{kind}/{name:path}")
     def scenario_text(kind: str, name: str, user=Depends(principal)):
         if kind not in ("templates", "scenarios"):
             raise HTTPException(404, "kind is templates or scenarios")
@@ -390,12 +391,13 @@ def create_app(cfg=None, start_workers=True):
         template: Optional[str] = None
         scenario_text: Optional[str] = None
         overrides: List[str] = []
+        variant: Optional[str] = Field(default=None, max_length=64)   # [variants.<name>] of the scenario
 
     @app.post("/api/scenarios/validate")
     def validate(body: ScenarioRef, user=Depends(principal)):
         path = runs.scenario_path(user, body.scenario, body.template, body.scenario_text)
         try:
-            sc = runs.validate(user, path, body.overrides)
+            sc = runs.validate(user, path, body.overrides, body.variant)
         except RunError as e:
             return {"valid": False, "errors": e.errors}
         finally:
@@ -416,8 +418,10 @@ def create_app(cfg=None, start_workers=True):
 
     @app.post("/api/runs", status_code=202)
     def create_run(body: NewRun, request: Request, user=Depends(principal)):
-        run = runs.create(user, body.scenario, body.template, body.scenario_text, body.overrides, body.duration_minutes, body.name)
-        audit(user, "run.created", request, run["id"], {"scenario": run["scenario"], "overrides": body.overrides})
+        run = runs.create(user, body.scenario, body.template, body.scenario_text, body.overrides, body.duration_minutes, body.name,
+                          body.variant)
+        audit(user, "run.created", request, run["id"], {"scenario": run["scenario"], "variant": body.variant,
+                                                         "overrides": body.overrides})
         return public_run(run)
 
     @app.get("/api/runs/{run_id}")
@@ -663,6 +667,54 @@ def create_app(cfg=None, start_workers=True):
         name = os.path.basename(path)
         audit(user, "backup.created", request, name, {"files": len(manifest["files"]), "bytes": os.path.getsize(path)})
         return {"name": name, "bytes": os.path.getsize(path), "files": len(manifest["files"]), "counts": manifest["counts"]}
+
+    # ------------------------------------------------------------ test certificates (admin)
+    # The committed sets in certs/ (vnapsim.testcerts). A regeneration runs in the background (the first
+    # one may build the PKI image); its state is kept here until the service restarts.
+    cert_jobs, cert_lock = {}, threading.Lock()
+
+    @app.get("/api/admin/certs")
+    def test_certs(user=Depends(admin)):
+        """Both sets with every certificate's validity, the lifetimes with their defaults, and the last job."""
+        out = []
+        for name, spec in testcerts.SETS.items():
+            try:
+                report = testcerts.inspect(name)
+            except Exception as e:  # noqa: BLE001  (docker missing, image not built: show it, do not fail)
+                report = {"set": name, "error": str(e), "certs": []}
+            out.append({**report, "lifetimes": spec["lifetimes"], "basis": spec["basis"], "job": cert_jobs.get(name)})
+        return out
+
+    class Regenerate(BaseModel):
+        lifetimes: Dict[str, int] = {}
+
+    @app.post("/api/admin/certs/{name}/regenerate", status_code=202)
+    def regenerate_certs(name: str, body: Regenerate, request: Request, user=Depends(admin)):
+        if name not in testcerts.SETS:
+            raise HTTPException(404, "no such certificate set (v2 or v3)")
+        try:
+            values = testcerts.lifetimes(name, body.lifetimes)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        with cert_lock:
+            if any(j["state"] == "running" for j in cert_jobs.values()):
+                raise HTTPException(409, "a regeneration is already running")
+            job = cert_jobs[name] = {"state": "running", "by": user["username"], "lifetimes": values,
+                                     "started_at": time.time()}
+        audit(user, "certs.regenerate", request, name, {"lifetimes": values})
+
+        def work():
+            try:
+                result = testcerts.regenerate(name, values, by=user["username"])
+                job.update(state="done", expires=result["expires"])
+                db.audit(user["username"], "certs.regenerated", name, {"expires": result["expires"]}, None)
+            except Exception as e:  # noqa: BLE001
+                job.update(state="failed", error=str(e))
+                db.audit(user["username"], "certs.regenerate_failed", name, {"error": str(e)[:500]}, None)
+            job["finished_at"] = time.time()
+
+        threading.Thread(target=work, name=f"certs-{name}", daemon=True).start()
+        return job
 
     # ------------------------------------------------------------ audit, health
     @app.get("/api/audit")

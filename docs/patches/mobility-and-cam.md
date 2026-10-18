@@ -42,7 +42,6 @@ The behaviour is described in [vehicle movement](../functional/vehicle-movement.
 
 ## Testing
 
-- **Scenarios:** `c-its-pki-traffic` (positions in the received CAMs), `c-its-pki-convoy` and
-  the mix zone scenarios.
+- **Scenarios:** `linkability` (positions in the received CAMs), `convoy` and `crossing`.
 - **Results:** the mix zone reruns on the rephased image are in
   [results](../../results/README.md).

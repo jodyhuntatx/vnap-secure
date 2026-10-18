@@ -10,8 +10,9 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
 - **Runs:** every visible run with its state and time left; stop and delete.
 - **New run:**
   1. *Start from the template*: pick a template (or the blank scenario). Its text becomes the
-     new scenario. The list has the service's templates, the saved templates and, for admins,
-     the catalogue. Picking another one replaces the scenario, after a question if it was
+     new scenario. The list has the service's templates (the foundational scenarios `linkability`,
+     `crossing`, `convoy` and `refill`), the saved templates and, for admins, the catalogue
+     (also `trust` and the controls, as `controls/<name>`). Picking another one replaces the scenario, after a question if it was
      edited.
   2. Edit the scenario in either tab; both edit the same scenario:
      - *Scenario text*: TOML ([scenario format](../reference/scenario-format.md)).
@@ -22,8 +23,11 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
        *Dynamic mix zone*: "all vehicles" with "min cars", radius and cooldown for the run,
        and a toggle with its own "min cars" per vehicle
        ([vehicle movement](../functional/vehicle-movement.md#dynamic-mix-zones)).
-  3. Add overrides, validate, start. The scenario is checked against the user policy. Field
-     errors are listed, and in the builder the station concerned is highlighted.
+  3. Pick a variant of the scenario if it has any (its overrides and description are shown),
+     add overrides, validate, start. The variant's overrides apply first, then the ones typed
+     here ([variants](../reference/scenario-format.md#variants)). The scenario is checked
+     against the user policy. Field errors are listed, and in the builder the station
+     concerned is highlighted.
 
   - **Text and builder:** the builder reads the text when its tab opens, and keeps every key
     its forms do not show (e.g. `[check]`, `validity_hours`). It writes the text again only
@@ -56,6 +60,11 @@ run, observe and evaluate a scenario without the command line. It is plain JavaS
 - **Admin:**
   - users: create, change roles, disable, unlock, reset passwords, reset a user's TOTP;
   - backups: list them, and back up now;
+  - test certificates: every certificate of the committed v2 and v3 sets with its validity
+    (expired ones marked), and *Regenerate* with a lifetime per certificate kind. The fields
+    start at the lifetimes of the last regeneration, *Defaults* restores the tools' defaults,
+    and the page follows the job until it is done
+    ([certificates](../certificates.md#validity-and-regeneration));
   - the audit log, filtered by user.
 
 ## Reading the eavesdropper score

@@ -107,6 +107,8 @@ SCENARIO_SCHEMA = {
         "defaults": {"type": "object", "additionalProperties": False, "description": "inherited by every station",
                      "properties": {"security": _str("security entity", "none", SECURITY),
                                     "aa_cert": _str("AA certificate file", **ADMIN), "root_cert": _str("root certificate file", **ADMIN),
+                                    "pseudonyms": {**PSEUDONYMS, "description": "keys for every station that has a pseudonyms "
+                                                   "table; the station's own keys win"},
                                     "env": {"type": "object", "additionalProperties": {"type": "string"}, **ADMIN}}},
         "stations": {"type": "array", "items": STATION, "minItems": 1},
         "pki": {"type": "object", "additionalProperties": False, "description": "the run's own certificate authority",
@@ -166,6 +168,10 @@ SCENARIO_SCHEMA = {
                              "link_by": {"type": "array", "items": {"enum": ["position", "timing"]}, "default": ["position", "timing"]},
                              "timing_window": _num("timing linking: max silence (s)", 0, None, 20.0),
                              "timing_tolerance_ms": _num("timing linking tolerance", 0, None, 25.0)}},
+        "variants": {"type": "object", "description": "named sets of overrides: vnapctl up <scenario>:<variant>",
+                     "additionalProperties": {"type": "object", "additionalProperties": False, "properties": {
+                         "description": _str("what the variant changes"),
+                         "set": {"type": "array", "items": {"type": "string"}, "description": "overrides, as with --set"}}}},
         "check": {"type": "object", "additionalProperties": False, "properties": {
             "defaults": {"type": "boolean", "default": True, "description": "include vnapctl's default expectations"},
             "expect": {"type": "array", "items": {"type": "string"}, "description": "e.g. obu.pki.starved==0"}}},

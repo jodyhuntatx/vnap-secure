@@ -206,6 +206,18 @@
               }
             ],
             "title": "Template"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
           }
         },
         "title": "NewRun",
@@ -367,6 +379,20 @@
         "title": "Position",
         "type": "object"
       },
+      "Regenerate": {
+        "properties": {
+          "lifetimes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Lifetimes",
+            "type": "object"
+          }
+        },
+        "title": "Regenerate",
+        "type": "object"
+      },
       "RunChange": {
         "properties": {
           "description": {
@@ -439,6 +465,18 @@
               }
             ],
             "title": "Template"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
           }
         },
         "title": "ScenarioRef",
@@ -622,6 +660,70 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/admin/certs": {
+      "get": {
+        "description": "Both sets with every certificate's validity, the lifetimes with their defaults, and the last job.",
+        "operationId": "test_certs_api_admin_certs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Certs"
+      }
+    },
+    "/api/admin/certs/{name}/regenerate": {
+      "post": {
+        "operationId": "regenerate_certs_api_admin_certs__name__regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Regenerate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Certs"
+      }
+    },
     "/api/audit": {
       "get": {
         "operationId": "audit_log_api_audit_get",

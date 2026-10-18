@@ -9,7 +9,7 @@ the PKI never holds them. The design is in the product requirements document
 
 ```bash
 cd ${VNAP_HOME}/sim
-./vnapctl up c-its-pki-refill        # run's CA, RSU AT, 8 butterfly ATs per OBU; refill at 2 unused
+./vnapctl up refill                 # run's CA, RSU AT, 8 butterfly ATs per OBU; refill at 2 unused
 ./vnapctl status                     # per OBU: unused ATs, batches, refresh time; the PKI's issue times
 ./vnapctl events --kind pki --since 2m
 ./vnapctl check --expect 'obu1.pki.refresh_ms_max<2000'

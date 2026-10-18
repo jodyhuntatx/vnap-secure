@@ -20,6 +20,46 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-18: regenerating the test certificates
+
+`vnapctl certs` shows the validity of every certificate in the committed sets (`certs/c-its-pki`,
+v3; `certs/certify`, v2), and `vnapctl certs regenerate v2|v3 --lifetime KEY=N` makes a new set:
+v3 with C-ITS-PKI in the `vnap-pki` image (`sim/images/pki/test_certs.py`), v2 with Vanetza's
+`certify` in the station image. Administrators do the same in the web UI (*Administration →
+Test certificates*) or with `GET /api/admin/certs` and `POST /api/admin/certs/{set}/regenerate`.
+Each lifetime (root, TLM, EA, AA, AT for v3; root, AA, AT for v2) defaults to the generating
+tool's value, because the ETSI documents fix none, and can be changed. A certificate may not
+outlive its signer. The new set is checked before it replaces the old one, and
+`generated.json` records the lifetimes. The v2 tickets are now `ticket_vnap_rsu` and
+`ticket_vnap_obu`, without a date, so a regenerated set keeps the names the scenarios use.
+See [certificates](docs/certificates.md#validity-and-regeneration).
+
+Why: the committed v3 ATs were issued on 2026-10-04 with C-ITS-PKI's default of 168 hours and
+expired on 2026-10-11; since then every scenario using them failed its check, with nothing in
+the logs.
+
+## 2026-10-18: five foundational scenarios with variants
+
+The 19 scenario files and 2 templates in `sim/scenarios/` are now five foundational scenarios,
+one per phenomenon: `trust` (certificate-chain verification), `linkability` (what a change
+leaks when a vehicle is alone), `crossing` (privacy from other vehicles in a mix zone),
+`convoy` (vehicles that change together but never separate) and `refill` (certificate supply
+from the run's PKI). The settings studied so far are their **variants**, named sets of
+overrides started as `vnapctl up crossing:min3`, or with the variant list in the web UI and
+`variant` in the API. `controls/` keeps the pass/fail controls `none`, `naive-v3` and
+`stress-naive-v3`; `c-its-pki-badroot` is now `trust:badroot`. `templates/` links the four
+scenarios users may start. Every earlier name maps to a scenario and variant in
+[vnapctl](docs/operations/vnapctl.md#scenario-names-before-2026-10-18).
+
+- `--set` addresses entries of arrays of tables by name or index
+  (`control.mix_zones.crossing.min_vehicles=3`) and replaces whole arrays (`control.mix_zones=[]`).
+- `[defaults] pseudonyms` holds keys for every station with a pseudonym pool, so one override
+  changes them all.
+- `linkability`, `convoy` and the `crossing:blocks` variants now take certificates from the
+  run's PKI instead of the committed pools, and `linkability`'s OBU moves; results measured
+  with the earlier files are therefore not exactly reproduced by their new names.
+- `make test` loads every scenario with each of its variants.
+
 ## 2026-10-17: documentation as one PDF
 
 `docs/vnap-secure-documentation.pdf` collects all Markdown documentation, with an introduction

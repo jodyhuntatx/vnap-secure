@@ -8,3 +8,5 @@ scripts/docs/.venv/
 scripts/docs/.deps/
 service/secrets/
 service/backups/
+certs/.regen-*/
+certs/.regen.lock

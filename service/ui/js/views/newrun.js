@@ -40,6 +40,8 @@ export async function newRunView(app, session) {
   const pane = h("div", {});
   const result = h("div", {});
   const overrides = h("textarea", { rows: 3, placeholder: "one override per line, e.g. control.client.interval=5" });
+  const variant = h("select", {});   // [variants.<name>] of the scenario: named sets of overrides
+  const variantText = h("span", { class: "muted" });
   const duration = h("input", { type: "number", min: 1, value: 30 });
   const saveName = h("input", { placeholder: "template name", maxlength: 64 });
   const generic = h("input", { type: "checkbox" });
@@ -54,8 +56,28 @@ export async function newRunView(app, session) {
   // an unchanged template or catalogue scenario is started by its name, anything else as text
   function request() {
     const now = current();
-    if (source.ref && now === source.text) return { ...source.ref, overrides: overrideLines() };
-    return { scenario_text: now, overrides: overrideLines(), name: source.name || undefined };
+    const v = variant.value ? { variant: variant.value } : {};
+    if (source.ref && now === source.text) return { ...source.ref, ...v, overrides: overrideLines() };
+    return { scenario_text: now, ...v, overrides: overrideLines(), name: source.name || undefined };
+  }
+
+  // ------------------------------------------------------------ variants of the scenario
+  let variants = {};
+  async function fillVariants(scenarioText) {
+    const before = variant.value;
+    try {
+      variants = (await post("/scenarios/parse", { scenario_text: scenarioText })).scenario.variants || {};
+    } catch (e) {
+      variants = {};
+    }
+    append(clear(variant), [h("option", { value: "" }, "(none)"),
+      Object.keys(variants).map((v) => h("option", { value: v }, v))]);
+    variant.value = before in variants ? before : "";
+    describeVariant();
+  }
+  function describeVariant() {
+    const v = variants[variant.value];
+    variantText.textContent = v ? `${v.description || ""} (${(v.set || []).join(", ") || "no overrides"})` : "";
   }
 
   async function show(name) {
@@ -104,7 +126,9 @@ export async function newRunView(app, session) {
     remove.hidden = !(saved && (mine(saved) || session.user.role === "admin"));
   }
   async function load(keyOf) {
-    const [kind, name] = keyOf.split("/");
+    // "<kind>/<name>": split at the first "/" only, catalogue names may have one (controls/none)
+    const slash = keyOf.indexOf("/");
+    const [kind, name] = slash < 0 ? [keyOf, ""] : [keyOf.slice(0, slash), keyOf.slice(slash + 1)];
     if (kind === "blank") return { key: keyOf, name: "", text: BLANK };
     if (kind === "saved") {
       const t = await get(`/templates/${name}`);
@@ -126,6 +150,7 @@ export async function newRunView(app, session) {
       return;
     }
     text = source.text;
+    await fillVariants(text);
     saveName.value = source.saved && source.saved.owner === session.user.username ? source.name : "";
     shared.checked = !!(source.saved && source.saved.shared);
     fillChoice();
@@ -197,6 +222,7 @@ export async function newRunView(app, session) {
   }
 
   choice.addEventListener("change", importTemplate);
+  variant.addEventListener("change", describeVariant);
   for (const name of TABS) {
     tabs.append(h("button", { type: "button", onclick: () => select(name).catch((e) => notice(e.message, "error")) }, name));
   }
@@ -207,7 +233,10 @@ export async function newRunView(app, session) {
         "The builder keeps what its forms do not show, but not the text's comments.")),
     tabs, pane,
     h("div", { class: "panel" },
-      h("h2", {}, "Overrides"), overrides,
+      h("h2", {}, "Variant and overrides"),
+      h("div", { class: "row" }, h("label", {}, "Variant", variant), variantText),
+      h("p", { class: "muted" }, "A variant applies its overrides first; the overrides below are applied after it."),
+      overrides,
       h("div", { class: "row" },
         h("label", {}, "Duration (minutes)", duration),
         h("button", { type: "button", class: "secondary", onclick: () => validate().catch(showErrors) }, "Validate"),
@@ -224,5 +253,6 @@ export async function newRunView(app, session) {
         h("button", { type: "button", class: "secondary", onclick: saveTemplate }, "Save template")),
       h("p", { class: "muted" }, "Saves the scenario as it is now (without the overrides). It must be valid. Saved templates appear in the list above.")));
   fillChoice();
+  await fillVariants(text);
   await show(active);
 }

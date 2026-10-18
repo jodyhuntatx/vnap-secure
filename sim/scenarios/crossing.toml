@@ -1,0 +1,113 @@
+description = "crossing: four OBUs pass a crossing with random turns and change identity together in a 40 m mix zone, 6-12 s silence, certificates from the run's PKI; patient eavesdropper (15 s link window)"
+
+# Foundational scenario 3 of 5: privacy from other vehicles. Several cars change inside one
+# zone and leave it in different directions, so the eavesdropper has to choose among them.
+# Variants: fixed routes, a vehicle threshold, periodic changes instead of a mix zone, no
+# silent period.
+# Measures: correct and wrong links against chance level (score.json), tracks, stale time.
+# A template users may start: no addresses, networks or certificate files.
+#
+# Layout: crossing at 40.208106, -8.4197756 (RSU; Rua Alexandre Herculano x Rua
+# Venancio Rodrigues, Coimbra) with four 150 m roads (arms) ending on a square ring
+# road. Each lap (600 m, 60 s at 36 km/h) a car comes in on one arm, turns left, straight or
+# right at random at the crossing (no U-turns), drives to the end of its exit arm, goes a
+# random way along the ring to the next arm and comes back in on it. Exits and arrivals are
+# therefore both random, unlike the blocks variant, where every car always turns right on the
+# same block and the eavesdropper's mistakes form one rotation that an attacker could undo.
+# The cars start on different arms and reach the crossing 1.5 s apart on every lap. Each car
+# gets a pseudonym change event on entering the 40 m zone; the 6-12 s silent period covers
+# the turn. The turns come from control.mobility_seed (set it to repeat a run; otherwise
+# vnapctl picks one and records it in the mobility client's configuration, shown by status).
+
+[defaults]
+security = "certs-v3"
+# every pseudonym station: the variants change these in one place
+pseudonyms = { min_interval_ms = 1000, silent_min_ms = 6000, silent_max_ms = 12000 }
+
+[[stations]]
+name = "rsu"
+station_type = 15
+env = { VANETZA_LATITUDE = "40.208106", VANETZA_LONGITUDE = "-8.4197756" }
+
+[[stations]]
+name = "obu1"
+station_type = 5
+pseudonyms = {}
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "east", speed_kmh = 36, start_s = 0 }
+
+[[stations]]
+name = "obu2"
+station_type = 5
+pseudonyms = {}
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "north", speed_kmh = 36, start_s = 1.5 }
+
+[[stations]]
+name = "obu3"
+station_type = 5
+pseudonyms = {}
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "west", speed_kmh = 36, start_s = 3 }
+
+[[stations]]
+name = "obu4"
+station_type = 5
+pseudonyms = {}
+mobility = { crossing = [40.208106, -8.4197756], arm_m = 150, start_arm = "south", speed_kmh = 36, start_s = 4.5 }
+
+[pki]
+# defaults: 8 initial certificates per car, a batch of 8 requested at 2 unused
+validity_hours = 24
+
+[control]
+mobility_rate_hz = 5
+
+[[control.mix_zones]]
+# the mobility client sends a pseudonym change event to each car entering the zone
+name = "crossing"
+center = [40.208106, -8.4197756]
+radius_m = 40
+
+[control.client]
+# no clock-driven changes: identities change only in the mix zone (the client still logs
+# the stations' answers)
+mode = "manual"
+
+[eavesdropper]
+# patient attacker: continues a track up to 15 s after it went silent
+link_window = 15.0
+summary_interval = 30
+
+[check]
+expect = ["eavesdropper.decode_errors==0", "eavesdropper.tracks>=6"]
+
+[variants.min2]
+description = "a car that entered changes only once 2 cars are inside the zone"
+set = ["control.mix_zones.crossing.min_vehicles=2"]
+
+[variants.min3]
+description = "a car that entered changes only once 3 cars are inside the zone"
+set = ["control.mix_zones.crossing.min_vehicles=3"]
+
+[variants.blocks]
+description = "fixed routes: each car loops its own block and always turns right at the crossing (was c-its-pki-mixzone)"
+set = ["stations.obu1.mobility={ route = [[40.208106, -8.4180102], [40.208106, -8.4197756], [40.209456, -8.4197756], [40.209456, -8.4180102]], speed_kmh = 36, start_s = 0, loop = true }",
+       "stations.obu2.mobility={ route = [[40.209456, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.421541], [40.209456, -8.421541]], speed_kmh = 36, start_s = 1.5, loop = true }",
+       "stations.obu3.mobility={ route = [[40.208106, -8.421541], [40.208106, -8.4197756], [40.206756, -8.4197756], [40.206756, -8.421541]], speed_kmh = 36, start_s = 3, loop = true }",
+       "stations.obu4.mobility={ route = [[40.206756, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.4180102], [40.206756, -8.4180102]], speed_kmh = 36, start_s = 4.5, loop = true }"]
+
+[variants.blocks-min3]
+description = "fixed routes and a threshold of 3 cars in the zone, the first three changing together (was c-its-pki-mixzone-min3)"
+set = ["stations.obu1.mobility={ route = [[40.208106, -8.4180102], [40.208106, -8.4197756], [40.209456, -8.4197756], [40.209456, -8.4180102]], speed_kmh = 36, start_s = 0, loop = true }",
+       "stations.obu2.mobility={ route = [[40.209456, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.421541], [40.209456, -8.421541]], speed_kmh = 36, start_s = 1.5, loop = true }",
+       "stations.obu3.mobility={ route = [[40.208106, -8.421541], [40.208106, -8.4197756], [40.206756, -8.4197756], [40.206756, -8.421541]], speed_kmh = 36, start_s = 3, loop = true }",
+       "stations.obu4.mobility={ route = [[40.206756, -8.4197756], [40.208106, -8.4197756], [40.208106, -8.4180102], [40.206756, -8.4180102]], speed_kmh = 36, start_s = 4.5, loop = true }",
+       "control.mix_zones.crossing.min_vehicles=3"]
+
+[variants.periodic]
+description = "no mix zone: every car changes every 20 s wherever it is, 3-13 s silence (closest to the former c-its-pki-traffic)"
+set = ["control.mix_zones=[]", 'control.client.mode="periodic"', "control.client.interval=20",
+       "defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000",
+       'check.expect=["eavesdropper.decode_errors==0", "eavesdropper.tracks>=4"]']
+
+[variants.no-silence]
+description = "the mix zone without a silent period: the change alone"
+set = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]

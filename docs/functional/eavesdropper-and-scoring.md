@@ -59,7 +59,7 @@ pseudonym; the first technique below that applies links it to an existing track.
 
 ```bash
 cd ${VNAP_HOME}/sim
-./vnapctl up c-its-pki-mixzone-random   # four cars, random turns, mix zone, eavesdropper
+./vnapctl up crossing                  # four cars, random turns, mix zone, eavesdropper
 ./vnapctl status                        # includes the eavesdropper's tracks and linked changes
 ./vnapctl check --expect 'eavesdropper.linked_changes==0'   # a privacy goal
 docker logs -f eavesdropper

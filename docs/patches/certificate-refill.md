@@ -36,8 +36,8 @@ protocol in [control channels](../reference/control-channels.md#certificate-refi
 
 ## Testing
 
-- **Scenarios:** `c-its-pki-refill`, `c-its-pki-refill-sweep`, `c-its-pki-mixzone-pki` and
-  `templates/pki-refill`, with the default expectations `<station>.pki.starved==0` and
+- **Scenarios:** `refill` with its variants, and the run's PKI in `linkability`, `crossing`
+  and `convoy`, with the default expectations `<station>.pki.starved==0` and
   `pki.running==1`.
 - **Measurements:** the earlier test runs are listed in [results](../../results/README.md);
   `results/pki-refill-test-2026-10-07.docx` relates refresh time to batch size.

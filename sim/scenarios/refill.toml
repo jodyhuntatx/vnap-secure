@@ -1,0 +1,71 @@
+description = "refill: four OBUs change together every 3 s and refill butterfly certificates from the run's PKI (8 at start, a batch of 8 at 2 unused)"
+
+# Foundational scenario 5 of 5: certificate supply, the cost side of pseudonym changes.
+# Every change event reaches the four OBUs at about the same moment, so when they run low
+# they ask the PKI for a batch together and the PKI (one request at a time) queues them.
+# Measures: <station>.pki.refresh_ms_mean/max, derivation_ms_mean, starved; pki.issue_ms_max,
+# pki.queue_ms_max. Batch-size sweep: the batch variants, or --set pki.batch=<n>.
+# A template users may start: no addresses, networks or certificate files.
+
+[defaults]
+security = "certs-v3"
+pseudonyms = { min_interval_ms = 1000 }
+
+[pki]
+initial = 8
+refill_at = 2
+batch = 8
+validity_hours = 24
+
+[[stations]]
+name = "rsu"
+station_type = 15
+
+[[stations]]
+name = "obu1"
+pseudonyms = {}
+
+[[stations]]
+name = "obu2"
+pseudonyms = {}
+
+[[stations]]
+name = "obu3"
+pseudonyms = {}
+
+[[stations]]
+name = "obu4"
+pseudonyms = {}
+
+[control]
+
+[control.client]
+mode = "periodic"
+interval = 3
+
+[check]
+expect = ["obu1.pki.starved==0", "obu2.pki.starved==0", "obu3.pki.starved==0", "obu4.pki.starved==0"]
+
+[variants.slow]
+description = "a change every 10 s: refills are rare and never overlap (was the pki-refill template)"
+set = ["control.client.interval=10"]
+
+[variants.batch4]
+description = "batches of 4"
+set = ["pki.batch=4"]
+
+[variants.batch16]
+description = "batches of 16"
+set = ["pki.batch=16"]
+
+[variants.batch32]
+description = "batches of 32"
+set = ["pki.batch=32"]
+
+[variants.pki-derives]
+description = "the PKI derives the private keys and sends them with the batch, instead of the vehicle"
+set = ['pki.key_derivation="pki"']
+
+[variants.no-refill]
+description = "no refill: each car changes until its 8 certificates are used, then its changes are refused"
+set = ["pki.refill_at=0", "check.expect=[]"]

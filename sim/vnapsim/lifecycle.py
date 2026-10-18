@@ -123,6 +123,8 @@ def run_labels(sc, run_id, role):
               "vnap.run_id": run_id, "vnap.role": role, "vnap.instance": str(sc["instance"])}
     if sc["overrides"]:
         labels["vnap.overrides"] = json.dumps(sc["overrides"])
+    if sc.get("variant"):
+        labels["vnap.variant"] = sc["variant"]
     out = []
     for k, v in labels.items():
         out += ["--label", f"{k}={v}"]

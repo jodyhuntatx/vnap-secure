@@ -56,6 +56,7 @@ docker run --rm -v DIR:/w vnap:msgcheck decode-v3 /w/msg.enc
 | Web UI: grey map tiles saying "Referer is required" | an old UI version cached; reload with the cache cleared |
 | A station's CAMs fail with `Invalid_Timestamp` | clock skew between containers; the patched image keeps its runtime clock synchronised. Check that the image is patched |
 | `check`: `eavesdropper.*` metrics missing | the scenario has no `[eavesdropper]` section |
+| `check`: stations send CAMs (`*.cam.tx`) but receive none, nothing in the logs (`trust` and other scenarios with certificate files) | the committed certificates expired; stations drop such messages silently. `./vnapctl certs` shows it; `./vnapctl certs regenerate v3 --lifetime at_hours=…` (or v2) makes new ones ([certificates](../certificates.md#validity-and-regeneration)) |
 
 ## Known limitations
 

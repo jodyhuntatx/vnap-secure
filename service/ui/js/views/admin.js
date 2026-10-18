@@ -1,4 +1,5 @@
-// Admin: users (create, role, disable, unlock, reset password, reset TOTP), backups and the audit log.
+// Admin: users (create, role, disable, unlock, reset password, reset TOTP), backups, the test certificate
+// sets (validity, regeneration with chosen lifetimes) and the audit log.
 import { get, patch, post } from "../api.js";
 import { badge, clear, h, notice, table, time } from "../dom.js";
 
@@ -8,6 +9,7 @@ export async function adminView(app, session) {
   const users = h("div", {});
   const audit = h("div", {});
   const backups = h("div", {});
+  const certs = h("div", {}, h("p", { class: "muted" }, "reading the certificates ..."));
   app.append(h("h1", {}, "Administration"), h("div", { class: "panel" }, h("h2", {}, "Users"), newUserForm(), users),
     h("div", { class: "panel" }, h("h2", {}, "Backups"),
       h("p", { class: "muted" }, "Database, collected results and user scenarios, checked against a manifest; the newest are kept ",
@@ -21,7 +23,64 @@ export async function adminView(app, session) {
         } catch (err) { notice(err.message, "error"); }
         e.target.disabled = false;
       } }, "Back up now")), backups),
+    h("div", { class: "panel" }, h("h2", {}, "Test certificates"),
+      h("p", { class: "muted" }, "The committed certificate sets in ", h("code", {}, "certs/"), " used by scenarios without a run PKI (",
+        h("code", {}, "trust"), " and its variants). Regenerating replaces the set's files, which are tracked in git: commit them. ",
+        "Running simulations keep the certificates they loaded; new runs use the new ones."), certs),
     h("div", { class: "panel" }, h("h2", {}, "Audit log"), auditFilter(), audit));
+
+  async function refreshCerts() {
+    let sets;
+    try { sets = await get("/admin/certs"); } catch (e) { clear(certs).append(h("p", { class: "errors" }, e.message)); return; }
+    clear(certs).append(...sets.map(certSet));
+    if (sets.some((s) => s.job && s.job.state === "running")) setTimeout(() => refreshCerts().then(refreshAudit), 3000);
+  }
+
+  function certSet(s) {
+    const job = s.job;
+    const state = s.error ? badge("unreadable", "bad") : s.expired ? badge("expired", "bad")
+      : s.expires ? badge(`valid until ${s.expires.slice(0, 10)}`, "ok") : badge("empty", "warn");
+    // the butterfly tickets share one validity: one row for all of them
+    const rows = [];
+    const bke = (s.certs || []).filter((c) => /^bke_at_\d+\.cert$/.test(c.file));
+    for (const c of (s.certs || []).filter((c) => !bke.includes(c))) rows.push(certRow(c.file, c));
+    if (bke.length) rows.push(certRow(`bke_at_0 … ${bke.length - 1} (${bke.length})`, bke[0], bke.some((c) => c.expired)));
+    const inputs = {};
+    const fields = s.lifetimes.map((l) => {
+      inputs[l.key] = h("input", { type: "number", min: l.min, max: l.max, step: 1, value: l.default, required: true });
+      return h("label", { title: `${l.min} to ${l.max} ${l.unit}; default ${l.default}` }, `${l.entity} (${l.unit})`, inputs[l.key]);
+    });
+    if (s.generated) for (const [k, v] of Object.entries(s.generated.lifetimes || {})) if (inputs[k]) inputs[k].value = v;
+    const go = h("button", { type: "submit", disabled: !!(job && job.state === "running") }, `Regenerate ${s.set}`);
+    const form = h("form", { class: "row" }, fields,
+      h("button", { type: "button", class: "secondary", onclick: () => s.lifetimes.forEach((l) => { inputs[l.key].value = l.default; }) }, "Defaults"), go);
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const lifetimes = Object.fromEntries(s.lifetimes.map((l) => [l.key, Number(inputs[l.key].value)]));
+      if (!confirm(`Replace every certificate and key in ${s.dir} with a new ${s.set} set?`)) return;
+      go.disabled = true;
+      try { await post(`/admin/certs/${s.set}/regenerate`, { lifetimes }); notice(`regenerating the ${s.set} set ...`); }
+      catch (e) { notice(e.message, "error"); }
+      await refreshCerts();
+    });
+    return h("div", { class: "panel" },
+      h("h3", {}, `${s.set} · `, h("code", {}, s.dir || ""), " ", state),
+      h("p", { class: "muted" }, `${s.security || ""}, ${s.format || ""}, made with ${s.tool || ""}.`,
+        s.generated ? ` Generated ${s.generated.generated_at} by ${s.generated.by || "?"}.` : " Not generated here (no generated.json)."),
+      s.error ? h("p", { class: "errors" }, s.error) : null,
+      s.missing && s.missing.length ? h("p", { class: "errors" }, `missing: ${s.missing.join(", ")}`) : null,
+      rows.length ? table(["Certificate", "Role", "Valid from", "Valid until", ""], rows) : null,
+      job ? h("p", { class: job.state === "failed" ? "errors" : "muted" },
+        `last regeneration: ${job.state} (by ${job.by}, ${time(job.started_at)})` + (job.error ? `: ${job.error}` : "")
+        + (job.expires ? `; valid until ${job.expires}` : "")) : null,
+      h("p", { class: "muted" }, `Lifetimes: ${s.basis}`), form);
+  }
+
+  function certRow(name, c, expired) {
+    if (c.error) return [h("code", {}, name), "", "", "", badge("unreadable", "bad")];
+    return [h("code", {}, name), c.role || "", c.valid_from, c.valid_until,
+      (expired ?? c.expired) ? badge("expired", "bad") : badge("valid", "ok")];
+  }
 
   async function refreshBackups() {
     const list = await get("/backups");
@@ -96,4 +155,5 @@ export async function adminView(app, session) {
   }
 
   await Promise.all([refreshUsers(), refreshBackups(), refreshAudit()]);
+  refreshCerts();   // runs docker: a few seconds, so the rest of the page does not wait for it
 }
