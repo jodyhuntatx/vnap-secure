@@ -38,6 +38,8 @@ listed vehicles (itself included) are within radius_m of it, at most once per co
 The first change comes cooldown_s after the start at the earliest. Vehicles that meet with
 the same threshold change in the same tick. The positions are the true ones (this client
 knows them all), not what a vehicle heard on the radio.
+With both, a vehicle gets at most one change event per cooldown_s from either: the first trigger
+to fire changes it, and the others are held off (logged as "held off", no event sent).
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
 """
 import json
@@ -185,6 +187,55 @@ class DynamicMixZone:
         return change
 
 
+class HoldOff:
+    """The last change event of each vehicle, from any trigger. With mix zones and a dynamic mix
+    zone together, the first trigger to fire changes the vehicle and the others are held off for
+    `seconds` (the dynamic zone's cooldown_s): a second event would otherwise be rejected by the
+    station (min_interval_ms) or change the pseudonym again within the first change's silent
+    period, spending a pseudonym for nothing."""
+
+    def __init__(self, seconds):
+        self.seconds = float(seconds)
+        self.last = {}  # station id -> (time, trigger) of its last change event
+
+    def held(self, station_id, t):
+        """(seconds since, trigger) of the change that holds this one off, or None."""
+        last = self.last.get(station_id)
+        if last is not None and t - last[0] < self.seconds:
+            return t - last[0], last[1]
+        return None
+
+    def changed(self, station_id, t, trigger):
+        self.last[station_id] = (t, trigger)
+
+
+def zone_events(t, positions, zones, dynamic, holdoff):
+    """One tick of the mix zones and the dynamic mix zone. Returns [(station id, kind, detail)]:
+    ("zone", (zone name, vehicles inside, its min_vehicles)) and ("dynamic", (vehicles near,))
+    are change events to send; ("left", (zone name, min_vehicles)) a vehicle that left a zone
+    unchanged; ("held", (trigger, seconds since, earlier trigger)) a change held off by holdoff."""
+    out = []
+    for z in zones:
+        change, count, left = z.update(positions)
+        out += [(s, "left", (z.name, z.min_vehicles)) for s in left]
+        for station_id in change:
+            trigger = f"mix zone {z.name}"
+            if held := holdoff.held(station_id, t):
+                out.append((station_id, "held", (trigger, *held)))
+            else:
+                holdoff.changed(station_id, t, trigger)
+                out.append((station_id, "zone", (z.name, count, z.min_vehicles)))
+    for station_id, near in (dynamic.update(t, positions) if dynamic else []):
+        trigger = "dynamic mix zone"
+        if held := holdoff.held(station_id, t):
+            dynamic.last[station_id] = t - held[0]   # its cooldown counts from the change that held it off
+            out.append((station_id, "held", (trigger, *held)))
+        else:
+            holdoff.changed(station_id, t, trigger)
+            out.append((station_id, "dynamic", (near,)))
+    return out
+
+
 ARMS = {"north": (1, 0), "east": (0, 1), "south": (-1, 0), "west": (0, -1)}
 
 
@@ -326,6 +377,12 @@ def main():
         print(f"[MOBILITY] dynamic mix zone: radius {dynamic.radius:.0f} m, cooldown {dynamic.cooldown:.0f} s, "
               + ", ".join(f"station {s} (min {n})" for s, n in sorted(dynamic.members.items()))
               + ": pseudonym change when that many of these vehicles are within the radius")
+    # one change per vehicle per cooldown_s, whichever trigger fires first (no hold-off with mix zones only)
+    holdoff = HoldOff(dynamic.cooldown if dynamic and zones else 0)
+    if holdoff.seconds:
+        print(f"[MOBILITY] mix zones and the dynamic mix zone share a hold-off of {holdoff.seconds:.0f} s: "
+              "after a change event from one, the others send none to that vehicle")
+
     events = 0
     t0 = time.monotonic()
     next_tick, next_log = t0, t0
@@ -349,23 +406,26 @@ def main():
                 print(f"[MOBILITY] t={t:6.1f} s station {v.station_id}: {payload['lat']:.6f} {payload['lon']:.6f} "
                       f"{speed * 3.6:.0f} km/h heading {heading:.0f}")
         # zones after all positions of this tick: the number inside does not depend on the vehicle order
-        for z in zones:
-            change, count, left = z.update(positions)
-            for station_id in left:
-                print(f"[MOBILITY] t={t:6.1f} s station {station_id} left mix zone {z.name} without a change: "
-                      f"fewer than {z.min_vehicles} vehicles inside")
-            for station_id in change:
+        for station_id, kind, detail in zone_events(t, positions, zones, dynamic, holdoff):
+            if kind == "left":
+                print(f"[MOBILITY] t={t:6.1f} s station {station_id} left mix zone {detail[0]} without a change: "
+                      f"fewer than {detail[1]} vehicles inside")
+            elif kind == "held":
+                # not "station N in mix zone": the report counts those lines as change events
+                trigger, since, by = detail
+                print(f"[MOBILITY] t={t:6.1f} s station {station_id} held off ({trigger}): changed {since:.1f} s ago "
+                      f"by {by}, hold-off {holdoff.seconds:.0f} s")
+            else:
                 events += 1
-                event = {"event_id": f"mobility-{events}", "reason": f"mix-zone {z.name}"}
+                event = {"event_id": f"mobility-{events}",
+                         "reason": f"mix-zone {detail[0]}" if kind == "zone" else "dynamic-mix-zone"}
                 client.publish(f"{pseudonym_topic}/{station_id}/change", json.dumps(event), qos=1)
-                print(f"[MOBILITY] t={t:6.1f} s station {station_id} in mix zone {z.name}"
-                      + (f" ({count} inside)" if z.min_vehicles > 1 else "") + f": change event {event['event_id']}")
-        for station_id, near in (dynamic.update(t, positions) if dynamic else []):
-            events += 1
-            event = {"event_id": f"mobility-{events}", "reason": "dynamic-mix-zone"}
-            client.publish(f"{pseudonym_topic}/{station_id}/change", json.dumps(event), qos=1)
-            print(f"[MOBILITY] t={t:6.1f} s station {station_id} in a dynamic mix zone ({near} within "
-                  f"{dynamic.radius:.0f} m): change event {event['event_id']}")
+                if kind == "zone":
+                    print(f"[MOBILITY] t={t:6.1f} s station {station_id} in mix zone {detail[0]}"
+                          + (f" ({detail[1]} inside)" if detail[2] > 1 else "") + f": change event {event['event_id']}")
+                else:
+                    print(f"[MOBILITY] t={t:6.1f} s station {station_id} in a dynamic mix zone ({detail[0]} within "
+                          f"{dynamic.radius:.0f} m): change event {event['event_id']}")
         if log:
             next_log += LOG_EVERY
         next_tick += period

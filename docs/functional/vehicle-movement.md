@@ -120,8 +120,16 @@ Two scopes select who takes part and with which threshold:
 | Run | `[control.dynamic_mix_zone]` with `enabled`, `min_vehicles`, `radius_m`, `cooldown_s` | every station with mobility and pseudonyms takes part (`enabled = false`: only the stations that say so) |
 | Station | `dynamic_mix_zone = { enabled = …, min_vehicles = … }` in a station | this station takes part or not, with its own threshold; replaces the run scope for it |
 
-Example: `convoy` (three cars, all three within 80 m, every 20 s). Fixed
-mix zones and a dynamic one can be used together.
+Example: `convoy` (three cars, all three within 80 m, every 20 s).
+
+**With fixed mix zones.** Fixed mix zones and a dynamic one can be used together, with one
+change per vehicle every `cooldown_s` from either. Whichever fires first changes the vehicle.
+For `cooldown_s` after that, the others send no event to it, and the mobility log notes them as
+`station N held off (mix zone crossing): changed 0.8 s ago by dynamic mix zone, hold-off 30 s`.
+Without this, a car reaching a 40 m crossing zone right after a 50 m dynamic zone fired would
+get two events within a second or two. The station rejects the second one if it comes within
+`min_interval_ms`. Otherwise it changes again inside the first change's silent period and
+spends a pseudonym for nothing. With fixed mix zones only there is no hold-off.
 
 **It is an oracle.** The mobility client knows every vehicle's true position, so vehicles
 react to ground truth, not to what they heard on the radio. It shows whether proximity-based

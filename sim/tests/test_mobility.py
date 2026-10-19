@@ -13,7 +13,7 @@ paho.mqtt.client = types.ModuleType("paho.mqtt.client")
 for name, module in (("paho", paho), ("paho.mqtt", paho.mqtt), ("paho.mqtt.client", paho.mqtt.client)):
     sys.modules.setdefault(name, module)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "images", "mobility"))
-from mobility import DynamicMixZone, MixZone  # noqa: E402
+from mobility import DynamicMixZone, HoldOff, MixZone, zone_events  # noqa: E402
 
 IN, OUT = (40.0, -8.0), (40.01, -8.0)   # the zone's centre; about 1.1 km north of it
 
@@ -115,3 +115,45 @@ class DynamicMixZoneTest(unittest.TestCase):
         for stations, kw in (({2: 4, 3: 2}, {}), ({9: 2}, {}), ({}, {}), ({2: 2, 3: 2}, {"radius": 0}), ({2: 2, 3: 2}, {"cooldown": 0})):
             with self.assertRaises(ValueError):
                 dynamic(stations, **kw)
+
+
+class HoldOffTest(unittest.TestCase):
+    """A mix zone and the dynamic mix zone together: one change event per vehicle per cooldown_s."""
+
+    def setUp(self):
+        self.zone = zone(stations=(2, 3, 4, 5))
+        self.dyn = dynamic({2: 3, 3: 3, 4: 3}, cooldown=30)
+        self.hold = HoldOff(30)
+
+    def events(self, t, positions):
+        # vehicles not given are far from the zone and from each other
+        apart = {s: (40.01 + 0.01 * s, -8.0) for s in (2, 3, 4, 5)}
+        return zone_events(t, apart | positions, [self.zone], self.dyn, self.hold)
+
+    def test_the_dynamic_zone_first_holds_off_the_mix_zone(self):
+        self.events(39.0, {})
+        # three near each other just outside the 40 m zone (about 44 m north of it)
+        near = (40.0004, -8.0)
+        self.assertEqual(self.events(40.0, {2: near, 3: near, 4: near}),
+                         [(2, "dynamic", (3,)), (3, "dynamic", (3,)), (4, "dynamic", (3,))])
+        held = self.events(40.8, {2: IN, 3: near, 4: near})
+        self.assertEqual(len(held), 1)
+        station, kind, (trigger, since, by) = held[0]
+        self.assertEqual((station, kind, trigger, by), (2, "held", "mix zone z", "dynamic mix zone"))
+        self.assertAlmostEqual(since, 0.8)
+
+    def test_the_mix_zone_first_holds_off_the_dynamic_zone_and_restarts_its_cooldown(self):
+        self.events(39.0, {})
+        self.assertEqual(self.events(40.0, {2: IN}), [(2, "zone", ("z", 1, 1))])
+        out = self.events(42.0, {2: NEAR, 3: NEAR, 4: (40.0001, -8.0)})
+        self.assertEqual([(s, k) for s, k, _ in out], [(3, "zone"), (4, "zone"), (2, "held"), (3, "held"), (4, "held")])   # 3 and 4 just changed too
+        self.assertEqual(self.dyn.last[2], 40.0)            # its cooldown counts from the change at 40 s
+        # 30 s after the mix zone's change the dynamic zone may change it again
+        self.assertEqual([(s, k) for s, k, _ in self.events(70.0, {2: NEAR, 3: NEAR, 4: NEAR})],
+                         [(2, "dynamic")])
+
+    def test_without_a_hold_off_both_triggers_send(self):
+        self.hold = HoldOff(0)
+        self.events(39.0, {})
+        out = self.events(40.0, {2: IN, 3: NEAR, 4: IN})
+        self.assertEqual(sorted(k for s, k, _ in out if s == 2), ["dynamic", "zone"])

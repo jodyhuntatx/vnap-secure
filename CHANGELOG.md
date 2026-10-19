@@ -20,6 +20,16 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-19: one change per vehicle from fixed and dynamic mix zones together
+
+A run with both a fixed mix zone and a dynamic mix zone sent two change events to a vehicle
+when both fired within a few seconds, typically a 50 m dynamic zone just before the car entered a 40 m
+crossing zone. In a 30-minute `crossing` run with the dynamic zone added, 55 second events
+were rejected by the station's `min_interval_ms`, and 50 of the 220 changes came within the
+previous change's silent period. The mobility client now holds a vehicle off for the dynamic
+zone's `cooldown_s` after a change event from either trigger, and logs the held-off one
+instead of sending it (`station N held off (...)`).
+
 ## 2026-10-19: privacy and cost of the pseudonym changes, per run
 
 This is the first iteration of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`. The
