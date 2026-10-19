@@ -44,16 +44,24 @@ RE_CHAIN_WARN = re.compile(r"\[(V[23])-CHAIN\] WARNING: (.*)")
 RE_ERROR = re.compile(r"^(Exit[: ]|terminate called|.*Assertion .* failed|Segmentation fault|Aborted)")
 
 
-def log_events(station, since=None, until=None):
-    """Parse a station's container log into events (docker log timestamps)."""
+def _docker_logs(name, since, until):
     args = ["logs", "--timestamps"]
     if since is not None:
         args += ["--since", f"{since:.3f}"]
     if until is not None:
         args += ["--until", f"{until:.3f}"]
-    out = docker(*args, station, check=False)
+    return docker(*args, name, check=False)
+
+
+def log_events(station, since=None, until=None):
+    """Parse a station's container log into events (docker log timestamps)."""
+    return parse_station_log(_docker_logs(station, since, until), station)
+
+
+def parse_station_log(text, station):
+    """Events of a station log as `docker logs --timestamps` prints it (also a saved <station>.log)."""
     events = []
-    for raw in out.splitlines():
+    for raw in text.splitlines():
         stamp, _, line = raw.partition(" ")
         t = parse_docker_time(stamp)
         if t is None:
@@ -116,13 +124,13 @@ def log_events(station, since=None, until=None):
 
 def pki_log_events(name, since=None, until=None):
     """Events of the run's PKI service (issued batches, refusals, provisioning time)."""
-    args = ["logs", "--timestamps"]
-    if since is not None:
-        args += ["--since", f"{since:.3f}"]
-    if until is not None:
-        args += ["--until", f"{until:.3f}"]
+    return parse_pki_log(_docker_logs(name, since, until))
+
+
+def parse_pki_log(text):
+    """Events of a PKI service log (docker log timestamps; also a saved pki.log)."""
     events = []
-    for raw in docker(*args, name, check=False).splitlines():
+    for raw in text.splitlines():
         stamp, _, line = raw.partition(" ")
         t = parse_docker_time(stamp)
         if t is None:

@@ -41,6 +41,12 @@ knows them all), not what a vehicle heard on the radio.
 With both, a vehicle gets at most one change event per cooldown_s from either: the first trigger
 to fire changes it, and the others are held off (logged as "held off", no event sent).
 Broker account (optional): CONTROL_USERNAME / CONTROL_PASSWORD.
+
+Position recorder: every tick's true positions go to "record" (default /logs/positions.jsonl;
+"" turns it off), one JSON line per tick: {"t": <Unix time>, "v": {"<station id>": [lat, lon,
+speed m/s, heading]}}. The analysis of a run reads it for position error and distances (the
+log above has a position only every 10 s). A tick much later than the rate asks for shows the
+host stalled (a gap between two lines).
 """
 import json
 import math
@@ -54,6 +60,7 @@ import paho.mqtt.client as mqtt
 
 EARTH_RADIUS = 6371008.8  # m (mean radius)
 LOG_EVERY = 10.0  # s
+RECORD = "/logs/positions.jsonl"
 
 
 def distance(a, b):
@@ -310,6 +317,20 @@ class CrossingVehicle:
         return b, self.speed, head
 
 
+def open_record(path):
+    """The position recorder's file (line buffered by tick, flushed every second), or None."""
+    if not path:
+        return None
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        f = open(path, "a")
+    except OSError as e:
+        print(f"[MOBILITY] WARNING: no position recording ({e})")
+        return None
+    print(f"[MOBILITY] recording true positions in {path}")
+    return f
+
+
 def load_config():
     if len(sys.argv) > 1:
         with open(sys.argv[1]) as f:
@@ -383,17 +404,19 @@ def main():
         print(f"[MOBILITY] mix zones and the dynamic mix zone share a hold-off of {holdoff.seconds:.0f} s: "
               "after a change event from one, the others send none to that vehicle")
 
+    record = open_record(cfg.get("record", RECORD))
     events = 0
     t0 = time.monotonic()
-    next_tick, next_log = t0, t0
+    next_tick, next_log, last_flush = t0, t0, 0.0
     while running:
         now = time.monotonic()
         t = now - t0
         log = now >= next_log
-        positions = {}
+        positions, states = {}, {}
         for v in vehicles:
             (lat, lon), speed, heading = v.state(t)
             positions[v.station_id] = (lat, lon)
+            states[v.station_id] = (speed, heading)
             payload = {"lat": round(lat, 7), "lon": round(lon, 7), "speed": round(speed, 2),
                        "heading": round(heading, 1)}
             # retained: a station that (re)connects gets its current position at once
@@ -405,6 +428,14 @@ def main():
             if log:
                 print(f"[MOBILITY] t={t:6.1f} s station {v.station_id}: {payload['lat']:.6f} {payload['lon']:.6f} "
                       f"{speed * 3.6:.0f} km/h heading {heading:.0f}")
+        if record:
+            record.write(json.dumps({"t": round(time.time(), 3), "v": {
+                str(v.station_id): [round(positions[v.station_id][0], 7), round(positions[v.station_id][1], 7),
+                                    round(states[v.station_id][0], 2), round(states[v.station_id][1], 1)]
+                for v in vehicles}}, separators=(",", ":")) + "\n")
+            if log or t - last_flush >= 1.0:
+                record.flush()
+                last_flush = t
         # zones after all positions of this tick: the number inside does not depend on the vehicle order
         for station_id, kind, detail in zone_events(t, positions, zones, dynamic, holdoff):
             if kind == "left":
@@ -430,6 +461,8 @@ def main():
             next_log += LOG_EVERY
         next_tick += period
         time.sleep(max(0.0, next_tick - time.monotonic()))
+    if record:
+        record.close()
     client.loop_stop()
     client.disconnect()
 

@@ -99,6 +99,7 @@ textarea.prose { font-family: inherit; font-size: inherit; }
 .timeline .recv { fill: var(--accent); opacity: 0.35; }
 .timeline .silent { fill: var(--warn); opacity: 0.75; }
 .timeline .gap { fill: var(--bad); opacity: 0.6; }
+.timeline .outage { fill: var(--muted); opacity: 0.55; }
 .timeline .kept, .dot.kept { fill: var(--ok); background: var(--ok); }
 .timeline .followed, .dot.followed { fill: var(--bad); background: var(--bad); }
 .timeline .confused, .dot.confused { fill: var(--zone); background: var(--zone); }
@@ -106,4 +107,5 @@ textarea.prose { font-family: inherit; font-size: inherit; }
 .timeline .change-line { stroke: var(--text); opacity: 0.35; }
 .swatch { display: inline-block; width: 14px; height: 8px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
 .swatch.recv { background: var(--accent); opacity: 0.35; } .swatch.silent { background: var(--warn); } .swatch.gap { background: var(--bad); opacity: 0.6; }
+.swatch.outage { background: var(--muted); opacity: 0.55; }
 th.sortable { cursor: pointer; user-select: none; }

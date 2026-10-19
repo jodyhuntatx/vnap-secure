@@ -145,6 +145,12 @@ def context_hash(directory, exclude=(), h=None):
     return h.hexdigest()[:16]
 
 
+# /logs of the eavesdropper and the mobility client (collected before the run is removed): a few MB per
+# hour of frames and positions, so the cap is only a guard
+LOGS_TMPFS = "/logs:size=1g"
+EAVESDROPPER_READY_S = 20   # it loads its ASN.1 codecs before it listens
+
+
 def ensure_image(r, image, subdir, exclude=(), extra=None, labels=None):
     """Helper image built from sim/images/<subdir>, tagged by the digest of its sources
     (<image>:<digest>) and built only if that tag is missing: different versions of the sources
@@ -261,6 +267,23 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
             if not network_subnet(name):
                 r.run(["network", "create", name, "--subnet", subnet, "--label", "vnap.managed_by=vnapctl"])
                 r.created_networks.append(name)
+        # the eavesdropper first: it takes seconds to load its ASN.1 codecs, and the measures need the frames
+        # from before the first pseudonym change
+        ev = sc["eavesdropper"]
+        if ev:
+            eavesdropper_image = ensure_image(r, EAVESDROPPER_IMAGE, "eavesdropper", exclude=("logs",))
+            if not dry_run:
+                progress(f"starting the eavesdropper {ev['name']} ...")
+            # only the message network and raw frames: no control network, no keys, no MQTT
+            # its logs in memory: blocked on a stalled disk it would stop reading frames and the kernel drop them
+            r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
+                   "--tmpfs", LOGS_TMPFS,
+                   *run_labels(sc, run_id, "eavesdropper"),
+                   "-e", f"EAVESDROP_SUMMARY={ev['summary_interval']}", "-e", f"EAVESDROP_VERBOSE={'1' if ev['verbose'] else '0'}",
+                   eavesdropper_image, "--link-window", str(ev["link_window"]), "--link-distance", str(ev["link_distance"]),
+                   "--link-by", ",".join(ev["link_by"]) or "none", "--timing-window", str(ev["timing_window"]),
+                   "--timing-tolerance", str(ev["timing_tolerance_ms"])])
+            r.created_containers.append(ev["name"])
         c = sc["control"]
         if c:
             ctl_image = ensure_image(r, CTL_IMAGE, "pseudo-ctl")
@@ -318,6 +341,10 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
         if c and c.get("mobility"):
             mo = c["mobility"]
             mobility_image = ensure_image(r, MOBILITY_IMAGE, "mobility")
+            if ev and not dry_run:
+                # vehicles move (and change pseudonyms) from the mobility client's start: not before the eavesdropper listens
+                progress(f"waiting for the eavesdropper {ev['name']} to listen ...")
+                wait_for_log(ev["name"], "eavesdropper: live", EAVESDROPPER_READY_S)
             if not dry_run:
                 progress(f"starting the mobility client {mo['name']} ...")
             config = {"broker": c["broker"]["name"], "port": 1883, "rate_hz": mo["rate_hz"],
@@ -327,24 +354,12 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
                       "pseudonym_topic": "vnap/pseudonym",
                       # random turns: a fixed seed repeats a run; otherwise a new one, recorded in the config
                       "seed": mo["seed"] if mo["seed"] is not None else random.randrange(1 << 31)}
-            r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"],
+            # the position recorder writes to memory: a stalled disk must not stall the vehicles
+            r.run(["run", "-d", "--name", mo["name"], "--network", ctl, "--ip", mo["ip"], "--tmpfs", LOGS_TMPFS,
                    *run_labels(sc, run_id, "mobility"),
                    *(["-e", "CONTROL_USERNAME", "-e", "CONTROL_PASSWORD"] if c["auth"] else []),
                    "-e", "MOBILITY_CONFIG=" + json.dumps(config, separators=(",", ":")), mobility_image])
             r.created_containers.append(mo["name"])
-        ev = sc["eavesdropper"]
-        if ev:
-            eavesdropper_image = ensure_image(r, EAVESDROPPER_IMAGE, "eavesdropper", exclude=("logs",))
-            if not dry_run:
-                progress(f"starting the eavesdropper {ev['name']} ...")
-            # only the message network and raw frames: no control network, no keys, no MQTT
-            r.run(["run", "-d", "--name", ev["name"], "--network", lan, "--ip", ev["ip"], "--cap-add", "NET_RAW",
-                   *run_labels(sc, run_id, "eavesdropper"),
-                   "-e", f"EAVESDROP_SUMMARY={ev['summary_interval']}", "-e", f"EAVESDROP_VERBOSE={'1' if ev['verbose'] else '0'}",
-                   eavesdropper_image, "--link-window", str(ev["link_window"]), "--link-distance", str(ev["link_distance"]),
-                   "--link-by", ",".join(ev["link_by"]) or "none", "--timing-window", str(ev["timing_window"]),
-                   "--timing-tolerance", str(ev["timing_tolerance_ms"])])
-            r.created_containers.append(ev["name"])
     except (RuntimeError, ScenarioError) as e:
         if not dry_run:
             progress("start failed: removing what was created ...")
@@ -415,6 +430,16 @@ def start_pki(r, sc, run_id, ctl, dry_run, timeout=90):
             raise ScenarioError(f"PKI service {state}: " + " | ".join(logs.strip().splitlines()[-3:]))
         time.sleep(0.5)
     raise ScenarioError(f"PKI service did not finish provisioning within {timeout} s")
+
+
+def wait_for_log(name, text, timeout):
+    """Wait until the container's log has a line with `text`, at most `timeout` seconds; True if it came."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if text in docker("logs", name, check=False):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def wait_ready(sc, lan, wait):

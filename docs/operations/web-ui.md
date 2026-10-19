@@ -100,13 +100,16 @@ Details are in [eavesdropper and scoring](../functional/eavesdropper-and-scoring
 ## Privacy and cost of the pseudonym changes
 
 After a run stops, the *Results* tab puts every pseudonym change next to what it cost: what
-the eavesdropper made of the change, and what the other stations missed meanwhile. This is the
-first iteration of the measures in `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`.
-It uses only data every run keeps, so runs stopped before it existed show it too.
+the eavesdropper made of the change, and what the other stations missed meanwhile. These are the
+phase 1 measures of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`. They use only
+data runs keep, so runs stopped before them show them too, without the position figures.
 
 - **Reference receiver:** reception is measured at the eavesdropper. On the lossless link it
   hears every frame, like any other receiver. Runs without an eavesdropper show only the
   figures from the stations' logs.
+- **True positions:** the mobility client records every vehicle's position 5 times a second
+  (`positions.jsonl`). Runs without moving vehicles, or from before the recorder, have no
+  position figures.
 - **Headline figures:**
   - *tracking success*: the share of changes the eavesdropper linked correctly (lower is
     more private);
@@ -116,13 +119,27 @@ It uses only data every run keeps, so runs stopped before it existed show it too
   - *time information was stale*: the share of time the latest CAM of a vehicle was older
     than 1 s;
   - *delivery ratio*: CAMs received against CAMs expected at the vehicle's usual rate;
-  - the share of CAMs carrying the full certificate, and the mean CAM size.
-- **Timeline:** one lane per vehicle, showing reception, silent periods (amber) and other gaps
-  (red). Each change is a dot: green when not linked, red when followed, purple when linked to
-  another vehicle. Hover for details.
-- **Changes:** one row per change: time, vehicle, logged silent period, reception gap (last
-  CAM under the old pseudonym to the first under the new one), CAMs missing in it, the
-  eavesdropper's outcome with its technique, and the vehicles that changed at the same time.
+  - *longest time followed*: the longest chain of pseudonyms the eavesdropper linked one to
+    the next, in seconds and metres driven;
+  - *position error during gaps*: the 95th percentile of the distance between the last
+    known position and the true one, and with the last position extended by speed and heading;
+  - the share of CAMs carrying the full certificate, the mean CAM size and what the
+    certificate adds;
+  - *outages*, when there were any (see below).
+- **Timeline:** one lane per vehicle, showing reception, silent periods (amber), other gaps
+  (red) and outages (grey). Each change is a dot: green when not linked, red when followed,
+  purple when linked to another vehicle. Hover for details.
+- **Changes:** one row per change:
+  - time, vehicle and logged silent period;
+  - reception gap (last CAM under the old pseudonym to the first under the new one) and the
+    CAMs missing in it;
+  - *Explained*: "yes" when the silent period plus two CAM intervals explain the gap, the
+    excess when they do not, *outage* when the host or receiver caused it;
+  - the largest position error during the gap (last known and extended);
+  - *History lost*: the time and CAMs under the old pseudonym that a receiver can no longer
+    attach to the vehicle;
+  - the eavesdropper's outcome with its technique, and the vehicles that changed at the same time.
+
   Click a heading to sort.
 - **Vehicles:** per vehicle:
   - changes, and changes refused;
@@ -131,19 +148,30 @@ It uses only data every run keeps, so runs stopped before it existed show it too
   - gaps between CAMs (95th percentile, longest);
   - stale share and delivery ratio;
   - full-certificate share and CAM size;
+  - position error, time followed;
+  - pool: the certificates held at most and their storage (certificate and key file sizes as measured in the stations);
   - certificate refill.
 
 Without a silent period, no gap should be longer than two CAM intervals, because the CAM timer
 restarts at a random phase. With one, a gap is the silent period plus up to that much.
-Position error, conflict exposure, verification failures, warnings and CPU load need data
-that runs do not record yet.
+
+**Outages.** When the host stalls, all containers stop together: a slow disk (the VM's virtual
+NVMe disk can take 30 s to complete a request) or a restart of the host's network blocks the
+stations, the eavesdropper and the recorder. The analysis finds these stretches: the receiver
+heard nothing although a station outside its silent period should have sent, or the recorder
+stopped ticking. Changes in an outage are marked *outage*, and gaps, stale time and delivery
+leave that time out. Rerun when the outages cover much of the run; see
+[troubleshooting](troubleshooting.md#outages-in-a-runs-results) for the host side.
+
+Not measured yet: conflict exposure, verification failures, warnings and CPU load.
 
 The summary report has the same figures in its section 4, *Cost of the pseudonym changes*
 ([summary report](../functional/eavesdropper-and-scoring.md#summary-report)).
 
 The figures come from `sim/vnapsim/overhead.py`, which writes `overhead.json` to the run's
 results when it stops (`GET /api/runs/{id}/overhead`; for older runs on first request), and
-from `./vnapctl overhead <results dir>`.
+from `./vnapctl overhead <results dir>`. The same step writes `metrics.json`
+([vnapctl collect](vnapctl.md#saving-a-runs-results)).
 
 ## Browser notes
 

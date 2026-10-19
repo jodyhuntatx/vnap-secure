@@ -20,6 +20,37 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-10-19: phase 1 of the overhead design complete
+
+Phase 1 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`:
+- **Position recorder:** the mobility client writes every vehicle's true position 5 times a
+  second to `positions.jsonl`, saved with the results.
+- **`overhead.json` version 2** (`sim/vnapsim/overhead.py`), recomputed for stored runs on
+  first use:
+  - position error during reception gaps, last known and extended by speed and heading;
+  - ghost time under a 1.1 s neighbour-table timeout;
+  - history lost with the old identity;
+  - CAM sizes with a digest and with the certificate, the certificate's size and pool storage;
+  - time and distance the eavesdropper followed each vehicle;
+  - per change, whether the silent period and the CAM timer explain its gap.
+- **Outages:** stretches in which the receiver heard no station that should have sent, or the
+  recorder stalled. They are listed, their changes marked, and their time left out of gaps,
+  stale share and delivery. The 23 s unexplained gap in a stored run of 2026-10-12 was one: a
+  restart of the host's systemd-networkd took the Docker bridges down. A run of 2026-10-19 had
+  16 of about 30 s: the VM's virtual NVMe disk timed out (`nvme … timeout, completion polled`)
+  and the eavesdropper, blocked writing its log, dropped frames.
+- **Riding out stalls:** the eavesdropper and the mobility client keep `/logs` in memory
+  (tmpfs), and the eavesdropper stamps frames with the kernel's receive time instead of the
+  time it reads them.
+- **`metrics.json`:** the `vnapctl check` metrics over the whole run from the saved logs, with
+  CAMs sent and the per-vehicle cost figures.
+- **`vnapctl collect DIR`** saves a command-line run's results like the service does, and
+  `--analyse` makes the analyses again on saved results. The service and `vnapctl` share the
+  collection (`sim/vnapsim/collect.py`).
+- **Report:** section 4 shows the new figures and the outages; new rule `outages`.
+- **Results tab:** the same figures, the outages, and new columns in the changes and vehicles
+  tables.
+
 ## 2026-10-19: one change per vehicle from fixed and dynamic mix zones together
 
 A run with both a fixed mix zone and a dynamic mix zone sent two change events to a vehicle

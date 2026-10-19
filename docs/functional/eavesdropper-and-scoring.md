@@ -119,7 +119,7 @@ test summaries in [results](../../results/README.md). Download it on the *Result
 | 1. Purpose | the run's description |
 | 2. Setup | every station with its role, movement and pseudonym pool; what triggered ID changes; the silent period, configured and measured; the eavesdropper's settings |
 | 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains (with the same *Most Frequent* and *Station predictions in actual order across identity changes* columns as the *Results* tab), observations |
-| 4. Cost of the pseudonym changes | what each change cost against what the eavesdropper made of it: tracking success, synchronized changes, pseudonym lifetime, reception gap, CAMs missing, stale time, delivery ratio, certificate overhead; per vehicle; gap by the eavesdropper's outcome; the longest gaps, each marked whether its silent period and the CAM timer explain it ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
+| 4. Cost of the pseudonym changes | what each change cost against what the eavesdropper made of it: tracking success, time followed, synchronized changes, pseudonym lifetime, reception gap, CAMs missing, stale time, delivery ratio, position error during gaps (with recorded positions), ghost time, history lost, certificate overhead and pool storage; per vehicle; gap by the eavesdropper's outcome; the longest gaps, each marked whether its silent period and the CAM timer explain it or an outage caused it; the outages, if any ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
 | 5. Conclusion | the result in a few sentences, with the chance level for comparison and the cost |
 | 6. Limitations of this run | those that follow from the run's setup |
 | 7. Suggested next runs | suggestions chosen by rule, see [below](#suggested-next-runs) |
@@ -133,7 +133,7 @@ test summaries in [results](../../results/README.md). Download it on the *Result
   who knows the traffic pattern could undo most of them.
 - **Source:** only the files in the run's results (`run.json`, `status.json`, `score.json`,
   `scenario.toml`, the container logs, and `overhead.json`, which the report computes from
-  them when it is missing). `run.json` therefore also records when and why the
+  them and `positions.jsonl` when it is missing or older). `run.json` therefore also records when and why the
   run stopped and its last check, and each link in `score.json` its evidence.
 - **Again, or for an earlier run:** `python3 -m vnapapi.report <results directory>` in
   `service/` writes the report for the results in `data/results/<run id>`. A run from before
@@ -171,6 +171,7 @@ The shipped rules, by priority:
 | `no-changes` | no vehicle changed its pseudonym | check the trigger |
 | `pattern-reversible` | 8 or more wrong links, 80 % of them explained by one fixed pairing | random turns or uneven arrivals |
 | `starved` | changes refused for lack of certificates | a larger `refill_at` or `batch` |
+| `outages` | three or more changes fell into an outage of the host or receiver | checking the host's kernel log, and a rerun |
 | `unexplained-gaps` | a change left a reception gap longer than its silent period and the CAM timer explain | checking the logs before comparing costs |
 | `silence-without-privacy` | silent 5 % of the time or more, yet half or more of the changes followed | a mix zone or a dynamic mix zone |
 | `timing-leak` | 5 or more timing links, half or more correct and above chance | an image that rephases the CAM timer |
@@ -205,7 +206,10 @@ Facts (all numbers; 0 where the run has no eavesdropper):
 | `cost.available` | 1 when reception was measured (an eavesdropper recorded CAMs); the other `cost.*` facts are 0 otherwise |
 | `cost.tracking_success`, `cost.sync_ratio` | share of changes followed correctly; share with another vehicle changing within 2 s |
 | `cost.gap_ms_mean`, `cost.gap_ms_max`, `cost.stale_share`, `cost.delivery_ratio`, `cost.full_cert_share` | section 4's figures (shares from 0 to 1) |
-| `cost.unexplained_gaps`, `cost.unexplained_gap_ms_max` | changes whose gap exceeds the silent period plus two CAM intervals by more than 250 ms, and the largest excess |
+| `cost.unexplained_gaps`, `cost.unexplained_gap_ms_max` | changes whose gap exceeds the silent period plus two CAM intervals by more than 250 ms (and no outage caused it), and the largest excess |
+| `cost.outages`, `cost.outage_s`, `cost.outage_changes` | outages of the host or receiver, their total length, and the changes in them |
+| `cost.positions`, `cost.pos_error_m_p95`, `cost.pos_error_m_p95_extended` | true positions recorded (1); the 95th percentile of the position error during gaps, last known and extended |
+| `cost.ghost_ms_mean`, `cost.followed_s_max`, `cost.followed_m_max` | mean ghost time per change (1.1 s neighbour-table timeout); the longest time and distance the eavesdropper followed a vehicle |
 | `identifier.*`, `position.*`, `timing.*` | per technique: `links`, `correct`, `correct_share` |
 | `pattern.explained`, `pattern.share`, `pattern.pairings` | wrong links one fixed pairing explains, as a share of the wrong links, and the number of pairings |
 | `followed.longest`, `tracks`, `tracks.mixed` | longest correct chain; vehicle tracks, and those joining several vehicles |

@@ -7,7 +7,6 @@ import queue
 import re
 import secrets
 import shutil
-import subprocess
 import threading
 import time
 import tomllib
@@ -20,9 +19,9 @@ sys.path.insert(0, SIM_DIR)
 from vnapsim.common import SCENARIO_DIR, ScenarioError, docker  # noqa: E402
 from vnapsim.lifecycle import allocate_instance, scenario_down, scenario_up  # noqa: E402
 from vnapsim.scenario import catalogue_refs, load_policy, load_scenario, resolve_scenario_path, variant_overrides  # noqa: E402
-from vnapsim.overhead import load_or_analyse, write as write_overhead  # noqa: E402
-from vnapsim.scoring import score_run  # noqa: E402
-from vnapsim.status import Simulation, build_status  # noqa: E402
+from vnapsim.collect import analyse as analyse_results, collect  # noqa: E402
+from vnapsim.overhead import load_or_analyse  # noqa: E402
+from vnapsim.status import Simulation  # noqa: E402
 
 TEMPLATE_DIR = os.path.join(SCENARIO_DIR, "templates")
 ACTIVE = ("queued", "starting", "running", "stopping")
@@ -414,28 +413,12 @@ class RunManager:
 
     # ------------------------------------------------------------ results
     def collect_results(self, run):
-        """Logs, status, eavesdropper logs and scoring of a running simulation, kept after it stops.
-        The run's PKI material (keys) is never collected; only its issue log (digests)."""
+        """Logs, frames, positions, status and scoring of a running simulation (vnapsim.collect), the scenario,
+        the run record, the analyses and the summary report, kept after it stops. The run's PKI material
+        (keys) is never collected; only its issue log (digests)."""
         out = os.path.join(self.results_dir, run["id"])
-        os.makedirs(out, mode=0o700, exist_ok=True)
         sim = Simulation(run["lan"], run["ctl"] or "vnapctl0-unused")
-        containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.observers
-        for info in containers:
-            name = Simulation.name(info)
-            with open(os.path.join(out, f"{name}.log"), "w") as f:
-                f.write(docker("logs", "--timestamps", name, check=False))
-        for info in sim.observers:
-            with open(os.path.join(out, "eavesdropper-logs.tar"), "wb") as f:
-                subprocess.run(["docker", "cp", f"{Simulation.name(info)}:/logs", "-"], stdout=f, stderr=subprocess.DEVNULL)
-        if sim.pki:
-            with open(os.path.join(out, "pki-issued.jsonl"), "w") as f:
-                f.write(docker("exec", Simulation.name(sim.pki), "cat", "/pki/private/issued.jsonl", check=False))
-        with open(os.path.join(out, "status.json"), "w") as f:
-            json.dump(build_status(sim), f, indent=1)
-        score = score_run(sim)
-        if score is not None:
-            with open(os.path.join(out, "score.json"), "w") as f:
-                json.dump(score, f, indent=1)
+        collect(sim, out)
         shutil.copy(run["scenario_file"], os.path.join(out, "scenario.toml"))
         record = {k: run[k] for k in ("id", "owner", "name", "description", "scenario", "overrides", "instance", "vnap_run_id", "image",
                                       "seed", "created_at", "started_at")}
@@ -448,11 +431,7 @@ class RunManager:
                                "expectations": len(json.loads(check["result"]).get("expectations", []))}
         with open(os.path.join(out, "run.json"), "w") as f:
             json.dump(record, f, indent=1)
-        try:   # privacy and cost of the pseudonym changes, from the files above (overhead.json)
-            write_overhead(out)
-        except Exception:
-            with open(os.path.join(out, "overhead-error.txt"), "w") as f:
-                f.write(traceback.format_exc())
+        analyse_results(out)   # overhead.json and metrics.json; a failure goes to <name>-error.txt
         try:   # the summary is built from the files above; a failure must not lose them
             write_report(out)
         except Exception:

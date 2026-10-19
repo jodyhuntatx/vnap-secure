@@ -98,6 +98,8 @@ rejection happens.
 ./vnapctl events [--duration 10s] [--since 10m] [--kind K,...] [--station S] [--count N] [--json]
 ./vnapctl check [--duration 15s] [--expect EXPR ...] [--no-defaults] [--no-scenario] [--json]
 ./vnapctl down [--force] [--dry-run]
+./vnapctl collect DIR [--json]                       # save the running simulation's results; before down
+./vnapctl collect DIR --analyse                      # analyse saved results again (overhead.json, metrics.json)
 ./vnapctl overhead RESULTS_DIR [--json] [--write]    # privacy and cost of a stopped run's pseudonym changes
 ./vnapctl certs [status] [v2|v3] [--json]           # the committed test certificates' validity
 ./vnapctl certs regenerate v2|v3 [--lifetime KEY=N ...]   # a new set; see docs/certificates.md
@@ -225,6 +227,46 @@ form `metric OP number|metric` (`>=`, `<=`, `==`, `!=`, `>`, `<`).
 | 3 | nothing running |
 | 4 | `status` degraded, or `up` not ready |
 | 5 | conflict: already running, name in use, or owned by someone else |
+
+## Saving a run's results
+
+The service saves every run's results when it stops. For a command-line run, `collect` writes
+the same files; run it before `down`, which removes the containers and their logs:
+
+```bash
+./vnapctl --instance 7 collect results/crossing-1
+./vnapctl --instance 7 down
+./vnapctl overhead results/crossing-1        # privacy and cost of the pseudonym changes
+```
+
+| File | Content |
+|---|---|
+| `<container>.log` | every container's log, with docker timestamps |
+| `eavesdropper-logs.tar` | the eavesdropper's `messages.jsonl` (every frame), `events.jsonl`, `tracks.json` |
+| `positions.jsonl` | the vehicles' true positions, 5 times a second (the mobility client's recorder) |
+| `pki-issued.jsonl` | the run's PKI issue log (digests, never keys) |
+| `status.json`, `score.json` | the state of the run at the end, and the eavesdropper's score |
+| `run.json`, `scenario.toml` | run id, scenario, variant, overrides, who started it, the mobility seed |
+| `overhead.json` | privacy and cost of every pseudonym change ([web UI](web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
+| `metrics.json` | the `check` metrics over the whole run, from the saved logs |
+
+`metrics.json` has the station and global metrics of [checks](#checks) computed over the whole
+run instead of a check window. It adds:
+- `<station>.cam.tx`: CAMs as the reference receiver heard them;
+- per vehicle, from `overhead.json`: `.gap_ms_max`, `.gap_ms_mean` (reception gaps around
+  changes), `.stale_share`, `.delivery_ratio`, `.ipg_ms_p95`, `.ipg_ms_max` (inter-CAM gaps),
+  `.pos_error_m_p95`, `.pseudonym.lifetime_s_mean`, `.pool_bytes`, `.followed_s_max`;
+- per run: `privacy.tracking_success`, `.sync_ratio`, `.followed_s_mean`, `.followed_s_max`,
+  `.followed_m_max`, `changes.total`, `changes.unexplained`, `changes.during_outage`,
+  `msg.cam.bytes_mean`, `msg.cert_bytes`, `pos_error_m_p95`, `outages`, `outages.s`.
+
+What a check records live is not in it: received messages and their verification
+(`.rx`, `.success_rate`, …) and the control channel (`control.*`). The cost names are per
+sending vehicle, as the reference receiver heard it.
+
+The analyses read only the directory: `collect DIR --analyse` makes them again, for example
+after a change to a definition, also on the service's `data/results/<run id>`. A failing
+analysis writes `overhead-error.txt` or `metrics-error.txt` and leaves the raw files.
 
 ## Your own scenarios
 

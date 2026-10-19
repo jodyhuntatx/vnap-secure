@@ -58,6 +58,28 @@ docker run --rm -v DIR:/w vnap:msgcheck decode-v3 /w/msg.enc
 | `check`: `eavesdropper.*` metrics missing | the scenario has no `[eavesdropper]` section |
 | `check`: stations send CAMs (`*.cam.tx`) but receive none, nothing in the logs (`trust` and other scenarios with certificate files) | the committed certificates expired; stations drop such messages silently. `./vnapctl certs` shows it; `./vnapctl certs regenerate v3 --lifetime at_hours=…` (or v2) makes new ones ([certificates](../certificates.md#validity-and-regeneration)) |
 
+## Outages in a run's results
+
+The *Results* tab, `vnapctl overhead` and section 4.4 of the report list **outages**:
+stretches in which the eavesdropper heard nothing although a station should have sent, or the
+position recorder stopped. The cause is the host, not the stations:
+
+- **A stalled disk.** `journalctl -k | grep nvme` shows lines like `nvme nvme0: I/O tag 143
+  (f08f) QID 3 timeout, completion polled`. The VM's virtual NVMe controller lost a completion
+  interrupt, and Linux waited its I/O timeout (30 s by default) before looking. Processes
+  writing to disk stop for that long, and Docker timestamps their log lines late. The
+  eavesdropper and the recorder write to memory (tmpfs) since 2026-10-19 and the eavesdropper
+  stamps frames with the kernel's receive time, so they ride out most stalls. To shorten the
+  stalls themselves, lower the timeout with the kernel parameter `nvme_core.io_timeout=4` (in
+  `GRUB_CMDLINE_LINUX_DEFAULT` of `/etc/default/grub`, then `sudo update-grub` and a reboot),
+  or give the VM a SATA disk instead of NVMe.
+- **A restart of the host's network.** `journalctl | grep "Stopping systemd-networkd"` at the
+  outage's time: a package upgrade (unattended-upgrades) or `netplan apply` restarted
+  systemd-networkd, which took the Docker bridges down until they were reconfigured.
+
+Changes in an outage are left out of the cost figures. Rerun when the outages cover much of
+the run; the `outages` rule of the report says so when three or more changes fell into one.
+
 ## Known limitations
 
 These come from upstream Vanetza-NAP:

@@ -10,6 +10,7 @@ export function overheadPanel(panel, o) {
   const hint = (text, title) => h("span", { class: "hint", title }, text);
   const figure = (value, label, title) => h("div", { class: "figure", title }, h("div", { class: "value" }, value), h("div", { class: "label" }, label));
   const recv = !!o.reference_receiver;
+  const outageS = (o.outages || []).reduce((t, x) => t + x.s, 0);
   clear(panel).append(h("h2", {}, "Privacy and cost of the pseudonym changes"),
     h("p", { class: "muted" }, "Every pseudonym change of the run, what the eavesdropper made of it and what the other stations missed meanwhile. ",
       recv ? "Reception is measured at the eavesdropper, which hears every frame on the lossless link like any receiver."
@@ -22,7 +23,21 @@ export function overheadPanel(panel, o) {
     recv ? figure(ms(s.gap_ms_max), `longest reception gap (mean ${ms(s.gap_ms_mean)})`, "per change: from the last CAM under the old pseudonym to the first under the new one; the vehicle is missing from every receiver's view meanwhile") : null,
     recv ? figure(pct(s.stale_share), "time information was stale", `share of time a receiver's latest CAM of a vehicle was older than ${o.settings.stale_s} s (mean over vehicles)`) : null,
     recv ? figure(pct(s.delivery_ratio), "delivery ratio", "CAMs received against CAMs expected at each vehicle's usual rate; on the lossless link every shortfall comes from changes and silent periods") : null,
-    recv ? figure(pct(s.full_cert_share), `CAMs with the full certificate (mean ${s.cam_bytes_mean ?? "–"} bytes)`, "the rest are signed with the certificate's 8-byte digest") : null));
+    s.followed_s_max !== null && s.followed_s_max !== undefined
+      ? figure(`${s.followed_s_max} s`, `longest time followed (mean ${s.followed_s_mean} s)${s.followed_m_max ? `, ${Math.round(s.followed_m_max)} m` : ""}`,
+        "a chain of pseudonyms the eavesdropper linked one to the next: how long (and how far) it tracked a vehicle without a break") : null,
+    recv && o.positions ? figure(s.pos_error_m_p95 === null ? "–" : `${s.pos_error_m_p95} m`, `position error during gaps (extended: ${s.pos_error_m_p95_extended ?? "–"} m)`,
+      "95th percentile of the distance between a receiver's last known position of the vehicle and its true position, during reception gaps; extended: the last position moved on by speed and heading") : null,
+    recv ? figure(pct(s.full_cert_share), `CAMs with the full certificate (mean ${s.cam_bytes_mean ?? "–"} bytes)`,
+      `the rest are signed with the certificate's 8-byte digest${s.cert_bytes ? ` instead of the ${s.cert_bytes}-byte certificate` : ""}`) : null,
+    o.outages && o.outages.length ? figure(String(o.outages.length), `outage${o.outages.length === 1 ? "" : "s"}, ${Math.round(outageS)} s (${s.outage_changes} change${s.outage_changes === 1 ? "" : "s"} left out)`,
+      "stretches in which the receiver heard nothing although a station should have sent, or the position recorder stalled: the host, not the stations. Gaps, stale time and delivery leave them out") : null));
+  if (o.outages && o.outages.length) {
+    // red when the outages cover a noticeable part of the recording, a plain note otherwise
+    panel.append(h("p", { class: outageS > 0.05 * (o.duration_s || 0) ? "errors" : "muted" }, `The host stalled or the receiver heard nothing for ${Math.round(outageS)} s `,
+      `(${o.outages.map((x) => `${x.from.toFixed(0)}–${x.to.toFixed(0)} s`).slice(0, 6).join(", ")}${o.outages.length > 6 ? ", …" : ""}). `,
+      "Changes in those stretches are marked \"outage\" and left out of the figures; rerun if they cover much of the run."));
+  }
   if (recv && o.duration_s) panel.append(timeline(o, short));
   panel.append(h("h3", {}, "Changes"), changesTable(o.changes, short, recv));
   panel.append(h("h3", {}, "Vehicles"), table(
@@ -32,14 +47,22 @@ export function overheadPanel(panel, o) {
       hint("Gap p95 / max", "time between consecutive CAMs at the receiver: 95th percentile and longest"),
       hint("Stale", `share of time its latest CAM was older than ${o.settings.stale_s} s`),
       hint("Delivery", "CAMs received against CAMs expected"), hint("Full cert.", "share of CAMs carrying the full certificate"),
-      hint("CAM bytes", "mean size of a CAM frame"), hint("Refill", "certificate batches received and the mean time from request to installation")],
+      hint("CAM bytes", "mean size of a CAM frame"),
+      ...(o.positions ? [hint("Position error p95", "95th percentile of the position error during this vehicle's reception gaps (last known / extended)")] : []),
+      hint("Followed", "longest time the eavesdropper followed this vehicle through linked pseudonyms"),
+      hint("Pool", `certificates held at most and their storage${s.cert_bytes ? ` (${s.cert_bytes}-byte certificate and ${s.key_bytes}-byte key file each)` : ""}`),
+      hint("Refill", "certificate batches received and the mean time from request to installation")],
     o.vehicles.map((v) => [short(v.vehicle), `${v.changes}${v.rejected ? ` (${v.rejected} refused)` : ""}`,
       v.lifetime_s_mean === null ? "–" : `${v.lifetime_s_mean.toFixed(1)} s (${v.lifetime_s_min.toFixed(1)}–${v.lifetime_s_max.toFixed(1)})`,
       ms(v.cam_interval_ms_median), v.gap_ms_p95 === null ? "–" : `${v.gap_ms_p95} / ${v.gap_ms_max} ms`, pct(v.stale_share),
       pct(v.delivery_ratio), pct(v.full_cert_share), v.cam_bytes_mean ?? "–",
+      ...(o.positions ? [v.pos_error_m_p95 === null ? "–" : `${v.pos_error_m_p95} / ${v.pos_error_m_p95_extended} m`] : []),
+      v.followed_s_max === null || v.followed_s_max === undefined ? "–" : `${v.followed_s_max} s${v.followed_m_max ? ` (${Math.round(v.followed_m_max)} m)` : ""}`,
+      v.pool_peak ? `${v.pool_peak}${v.pool_bytes ? ` (${(v.pool_bytes / 1024).toFixed(1)} KiB)` : ""}` : "–",
       v.refill && v.refill.batches ? `${v.refill.batches} batch(es), ${v.refill.refresh_ms_mean} ms` : "–"])));
-  panel.append(h("p", { class: "muted" }, "Not measured yet: position error and conflict exposure (they need the vehicles' true positions), ",
-    "verification failures, warnings and CPU load. See Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx."));
+  panel.append(h("p", { class: "muted" }, o.positions ? "" : "No recorded true positions in this run, so no position error. ",
+    "Not measured yet: conflict exposure, verification failures, warnings and CPU load. ",
+    "See Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx."));
 }
 
 // timeline class and badge class per outcome: kept (green), followed (red), confused (the zone colour, apart from silence)
@@ -51,7 +74,15 @@ function changesTable(changes, short, recv) {
     ["Vehicle", "", (c) => c.vehicle, (c) => short(c.vehicle)],
     ["Silent", "the silent period the vehicle logged after this change", (c) => c.silent_ms, (c) => (c.silent_ms ? `${c.silent_ms} ms` : "–")],
     ...(recv ? [["Gap", "last CAM under the old pseudonym to the first under the new one", (c) => c.gap_ms ?? -1, (c) => (c.gap_ms === null ? "–" : `${c.gap_ms} ms`)],
-      ["CAMs missing", "CAMs the vehicle would have sent in the gap at its usual rate", (c) => c.cams_missing ?? -1, (c) => c.cams_missing ?? "–"]] : []),
+      ["CAMs missing", "CAMs the vehicle would have sent in the gap at its usual rate", (c) => c.cams_missing ?? -1, (c) => c.cams_missing ?? "–"],
+      ["Explained", "does the silent period plus two CAM intervals explain the gap? outage: the receiver or the host caused it",
+        (c) => (c.outage ? 2 : c.explained === false ? 1 : 0),
+        (c) => (c.outage ? badge("outage", "warn") : c.explained === false ? badge(`+${c.excess_ms} ms`, "bad") : c.explained ? "yes" : "–")],
+      ...(changes.some((c) => c.pos_error_m_max !== null && c.pos_error_m_max !== undefined)
+        ? [["Position error", "largest error of the last known position during the gap (extended by speed and heading)",
+          (c) => c.pos_error_m_max ?? -1, (c) => (c.pos_error_m_max === null ? "–" : `${c.pos_error_m_max} m (${c.pos_error_m_max_extended} m)`)]] : []),
+      ["History lost", "time and CAMs under the old pseudonym that a receiver can no longer attach to the vehicle",
+        (c) => c.history_s ?? -1, (c) => (c.history_s === null || c.history_s === undefined ? "–" : `${c.history_s.toFixed(1)} s, ${c.history_cams} CAMs`)]] : []),
     ["Eavesdropper", "followed (linked correctly), confused (linked to another vehicle) or not linked", (c) => c.outcome,
       (c) => h("span", {}, badge(c.outcome, OUTCOME[c.outcome][1]), c.technique ? ` by ${c.technique}` : "", c.linked_to ? ` to ${short(c.linked_to)}` : "")],
     ["Synchronized with", "vehicles that changed within the synchronization window", (c) => c.synchronized_with.length,
@@ -88,7 +119,7 @@ function timeline(o, short) {
     if (v.first !== null) root.append(svg("rect", { class: "recv", x: x(v.first), y: y + 6, width: Math.max(1, x(v.last) - x(v.first)), height: 12 }));
     for (const [a, b, kind] of v.gaps) {
       root.append(svg("rect", { class: kind, x: x(a), y: y + 6, width: Math.max(1.5, x(b) - x(a)), height: 12 },
-        svg("title", {}, `${kind === "silent" ? "silent period" : "gap"}: ${(b - a).toFixed(1)} s from ${a.toFixed(1)} s`)));
+        svg("title", {}, `${kind === "silent" ? "silent period" : kind === "outage" ? "outage (host or receiver)" : "gap"}: ${(b - a).toFixed(1)} s from ${a.toFixed(1)} s`)));
     }
     for (const [t, outcome] of v.changes) {
       if (t === null) continue;
@@ -105,6 +136,7 @@ function timeline(o, short) {
   return h("div", {}, h("div", { class: "scroll" }, root),
     h("p", { class: "legend muted" }, h("span", {}, h("i", { class: "swatch recv" }), "receiving"),
       h("span", {}, h("i", { class: "swatch silent" }), "silent period"), h("span", {}, h("i", { class: "swatch gap" }), "other gap"),
+      h("span", {}, h("i", { class: "swatch outage" }), "outage"),
       h("span", {}, h("i", { class: "dot kept" }), "change not linked"), h("span", {}, h("i", { class: "dot followed" }), "followed"),
       h("span", {}, h("i", { class: "dot confused" }), "linked to another vehicle")));
 }

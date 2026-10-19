@@ -35,6 +35,13 @@ text = "{zone.skipped} passages through a mix zone caused no change because too 
 
 # ---------------------------------------------------------------- the cost of the changes (section 4)
 [[rule]]
+id = "outages"
+priority = 85
+when = ["cost.outages>=1", "cost.outage_changes>=3"]
+title = "Rerun on a quieter host."
+text = "The host stalled or the receiver heard nothing for {cost.outage_s:.0f} s in {cost.outages} stretch(es), and {cost.outage_changes} pseudonym change(s) fell into them (section 4.4). Those changes are left out of the cost figures, but the eavesdropper's linking around them is not reliable. Check the host's kernel log for disk timeouts (nvme ... timeout) or network restarts, and rerun."
+
+[[rule]]
 id = "unexplained-gaps"
 priority = 75
 when = ["cost.available==1", "cost.unexplained_gaps>=1"]

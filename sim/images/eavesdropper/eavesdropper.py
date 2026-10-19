@@ -811,12 +811,24 @@ def read_pcap(path):
         off += 16 + incl
 
 
+SO_TIMESTAMPNS = 35   # Linux: the kernel's receive time with every frame (SCM_TIMESTAMPNS)
+
+
 def live(iface):
+    """Frames from the interface with the time the kernel received them, not the time they are read: after
+    a stall (a slow disk, a busy host) the frames waiting in the socket buffer keep their real times."""
     s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_GEONET))
+    s.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
     s.bind((iface, 0))
+    space = socket.CMSG_SPACE(struct.calcsize("qq"))
     while True:
-        frame = s.recv(65535)
-        yield time.time(), frame
+        frame, ancillary, _, _ = s.recvmsg(65535, space)
+        t = None
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == SO_TIMESTAMPNS and len(data) >= 16:
+                sec, nsec = struct.unpack("qq", data[:16])
+                t = sec + nsec * 1e-9
+        yield t if t is not None else time.time(), frame
 
 
 def main():

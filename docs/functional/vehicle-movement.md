@@ -136,6 +136,16 @@ react to ground truth, not to what they heard on the radio. It shows whether pro
 changes help at all; a vehicle deciding from the CAMs it receives would be a change to the
 station.
 
+## Recorded positions
+
+The mobility client writes every vehicle's true position, speed and heading at each update (5
+times a second) to `/logs/positions.jsonl` in its container. The service and `vnapctl collect`
+save it with the run's results, and the analysis of the run uses it for position error during
+reception gaps and for the distance an eavesdropper followed a vehicle
+([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)). The file is in
+memory (tmpfs), so a stalled disk cannot stall the vehicles; it grows by under 1 MB per hour and
+vehicle. A gap between two lines longer than a second means the host stalled.
+
 ## Origin
 
 Stations without a position, and the example layouts, are placed around the crossing of Rua

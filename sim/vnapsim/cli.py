@@ -88,6 +88,20 @@ def instance_arg(text):
     return value
 
 
+def report_collected(args, failed):
+    """What `vnapctl collect` wrote, and the analyses that failed (their error files)."""
+    files = sorted(os.listdir(args.dir))
+    if args.json:
+        print(json.dumps({"dir": args.dir, "files": files, "failed": failed}, indent=2))
+    else:
+        print(f"{args.dir}: {', '.join(files)}")
+        for name in failed:
+            print(f"  {name} analysis failed: see {os.path.join(args.dir, name + '-error.txt')}")
+        if "overhead.json" in files and "overhead" not in failed:
+            print(f"  vnapctl overhead {args.dir}   (privacy and cost of the pseudonym changes)")
+    return EXIT_FAIL if failed else EXIT_OK
+
+
 def main():
     # common options are accepted before or after the subcommand. They are parsed into
     # separate destinations: a subparser's defaults would otherwise overwrite values given
@@ -157,6 +171,14 @@ def main():
     p.add_argument("--write", action="store_true", help="also write overhead.json into it")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("collect", help="save the running simulation's results (logs, frames, positions, scoring) and "
+                                       "analyse them (overhead.json, metrics.json); run it before down")
+    p.add_argument("dir", help="results directory to write (created; files in it are replaced)")
+    p.add_argument("--analyse", action="store_true",
+                   help="only analyse a results directory saved before (no simulation needed), e.g. after a change "
+                        "to a definition")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("certs", help="the committed test certificate sets: validity, regeneration")
     p.add_argument("action", nargs="?", choices=("status", "regenerate"), default="status")
     p.add_argument("set", nargs="?", choices=("v2", "v3"), help="regenerate: which set")
@@ -216,6 +238,12 @@ def main():
         result = overhead.write(args.dir) if args.write else overhead.analyse(args.dir)
         print(json.dumps(result, indent=1) if args.json else overhead.format_text(result))
         return EXIT_OK
+
+    if args.cmd == "collect" and args.analyse:
+        from . import collect
+        if not os.path.isfile(os.path.join(args.dir, "status.json")):
+            return fail(f"{args.dir}: not a results directory (no status.json)", EXIT_USAGE)
+        return report_collected(args, collect.analyse(args.dir))
 
     if args.cmd == "certs":
         from . import testcerts
@@ -355,6 +383,14 @@ def main():
 
     if not sim.running:
         return fail(f"no simulation running (no stations on {lan})", EXIT_DOWN)
+
+    if args.cmd == "collect":
+        from . import collect
+        progress(f"saving the results in {args.dir} ...")
+        collect.collect(sim, args.dir)
+        collect.write_run_record(sim, args.dir)
+        progress("analysing them ...")
+        return report_collected(args, collect.analyse(args.dir))
 
     if args.cmd == "events":
         kinds = set(args.kind.split(",")) if args.kind else None
