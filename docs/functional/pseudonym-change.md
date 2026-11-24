@@ -47,7 +47,7 @@ the two-phase commit of clause 6.3:
 3. **The security entity switches** to the new authorization ticket and key.
 4. **COMMIT:**
    - every router gets a new GN address, whose MID is also the source MAC of its frames;
-   - the CAM application uses a new `stationId`;
+   - the CAM application, and the DENM application for injected DENMs, use a new `stationId`;
    - both are derived from the id with SHA-256 under separate labels, so they share no bytes
      with each other or with the certificate.
 
@@ -69,8 +69,14 @@ the two-phase commit of clause 6.3:
   changes only the certificate. This is useful as a comparison: the eavesdropper then links
   every change through the unchanged identifiers.
 - **Not changed:** the configured station ID and MAC remain the station's identity on its
-  local MQTT interface (e.g. `receiverID`) and its control topics. Messages injected on
-  `vanetza/in/*` carry whatever `stationId` their payload has.
+  local MQTT interface (e.g. `receiverID`) and its control topics.
+- **Injected messages:** a DENM published on `vanetza/in/denm` is sent with the current
+  `stationId` in its header, and in `management.actionId.originatingStationId` if the payload
+  gives the configured station ID there, so an application can keep writing
+  the configured ID. A DENM whose payload has a top-level `stationId` keeps upstream's
+  behaviour: that ID, and a MAC and GN address derived from it. Other messages injected on
+  `vanetza/in/*` (CAM, CPM, IVIM, VAM, …) still carry the configured station ID unless their
+  payload names one, so they link a vehicle's pseudonyms.
 
 ## Silent period
 

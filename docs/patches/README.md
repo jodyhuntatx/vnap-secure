@@ -54,6 +54,7 @@ is missing here.
 | `tools/socktap/security.hpp` | | pseudonym and ID change; certificate refill |
 | `tools/socktap/applications/cam_application.cpp` | | thread safety; pseudonym and ID change; mobility and CAM |
 | `tools/socktap/applications/cam_application.hpp` | | mobility and CAM |
+| `tools/socktap/applications/denm_application.cpp` | | pseudonym and ID change |
 | `tools/socktap/time_trigger.cpp` | | thread safety; pseudonym and ID change |
 | `tools/socktap/time_trigger.hpp` | | thread safety; pseudonym and ID change |
 | `tools/socktap/router_context.cpp` | | thread safety; pseudonym and ID change |

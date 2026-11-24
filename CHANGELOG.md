@@ -20,6 +20,26 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-11-24: DENMs carry the current stationId
+
+Injected DENMs (`vanetza/in/denm`) were sent with the station's configured stationId in the
+ITS PDU header, which stays the same across full ID changes. The eavesdropper links frames by
+a shared stationId, so one DENM per pseudonym would have linked all of a vehicle's pseudonyms.
+The DENM application now writes the current stationId into the header, and into
+`management.actionId.originatingStationId` when the payload gives the configured one there
+(`applications/denm_application.cpp`, a new file in the patch set). A payload with a top-level
+`stationId` keeps upstream's behaviour.
+- **Found** while preparing the warning probe of the overhead design (phase 2), which sends DENMs.
+- **Checked** on `linkability` with 30 DENMs over 6 ID changes: before, every DENM carried the
+  configured stationId 2; now every DENM carries the stationId of its GN address and
+  certificate, and the RSU verifies all 30 (`Success`).
+- **Earlier results are not affected:** no scenario or harness part sent DENMs, and none of the
+  stored runs has a DENM frame.
+- **Not yet fixed:** other injected messages (CAM, CPM, IVIM, VAM, …) still fall back to the
+  configured stationId when their payload names none.
+- **Image:** built as `vnap:dev-denm` for development; the next measurement tag (`vnap:r2-p20`)
+  will also carry the station counters of phase 4.
+
 ## 2026-10-19: phase 1 of the overhead design complete
 
 Phase 1 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`:

@@ -34,6 +34,9 @@ channel in [control channels](../reference/control-channels.md#pseudonym-change)
     (PREPARE/COMMIT/ABORT/DEREG), trigger, ID-LOCK/UNLOCK;
   - `tools/socktap/id_change.{hpp,cpp}` (new): socktap's subscribers, for the network layer
     (routers: GN address and MAC) and the facilities layer (CAM `stationId`);
+  - `applications/denm_application.cpp`: injected DENMs get the current `stationId` in the
+    header and in an `actionId` written with the configured one (before, upstream filled in the
+    configured station ID, which stays the same across changes and linked the pseudonyms);
   - the providers and `pseudonym_control.hpp`: they run the change through the service;
   - `router_context.{hpp,cpp}`: locking routers during PREPARE and setting the new address on
     COMMIT;
@@ -43,6 +46,7 @@ channel in [control channels](../reference/control-channels.md#pseudonym-change)
 - **Files:** `id_change_service.{hpp,cpp}`, `pseudonym_control.hpp`, the providers,
   `vanetza/security/CMakeLists.txt`, `id_change.{hpp,cpp}`, `router_context.{hpp,cpp}`,
   `main.cpp`, `pseudonym_channel.cpp`, `applications/cam_application.cpp`,
+  `applications/denm_application.cpp`,
   `tools/socktap/CMakeLists.txt`, `entrypoint.sh`.
 - **Upstream:** standards-based; candidate for discussion upstream.
 

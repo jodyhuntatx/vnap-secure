@@ -1,0 +1,35 @@
+--- a/tools/socktap/applications/denm_application.cpp
++++ b/tools/socktap/applications/denm_application.cpp
+@@ -1,3 +1,4 @@
++#include "../id_change.hpp"
+ #include "denm_application.hpp"
+ #include <rapidjson/document.h>
+ #include <vanetza/asn1/rj/jer_rj_encode.hpp>
+@@ -235,6 +236,18 @@
+             return;
+         }
+ 
++        if (payload_station_id == -1) {
++            // the stationId changes on an ID change (see id_change.hpp): a DENM with the configured
++            // one would link the vehicle's pseudonyms. The header always carries the current one, and
++            // so does an actionId the application wrote with the configured stationId
++            const auto own_id = own_station_id();
++            denm->header.stationId = own_id;
++            auto& action = denm->denm.management.actionId;
++            if (action.originatingStationId == static_cast<Vanetza_ITS2_StationId_t>(config_s.station_id)) {
++                action.originatingStationId = own_id;
++            }
++        }
++
+         packet->layer(OsiLayer::Application) = std::move(denm);
+     } else {
+         std::vector<unsigned char> bytesCopy(bytes.begin(), bytes.end());
+@@ -270,7 +283,7 @@
+         Value timePayload(kObjectType);
+         Value timeTest(kObjectType);
+ 
+-        int station_id_time = resolve_station_id(payload_station_id, config_s.station_id);
++        int station_id_time = resolve_station_id(payload_station_id, own_station_id());
+         std::string mac_addr = resolve_station_mac(config_s.station_type, payload_station_id, config_s.mac_address);
+ 
+         timePayload.AddMember("timestamp", time_reception, allocator)
