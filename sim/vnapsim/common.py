@@ -99,6 +99,7 @@ SCENARIO_DIR = os.path.join(HERE, "scenarios")
 IMAGES_DIR = os.path.join(HERE, "images")      # build contexts of the helper images
 CERTS_DIR = os.path.join(REPO, "certs")        # default certs_dir (mounted at /vnap-certs)
 CTL_IMAGE = "vnap-pseudo-ctl"
+COLLECTOR_IMAGE = "vnap-collector"
 EAVESDROPPER_IMAGE = "vnap-eavesdropper"
 MOBILITY_IMAGE = "vnap-mobility"
 PKI_IMAGE = "vnap-pki"

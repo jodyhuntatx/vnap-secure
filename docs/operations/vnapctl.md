@@ -243,6 +243,7 @@ the same files; run it before `down`, which removes the containers and their log
 |---|---|
 | `<container>.log` | every container's log, with docker timestamps |
 | `eavesdropper-logs.tar` | the eavesdropper's `messages.jsonl` (every frame), `events.jsonl`, `tracks.json` |
+| `collector-logs.tar` | the collector's `receptions.jsonl` (every message each station received, with its security report) and `probe.jsonl` (the warning probe's DENMs) |
 | `positions.jsonl` | the vehicles' true positions, 5 times a second (the mobility client's recorder) |
 | `pki-issued.jsonl` | the run's PKI issue log (digests, never keys) |
 | `status.json`, `score.json` | the state of the run at the end, and the eavesdropper's score |
@@ -258,10 +259,17 @@ run instead of a check window. It adds:
   `.pos_error_m_p95`, `.pseudonym.lifetime_s_mean`, `.pool_bytes`, `.followed_s_max`;
 - per run: `privacy.tracking_success`, `.sync_ratio`, `.followed_s_mean`, `.followed_s_max`,
   `.followed_m_max`, `changes.total`, `changes.unexplained`, `changes.during_outage`,
-  `msg.cam.bytes_mean`, `msg.cert_bytes`, `pos_error_m_p95`, `outages`, `outages.s`.
+  `msg.cam.bytes_mean`, `msg.cert_bytes`, `pos_error_m_p95`, `outages`, `outages.s`;
+- with the collector's recording: the received messages and their verification per receiving
+  station (`<station>.<message>.rx`, `.rx_from.*`, `.success`, `.failed`, `.success_rate`), and
+  `verify.failed`, `verify.failed_after_change` (within 5 s after a receiver first hears a
+  vehicle's new identity);
+- with the warning probe: `denm.triggers`, `.lost`, `.delayed`, `.delay_ms_max`, `.unexplained`
+  (lost or late beyond what the sender's silent period explains) and `.id_leaks` (DENMs that
+  still carry the configured stationId after a change: a station image without the DENM fix);
+- with recorded positions: `conflict.count`, `conflict.exposure_s`, `conflict.missed`.
 
-What a check records live is not in it: received messages and their verification
-(`.rx`, `.success_rate`, …) and the control channel (`control.*`). The cost names are per
+The control channel (`control.*`) is recorded only by a live check. The cost names are per
 sending vehicle, as the reference receiver heard it.
 
 The analyses read only the directory: `collect DIR --analyse` makes them again, for example

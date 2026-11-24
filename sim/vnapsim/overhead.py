@@ -22,7 +22,9 @@ gaps, delivery ratio, position error, full-certificate share, CAM size and pool 
 tracking success ratio, time and distance followed, change synchronization ratio, and outages:
 stretches where the reference receiver heard nothing from stations that were not silent, or the
 recorder stalled (the host, not the stations; gaps that overlap one are not counted against
-the change). Not yet: verification failures, warnings, conflict exposure, CPU (later phases).
+the change). Phase 2 (vnapsim.receivers): with the collector's recording (collector-logs.tar), the
+receivers' verification failures and the warning probe's delays and losses; with recorded positions,
+conflict exposure. Not yet: CPU and the stations' operation counts (phases 3 and 4).
 
   python3 -m vnapsim.overhead <results dir> [--json] [--write]
 """
@@ -39,8 +41,9 @@ import tarfile
 from datetime import datetime
 
 from .logs import RE_CHANGED, RE_IDC_SILENT, RE_POOL_START, RE_REJECTED
+from . import receivers
 
-VERSION = 2
+VERSION = 3
 STALE_S = 1.0          # the longest CAM interval of EN 302 637-2
 SYNC_WINDOW_S = 2.0    # changes of two vehicles this close count as synchronized
 GAP_MARK = 1.5         # timeline: inter-CAM gaps longer than this many median intervals are drawn
@@ -419,6 +422,28 @@ def analyse(results_dir):
                          "last": rel(times[-1]) if times else None, "gaps": long_gaps,
                          "changes": [[r["t"], r["outcome"]] for r in own]})
 
+    # phase 2: what the receivers made of the messages (the collector), the probe's DENMs, conflicts
+    col_tar = os.path.join(results_dir, "collector-logs.tar")
+    receptions, probe = receivers.read_collector(col_tar) if os.path.isfile(col_tar) else (None, None)
+    logs = {}
+    for st in status.get("stations", []):
+        path = os.path.join(results_dir, f"{st['name']}.log")
+        if os.path.isfile(path):
+            with open(path, errors="replace") as f:
+                logs[st["name"]] = f.read()
+    id_owner, id_changes = receivers.identities(status, logs)
+    outage_times = [(a, b) for a, b, _ in outages]
+    verification = receivers.verification(receptions, id_owner, id_changes) if receptions is not None else None
+    configured = {st["name"]: st.get("station_id") for st in status.get("stations", [])}
+    warnings = receivers.warnings(probe, receptions or [], id_owner, configured, history, outage_times) if probe else None
+    conflicts = receivers.conflicts(tracks, by_vehicle, {sid: n for n, sid in station_id.items()}, STALE_S,
+                                    outage_times, extend) if tracks and frames else None
+    for rows, keys in (((verification or {}).get("changes", []), ("t",)), ((warnings or {}).get("worst", []), ("t",)),
+                       ((conflicts or {}).get("events", []), ("from", "to"))):
+        for r in rows:
+            for k in keys:
+                r[k] = rel(r[k])
+
     measured = [c for c in changes if c["gap_ms"] is not None]
     clean = [c for c in measured if not c["outage"]]
     correct = sum(1 for c in changes if c["outcome"] == "linked correctly")
@@ -467,7 +492,21 @@ def analyse(results_dir):
             "history_s_mean": r1(statistics.mean(c["history_s"] for c in measured if c["history_s"] is not None))
             if any(c["history_s"] is not None for c in measured) else None,
             "history_cams": sum(c["history_cams"] or 0 for c in measured) if measured else None,
+            "verify_failed": verification["failed"] if verification else None,
+            "verify_failed_after_change": verification["failed_after_change"] if verification else None,
+            "verify_failure_share": verification["failure_share"] if verification else None,
+            "denm_triggers": warnings["triggers"] if warnings else None,
+            "denm_lost": warnings["lost"] if warnings else None,
+            "denm_delayed": warnings["delayed"] if warnings else None,
+            "denm_delay_ms_max": warnings["delay_ms_max"] if warnings else None,
+            "denm_unexplained": warnings["unexplained"] if warnings else None,
+            "denm_id_leaks": warnings["id_leaks"] if warnings else None,
+            "conflicts": conflicts["conflicts"] if conflicts else None,
+            "conflict_exposure_s": conflicts["exposure_s"] if conflicts else None,
+            "conflict_missed": conflicts["missed"] if conflicts else None,
         },
+        "collector": "recorded" if receptions is not None else None,
+        "verification": verification, "warnings": warnings, "conflicts": conflicts,
         "outages": [{"from": rel(a), "to": rel(b), "s": r3(b - a), "seen_by": by} for a, b, by in outages],
         "vehicles": per_vehicle, "changes": changes, "timeline": timeline,
     }
@@ -528,6 +567,18 @@ def format_text(result):
                   f"CAMs with the full certificate {pctf(s['full_cert_share'])}, mean CAM {s['cam_bytes_mean']} bytes "
                   f"(digest {num(s['cam_bytes_digest'], 'B')}, certificate {num(s['cam_bytes_certificate'], 'B')}); "
                   f"pool storage {num(s['pool_bytes_mean'], 'bytes')} per vehicle"]
+    v, w, c = result.get("verification"), result.get("warnings"), result.get("conflicts")
+    if v:
+        lines.append(f"verification at the receivers: {v['received']} message(s), {v['failed']} failed "
+                     f"({v['failed_after_change']} within {v['window_s']:g} s after a change)")
+    if w:
+        lines.append(f"warning probe: {w['triggers']} DENM(s) to {w['deliveries']} receiver(s): {w['on_time']} on time, "
+                     f"{w['delayed']} delayed, {w['lost']} lost ({w['lost_in_silence']} in a silent period); "
+                     f"delay max {num(w['delay_ms_max'], 'ms')}; unexplained {w['unexplained']}"
+                     + (f"; IDENTITY LEAKS {w['id_leaks']} (DENMs with the configured stationId)" if w["id_leaks"] else ""))
+    if c:
+        lines.append(f"conflicts (TTC < {c['ttc_s']:g} s): {c['conflicts']}, {c['conflict_s']} s; exposure {c['exposure_s']} s, "
+                     f"missed {c['missed']}")
     if result.get("positions"):
         lines.append(f"position error during gaps p95 {num(s['pos_error_m_p95'], 'm')} (last known), "
                      f"{num(s['pos_error_m_p95_extended'], 'm')} (extended)")

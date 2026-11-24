@@ -44,9 +44,9 @@ def error_path(text):
     if "." in first:
         return first
     words = msg.split()
-    if words[:2] == ["eavesdropper", "ip"]:
-        return "eavesdropper.ip"
-    if words and words[0] in ("pki", "control", "entrypoint", "eavesdropper", "network", "image", "certs_dir"):
+    if words[:2] in (["eavesdropper", "ip"], ["collector", "ip"]):
+        return f"{words[0]}.ip"
+    if words and words[0] in ("pki", "control", "entrypoint", "eavesdropper", "collector", "probe", "network", "image", "certs_dir"):
         return words[0]
     if msg.startswith(("no stations", "duplicate station", "stations with")):
         return "stations"
@@ -115,7 +115,7 @@ def policy_violations(data, policy, schema=None, path="", out=None):
     return out
 
 
-RESERVED_HOSTS = {0, 1, 99, 255}  # network, gateway, the eavesdropper's default, broadcast
+RESERVED_HOSTS = {0, 1, 98, 99, 255}  # network, gateway, the collector's and eavesdropper's defaults, broadcast
 
 
 def assign_identities(raw_stations, subnet):
@@ -523,6 +523,8 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         if eavesdropper["ip"] in [s["ip"] for s in stations]:
             errors.append(f"eavesdropper ip {eavesdropper['ip']} is used by a station")
 
+    collector = check_collector(data, stations, eavesdropper, lan_subnet, suffix, instance, errors)
+
     pki = None
     if pki_on:
         unknown = set(pki_raw) - PKI_KEYS
@@ -579,10 +581,68 @@ def load_scenario(ref, sets=(), instance=0, role="admin", policy=None, service_s
         "description": description, "path": path, "instance": instance,
         "image": data.get("image", "vnap:latest"), "entrypoint": entrypoint, "certs_dir": certs_dir,
         "network": {"name": lan_name, "subnet": str(lan_subnet)}, "stations": stations, "control": control,
-        "eavesdropper": eavesdropper, "pki": pki,
+        "eavesdropper": eavesdropper, "collector": collector, "pki": pki,
         "check": {"defaults": check.get("defaults", True), "expect": list(check.get("expect", []))},
         "overrides": list(sets),
     }
+
+
+COLLECTOR_KEYS = {"enabled", "name", "ip"}
+PROBE_KEYS = {"enabled", "stations", "interval_s", "repeat_interval_s", "repeat_duration_s", "seed"}
+
+
+def check_collector(data, stations, eavesdropper, lan_subnet, suffix, instance, errors):
+    """[collector] (what every station receives, with its security report) and [probe] (DENMs at random
+    times, in the collector's container). The collector runs with an eavesdropper or a probe unless
+    [collector] enabled = false; the probe only with a [probe] section."""
+    raw, probe_raw = data.get("collector"), data.get("probe")
+    for key, value in (("collector", raw), ("probe", probe_raw)):
+        if value is not None and not isinstance(value, dict):
+            errors.append(f"{key} must be a table ([{key}])")
+    raw = raw if isinstance(raw, dict) else {}
+    probe_raw = probe_raw if isinstance(probe_raw, dict) else None
+    if set(raw) - COLLECTOR_KEYS:
+        errors.append(f"collector: unknown key(s) {', '.join(sorted(set(raw) - COLLECTOR_KEYS))}")
+    probe_on = probe_raw is not None and probe_raw.get("enabled", True)
+    if not raw.get("enabled", eavesdropper is not None or probe_on):
+        if probe_on:
+            errors.append("probe: needs the collector, which [collector] enabled = false turns off")
+        return None
+    default_ip = str(lan_subnet.network_address + 98) if lan_subnet else None
+    collector = {"name": raw.get("name", "collector") + suffix,
+                 "ip": remap_ip(raw["ip"], instance) if "ip" in raw else default_ip, "probe": None}
+    if lan_subnet and collector["ip"] and ipaddress.ip_address(collector["ip"]) not in lan_subnet:
+        errors.append(f"collector ip {collector['ip']} not in {lan_subnet}")
+    if collector["ip"] in [s["ip"] for s in stations] + ([eavesdropper["ip"]] if eavesdropper else []):
+        errors.append(f"collector ip {collector['ip']} is used by a station or the eavesdropper")
+    if not probe_on:
+        return collector
+    if set(probe_raw) - PROBE_KEYS:
+        errors.append(f"probe: unknown key(s) {', '.join(sorted(set(probe_raw) - PROBE_KEYS))}")
+    by_base = {s["base_name"]: s for s in stations}
+    names = probe_raw.get("stations")
+    if names is None:   # default: every vehicle (a station that moves)
+        names = [s["base_name"] for s in stations if s.get("mobility")]
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        errors.append("probe.stations must be a list of station names")
+        names = []
+    unknown = [n for n in names if n not in by_base]
+    if unknown:
+        errors.append(f"probe.stations: no station {', '.join(unknown)}")
+    if not names:
+        errors.append("probe: no station to send DENMs (probe.stations, or stations with mobility)")
+    probe = {"stations": [by_base[n]["name"] for n in names if n in by_base],
+             "interval_s": probe_raw.get("interval_s", 10.0), "repeat_interval_s": probe_raw.get("repeat_interval_s", 1.0),
+             "repeat_duration_s": probe_raw.get("repeat_duration_s", 10.0), "seed": probe_raw.get("seed")}
+    for key, low in (("interval_s", 1.0), ("repeat_interval_s", 0.1)):
+        if not isinstance(probe[key], (int, float)) or probe[key] < low:
+            errors.append(f"probe.{key} must be a number of at least {low:g}")
+    if not isinstance(probe["repeat_duration_s"], (int, float)) or not 0 <= probe["repeat_duration_s"] <= 60:
+        errors.append("probe.repeat_duration_s must be a number from 0 (no repetition) to 60")
+    if probe["seed"] is not None and not isinstance(probe["seed"], int):
+        errors.append("probe.seed must be an integer")
+    collector["probe"] = probe
+    return collector
 
 
 def check_mix_zones(raw, stations, errors):

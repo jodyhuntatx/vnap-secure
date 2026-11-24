@@ -54,6 +54,7 @@ never overwrite each other's images and a source change rebuilds on the next run
 | `vnap-pseudo-ctl` | `sim/images/pseudo-ctl/` | control broker and pseudonym event client |
 | `vnap-mobility` | `sim/images/mobility/` | mobility client (routes, crossings, mix zones) |
 | `vnap-eavesdropper` | `sim/images/eavesdropper/` | passive tracking attacker |
+| `vnap-collector` | `sim/images/collector/` | verification collector and warning probe |
 | `vnap-pki` | `sim/images/pki/` + C-ITS-PKI `src/` | the run's own PKI; the image label `vnap.cits_pki` records the C-ITS-PKI commit |
 
 - **`make pki-image`** builds `vnap-pki:latest` by hand (`sim/images/pki/build.sh`), with

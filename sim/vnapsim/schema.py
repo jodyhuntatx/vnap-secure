@@ -168,6 +168,22 @@ SCENARIO_SCHEMA = {
                              "link_by": {"type": "array", "items": {"enum": ["position", "timing"]}, "default": ["position", "timing"]},
                              "timing_window": _num("timing linking: max silence (s)", 0, None, 20.0),
                              "timing_tolerance_ms": _num("timing linking tolerance", 0, None, 25.0)}},
+        "collector": {"type": "object", "additionalProperties": False,
+                      "description": "records what every station receives, with its security report (on with an eavesdropper or a probe)",
+                      "properties": {
+                          "enabled": {"type": "boolean", "description": "default: on with an eavesdropper or a [probe]"},
+                          "name": _str("container name", "collector"),
+                          "ip": _str("address on the simulation network", **ASSIGNED)}},
+        "probe": {"type": "object", "additionalProperties": False,
+                  "description": "warning probe: DENMs at random times, repeated as the DEN basic service does; who received them, when",
+                  "properties": {
+                      "enabled": {"type": "boolean", "default": True},
+                      "stations": {"type": "array", "items": {"type": "string"},
+                                   "description": "stations that send DENMs (default: the stations with mobility)"},
+                      "interval_s": _num("mean time between two DENMs of a station", 1, None, 10.0),
+                      "repeat_interval_s": _num("repetition interval of a DENM", 0.1, None, 1.0),
+                      "repeat_duration_s": _num("how long a DENM is repeated (0: sent once)", 0, 60, 10.0),
+                      "seed": {"type": "integer", "description": "random seed of the trigger times (default: a new one)"}}},
         "variants": {"type": "object", "description": "named sets of overrides: vnapctl up <scenario>:<variant>",
                      "additionalProperties": {"type": "object", "additionalProperties": False, "properties": {
                          "description": _str("what the variant changes"),

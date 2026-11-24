@@ -116,6 +116,18 @@ timing_window = 20.0              # timing-phase linking: max silence over which
 timing_tolerance_ms = 25.0        #   and max difference between predicted and actual CAM time
 verbose = false                   # log every frame to the console
 
+[collector]                       # on by default with [eavesdropper] or [probe]: records what every station
+                                  # receives (sender, security report, size) from its embedded broker
+enabled = true                    # false: no collector (and no probe)
+ip = "192.168.98.98"              # default: host .98 of the network
+
+[probe]                           # optional warning probe (in the collector): DENMs at random times
+stations = ["obu1", "obu2"]       # default: the stations with mobility
+interval_s = 10.0                 # mean time between two DENMs of a station (uniform, 0.5 to 1.5 times this)
+repeat_interval_s = 1.0           # each DENM is repeated this often (DEN basic service) ...
+repeat_duration_s = 10.0          #   ... for this long (0: sent once); a copy in a silent period is dropped
+seed = 7                          # the trigger times (default: a new seed, recorded in the container's config)
+
 [check]                           # used by "vnapctl check" while this scenario runs
 defaults = true                   # include vnapctl's default expectations
 expect = ["rsu.cam.rx_per_s>=0.8"]

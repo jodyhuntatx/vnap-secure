@@ -37,6 +37,42 @@ class SchemaTest(unittest.TestCase):
                 self.assertLessEqual(set(tomllib.load(f)), known, ref)
 
 
+class CollectorTest(unittest.TestCase):
+    BASE = ('[[stations]]\nname = "rsu"\nstation_type = 15\n'
+            '[[stations]]\nname = "obu"\nmobility = { route = [[40.2081, -8.4228], [40.2081, -8.4168]], speed_kmh = 50 }\n'
+            '[control]\n')
+
+    def load(self, extra, **kw):
+        return load_scenario(scenario_file(self.BASE + extra), **kw)
+
+    def test_on_with_an_eavesdropper(self):
+        self.assertIsNone(self.load("")["collector"])
+        c = self.load("[eavesdropper]\n")["collector"]
+        self.assertEqual((c["name"], c["ip"], c["probe"]), ("collector", "192.168.98.98", None))
+        self.assertIsNone(self.load("[eavesdropper]\n[collector]\nenabled = false\n")["collector"])
+        self.assertEqual(load_scenario(scenario_file(self.BASE + "[eavesdropper]\n"), instance=3)["collector"]["name"], "collector-i3")
+
+    def test_probe(self):
+        p = self.load("[probe]\ninterval_s = 5\n", role="user", policy=POLICY)["collector"]["probe"]
+        self.assertEqual(p["stations"], ["obu"])   # the stations that move
+        self.assertEqual((p["interval_s"], p["repeat_interval_s"], p["repeat_duration_s"]), (5, 1.0, 10.0))
+        self.assertEqual(self.load('[probe]\nstations = ["rsu", "obu"]\n')["collector"]["probe"]["stations"], ["rsu", "obu"])
+        for extra, message in (("[collector]\nenabled = false\n[probe]\n", "probe: needs the collector"),
+                               ('[probe]\nstations = ["car9"]\n', "probe.stations: no station car9"),
+                               ("[probe]\ninterval_s = 0\n", "probe.interval_s must be"),
+                               ("[probe]\nrepeat_duration_s = 90\n", "probe.repeat_duration_s must be"),
+                               ("[probe]\nrate = 1\n", "probe: unknown key(s) rate"),
+                               ('[collector]\nip = "192.168.98.10"\n[eavesdropper]\n', "collector ip 192.168.98.10 is used")):
+            with self.assertRaises(ScenarioError, msg=extra) as ctx:
+                self.load(extra)
+            self.assertIn(message, str(ctx.exception))
+
+    def test_schema_keys_match_validator(self):
+        from vnapsim.scenario import COLLECTOR_KEYS, PROBE_KEYS
+        self.assertEqual(set(SCENARIO_SCHEMA["properties"]["collector"]["properties"]), COLLECTOR_KEYS)
+        self.assertEqual(set(SCENARIO_SCHEMA["properties"]["probe"]["properties"]), PROBE_KEYS)
+
+
 class CatalogueTest(unittest.TestCase):
     """The foundational scenarios, their variants and the controls."""
 

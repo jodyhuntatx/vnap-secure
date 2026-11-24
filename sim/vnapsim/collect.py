@@ -3,6 +3,8 @@ write into a results directory, and the analyses made from it.
 
   <container>.log          every container's log (docker logs --timestamps)
   eavesdropper-logs.tar    the eavesdropper's /logs: messages.jsonl (every frame), events.jsonl, tracks.json
+  collector-logs.tar       the collector's /logs: receptions.jsonl (what each station received, with its
+                           security report), probe.jsonl (the warning probe's DENMs)
   positions.jsonl          the vehicles' true positions (the mobility client's recorder)
   pki-issued.jsonl         the run's PKI issue log (digests only, never keys)
   cert-sizes.json          the sizes of the stations' authorization tickets and keys (not their content)
@@ -26,16 +28,17 @@ from .check import compute_metrics
 from .common import docker
 from .logs import parse_pki_log, parse_station_log
 from .overhead import RE_CHANGED, RE_POOL_START, read_frames, write as write_overhead
+from .receivers import identities, read_collector
 from .scoring import score_run
 from .status import Simulation, build_status
 
-METRICS_VERSION = 1
+METRICS_VERSION = 2
 
 
 def collect(sim, out):
     """Write the raw results of the running simulation `sim` into `out`; returns its status."""
     os.makedirs(out, mode=0o700, exist_ok=True)
-    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.observers
+    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki, sim.collector) if c] + sim.observers
     for info in containers:
         name = Simulation.name(info)
         with open(os.path.join(out, f"{name}.log"), "w") as f:
@@ -44,6 +47,10 @@ def collect(sim, out):
         # /logs is a tmpfs, which docker cp cannot read: tar it from inside (the same layout, logs/...)
         with open(os.path.join(out, "eavesdropper-logs.tar"), "wb") as f:
             subprocess.run(["docker", "exec", Simulation.name(info), "tar", "-C", "/", "-cf", "-", "logs"],
+                           stdout=f, stderr=subprocess.DEVNULL)
+    if sim.collector:
+        with open(os.path.join(out, "collector-logs.tar"), "wb") as f:
+            subprocess.run(["docker", "exec", Simulation.name(sim.collector), "tar", "-C", "/", "-cf", "-", "logs"],
                            stdout=f, stderr=subprocess.DEVNULL)
     if sim.mobility:
         positions = docker("exec", Simulation.name(sim.mobility), "cat", "/logs/positions.jsonl", check=False)
@@ -156,6 +163,15 @@ def write_metrics(out):
         events += [dict(ev, station="pki") for ev in parse_pki_log(_read(out, f"{pki['name']}.log") or "")]
     times = [ev["t"] for ev in events if ev["station"] != "pki"]
     seconds = (max(times) - min(times)) if times else 0
+    # what each station received, with its security report (the collector): the rx metrics of a live check
+    col_tar = os.path.join(out, "collector-logs.tar")
+    receptions = read_collector(col_tar)[0] if os.path.isfile(col_tar) else None
+    if receptions:
+        logs = {st["name"]: _read(out, f"{st['name']}.log") or "" for st in status["stations"]}
+        id_owner = identities(status, logs)[0]
+        events += [{"t": r["t"], "station": r["rx"], "kind": "rx", "type": r["m"],
+                    "from": id_owner.get(r.get("from"), (str(r.get("from")),))[0],
+                    "secured": r.get("sec"), "report": r.get("rep")} for r in receptions]
     m = compute_metrics(None, status, events, seconds)
 
     # tx: CAMs on the link per station (vehicles by their certificates, the others by station id)
@@ -191,6 +207,14 @@ def write_metrics(out):
                        ("pos_error_m_p95", s.get("pos_error_m_p95"))):
         if value is not None:
             m[key] = value
+    for key, value in (("verify.failed", s.get("verify_failed")), ("verify.failed_after_change", s.get("verify_failed_after_change")),
+                       ("denm.triggers", s.get("denm_triggers")), ("denm.lost", s.get("denm_lost")),
+                       ("denm.delayed", s.get("denm_delayed")), ("denm.delay_ms_max", s.get("denm_delay_ms_max")),
+                       ("denm.unexplained", s.get("denm_unexplained")), ("denm.id_leaks", s.get("denm_id_leaks")),
+                       ("conflict.count", s.get("conflicts")), ("conflict.exposure_s", s.get("conflict_exposure_s")),
+                       ("conflict.missed", s.get("conflict_missed"))):
+        if value is not None:
+            m[key] = value
     if o:
         m["outages"] = len(o.get("outages", []))
         m["outages.s"] = round(sum(x["s"] for x in o.get("outages", [])), 3)
@@ -198,9 +222,10 @@ def write_metrics(out):
     result = {
         "version": METRICS_VERSION,
         "window": {"from": min(times) if times else None, "to": max(times) if times else None, "seconds": round(seconds, 3)},
-        # rx and verification come from the stations' MQTT output, which only a live check records
-        "not_collected": ["<station>.<message>.rx, .rx_from.*, .success_rate, .failed (verification collector, "
-                          "phase 2 of the overhead design)", "control.* (the control channel, recorded live only)"],
+        # rx and verification come from the stations' MQTT output: the collector's recording, else only a live check
+        "not_collected": ([] if receptions else ["<station>.<message>.rx, .rx_from.*, .success_rate, .failed (no collector "
+                                                 "recording: a run without [collector], or from before it)"])
+        + ["control.* (the control channel, recorded live only)"],
         "metrics": dict(sorted(m.items())),
     }
     tmp = os.path.join(out, "metrics.json.tmp")

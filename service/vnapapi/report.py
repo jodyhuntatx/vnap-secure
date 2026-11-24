@@ -299,6 +299,17 @@ def facts(d):
               "cost.pos_error_m_p95_extended": cs.get("pos_error_m_p95_extended") or 0,
               "cost.ghost_ms_mean": cs.get("ghost_ms_mean") or 0, "cost.followed_s_max": cs.get("followed_s_max") or 0,
               "cost.followed_m_max": cs.get("followed_m_max") or 0})
+    # what the receivers made of it (the collector), the warning probe and conflicts: 0 when not measured
+    v, w, c = o.get("verification") or {}, o.get("warnings") or {}, o.get("conflicts") or {}
+    f.update({"cost.verify_available": int(bool(v)), "cost.verify_failed": v.get("failed") or 0,
+              "cost.verify_failed_after_change": v.get("failed_after_change") or 0,
+              "cost.denm_available": int(bool(w)), "cost.denm_triggers": w.get("triggers") or 0,
+              "cost.denm_deliveries": w.get("deliveries") or 0, "cost.denm_lost": w.get("lost") or 0,
+              "cost.denm_delayed": w.get("delayed") or 0, "cost.denm_lost_in_silence": w.get("lost_in_silence") or 0,
+              "cost.denm_delay_ms_max": w.get("delay_ms_max") or 0, "cost.denm_unexplained": w.get("unexplained") or 0,
+              "cost.denm_id_leaks": w.get("id_leaks") or 0,
+              "cost.conflicts_available": int(bool(c)), "cost.conflicts": c.get("conflicts") or 0,
+              "cost.conflict_exposure_s": c.get("exposure_s") or 0, "cost.conflict_missed": c.get("missed") or 0})
     # without an eavesdropper its facts are 0, so every rule can be evaluated; rules about it ask for eavesdropper==1
     f.update({key: 0 for key in ("links", "links.correct", "links.wrong", "links.correct_share", "links.over_chance",
                                  "pattern.explained", "pattern.share", "pattern.pairings", "followed.longest", "tracks",
@@ -377,6 +388,18 @@ def _cost_section(d, number):
         if s.get("pool_bytes_mean"):
             rows.append(["Pool storage", f"{s['pool_bytes_mean']} bytes per vehicle at most (the certificates held, "
                                          f"{s['cert_bytes']} bytes each, with a {s['key_bytes']}-byte private key file)"])
+    v, w, c = o.get("verification"), o.get("warnings"), o.get("conflicts")
+    if v:
+        rows.append(["Verification at the receivers", f"{v['failed']} of {v['received']} received messages failed "
+                                                      f"({v['failed_after_change']} within {v['window_s']:g} s after a change)"])
+    if w:
+        rows.append(["Warnings (probe DENMs)", f"{w['triggers']} triggered, {w['deliveries']} to receive: {w['on_time']} on time, "
+                                               f"{w['delayed']} delayed (at most {ms(w['delay_ms_max'])}), {w['lost']} lost "
+                                               f"({w['lost_in_silence']} in a silent period)"])
+    if c:
+        rows.append(["Conflict exposure", f"{c['exposure_s']} s of {c['conflict_s']} s in conflict (true time-to-collision "
+                                          f"below {c['ttc_s']:g} s) with stale or misleading information; "
+                                          f"{c['missed']} of {c['conflicts']} conflicts missed entirely"])
     if o.get("outages"):
         total = sum(x["s"] for x in o["outages"])
         rows.append(["Outages", f"{_plural(len(o['outages']), 'stretch')}, {total:.0f} s in all, in which the "
@@ -442,10 +465,54 @@ def _cost_section(d, number):
                    for x in o["outages"][:10]], [0.25, 0.25, 0.2, 0.3]))
         if len(o["outages"]) > 10:
             b.append(("p", f"... and {len(o['outages']) - 10} more (overhead.json)."))
-    b.append(("p", "Not measured in this run: "
-                   + ("" if o.get("positions") else "position error during gaps (the run has no recorded true positions), ")
-                   + "conflict exposure, verification failures at the receivers, delayed or lost warnings, and CPU load "
-                   "(later phases of Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx)."))
+    if v or w or c:
+        b += _receivers_section(o, number)
+    missing = ([] if o.get("positions") else ["position error during gaps and conflict exposure (the run has no recorded "
+                                               "true positions)"]) \
+        + ([] if v else ["verification failures at the receivers (no collector recording)"]) \
+        + ([] if w else ["delayed or lost warnings (no warning probe: a [probe] section)"])
+    b.append(("p", "Not measured in this run: " + "; ".join(missing + ["CPU load and the stations' operation counts (phases 3 "
+                   "and 4 of Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx)"]) + "."))
+    return b
+
+
+def _receivers_section(o, number):
+    """Subsection .5: what the receivers made of the messages, the probe's warnings, and conflicts."""
+    v, w, c = o.get("verification"), o.get("warnings"), o.get("conflicts")
+    b = [("h2", f"{number}.5 At the receivers: verification, warnings, conflicts")]
+    if v:
+        b.append(("p", f"Every station's security report for each message it received (the collector). "
+                       f"{_plural(v['failed'], 'message')} failed verification, "
+                       f"{v['failed_after_change']} of them within {v['window_s']:g} s after the receiver first heard a "
+                       "vehicle's new identity, when its certificate is new to the receiver."))
+        b.append(("table", ["Receiver", "Received", "Verified", "Failed", "Reports"],
+                  [[_short(r["receiver"]), str(r["received"]), str(r["success"]), str(r["failed"]),
+                    ", ".join(f"{k} {n}" for k, n in r["reports"].items()) or "-"] for r in v["receivers"]],
+                  [0.2, 0.15, 0.15, 0.15, 0.35]))
+    if w:
+        repeat = w.get("repeat_interval_s")
+        b.append(("p", f"The warning probe triggered {_plural(w['triggers'], 'DENM')} at random times and repeated each "
+                       + (f"every {repeat:g} s, " if repeat else "")
+                       + "as the DEN basic service does. A copy sent during the sender's silent period is dropped, so a "
+                         "warning then arrives late or not at all. On time: the first copy arrived. "
+                       + (f"{w['unexplained']} deliveries were late or lost beyond what the sender's silent period explains: "
+                          "check the stations' logs. " if w["unexplained"] else "Every delay and loss is explained by a silent period. ")
+                       + (f"{w['id_leaks']} DENMs carried the sender's configured stationId after a pseudonym change, which "
+                          "links its pseudonyms: the station image lacks the DENM stationId fix, so this run's privacy result "
+                          "is not valid." if w["id_leaks"] else "")))
+        if w.get("worst"):
+            b.append(("table", ["Time", "Sender", "Receiver", "Silence left", "Delay", "Explained"],
+                      [[f"{r['t']:.1f} s" if r["t"] is not None else "-", _short(r["sender"]), _short(r["receiver"]),
+                        f"{r['silent_left_ms']} ms" if r["silent_left_ms"] else "-",
+                        "lost" if r["lost"] else f"{r['delay_ms']} ms", "yes" if r["explained"] else "no"]
+                       for r in w["worst"][:8]], [0.13, 0.17, 0.17, 0.18, 0.17, 0.18]))
+    if c:
+        b.append(("p", f"Conflicts: pairs of vehicles whose true time-to-collision (constant speed and heading, centres within "
+                       f"{c['distance_m']:g} m) was below {c['ttc_s']:g} s, counted for each vehicle's view of the other. "
+                       f"Exposure is the time in conflict while that view was stale (older than {c['stale_s']:g} s) or showed "
+                       f"no conflict: {c['exposure_s']} s of {c['conflict_s']} s. {_plural(c['missed'], 'conflict')} of "
+                       f"{c['conflicts']} lay entirely in stale time. These measure missing information where a warning "
+                       "would have mattered, not crashes: the vehicles do not yield to each other."))
     return b
 
 

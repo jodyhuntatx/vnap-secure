@@ -119,7 +119,7 @@ test summaries in [results](../../results/README.md). Download it on the *Result
 | 1. Purpose | the run's description |
 | 2. Setup | every station with its role, movement and pseudonym pool; what triggered ID changes; the silent period, configured and measured; the eavesdropper's settings |
 | 3. Results | pseudonym changes, mix zone entries, time silent, certificate refill, links (correct and wrong, per technique), tracks; then per vehicle, every link scored against ground truth, wrong links by vehicle pair, what each track contains (with the same *Most Frequent* and *Station predictions in actual order across identity changes* columns as the *Results* tab), observations |
-| 4. Cost of the pseudonym changes | what each change cost against what the eavesdropper made of it: tracking success, time followed, synchronized changes, pseudonym lifetime, reception gap, CAMs missing, stale time, delivery ratio, position error during gaps (with recorded positions), ghost time, history lost, certificate overhead and pool storage; per vehicle; gap by the eavesdropper's outcome; the longest gaps, each marked whether its silent period and the CAM timer explain it or an outage caused it; the outages, if any ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
+| 4. Cost of the pseudonym changes | what each change cost against what the eavesdropper made of it: tracking success, time followed, synchronized changes, pseudonym lifetime, reception gap, CAMs missing, stale time, delivery ratio, position error during gaps (with recorded positions), ghost time, history lost, certificate overhead and pool storage; per vehicle; gap by the eavesdropper's outcome; the longest gaps, each marked whether its silent period and the CAM timer explain it or an outage caused it; the outages, if any; at the receivers (section 4.5, with the collector, the warning probe or recorded positions): verification failures, late and lost warnings, conflict exposure ([web UI](../operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)) |
 | 5. Conclusion | the result in a few sentences, with the chance level for comparison and the cost |
 | 6. Limitations of this run | those that follow from the run's setup |
 | 7. Suggested next runs | suggestions chosen by rule, see [below](#suggested-next-runs) |
@@ -172,6 +172,12 @@ The shipped rules, by priority:
 | `pattern-reversible` | 8 or more wrong links, 80 % of them explained by one fixed pairing | random turns or uneven arrivals |
 | `starved` | changes refused for lack of certificates | a larger `refill_at` or `batch` |
 | `outages` | three or more changes fell into an outage of the host or receiver | checking the host's kernel log, and a rerun |
+| `denm-id-leak` | a probe DENM carried the sender's configured stationId after a change | a station image with the DENM stationId fix |
+| `warnings-lost` | silent periods dropped warning deliveries | a shorter silent period, or ending it for a warning |
+| `warnings-delayed` | silent periods delayed warning deliveries, none lost | the same |
+| `warnings-unexplained` | warnings late or lost beyond the sender's silent period | checking the logs before comparing costs |
+| `verify-failures` | messages failed verification within 5 s after a receiver first heard a new identity | looking into the certificate checks |
+| `conflicts-missed` | conflicts entirely in stale time | weighing the silent periods against the exposure |
 | `unexplained-gaps` | a change left a reception gap longer than its silent period and the CAM timer explain | checking the logs before comparing costs |
 | `silence-without-privacy` | silent 5 % of the time or more, yet half or more of the changes followed | a mix zone or a dynamic mix zone |
 | `timing-leak` | 5 or more timing links, half or more correct and above chance | an image that rephases the CAM timer |
@@ -210,6 +216,9 @@ Facts (all numbers; 0 where the run has no eavesdropper):
 | `cost.outages`, `cost.outage_s`, `cost.outage_changes` | outages of the host or receiver, their total length, and the changes in them |
 | `cost.positions`, `cost.pos_error_m_p95`, `cost.pos_error_m_p95_extended` | true positions recorded (1); the 95th percentile of the position error during gaps, last known and extended |
 | `cost.ghost_ms_mean`, `cost.followed_s_max`, `cost.followed_m_max` | mean ghost time per change (1.1 s neighbour-table timeout); the longest time and distance the eavesdropper followed a vehicle |
+| `cost.verify_available`, `cost.verify_failed`, `cost.verify_failed_after_change` | the collector recorded the receptions (1); messages that failed verification, in the run and within 5 s after a receiver first heard a new identity |
+| `cost.denm_available`, `cost.denm_triggers`, `cost.denm_deliveries`, `cost.denm_lost`, `cost.denm_delayed`, `cost.denm_lost_in_silence`, `cost.denm_delay_ms_max`, `cost.denm_unexplained`, `cost.denm_id_leaks` | the warning probe ran (1); DENMs triggered, (DENM, receiver) pairs, lost, delayed (first copy missed), lost in a silent period, the longest delay, late or lost beyond the silent period, and DENMs with the configured stationId after a change |
+| `cost.conflicts_available`, `cost.conflicts`, `cost.conflict_exposure_s`, `cost.conflict_missed` | conflicts computed (1, needs recorded positions); conflicts (true TTC below 4 s, per vehicle's view of the other), the time in them with stale or misleading information, and those entirely in stale time |
 | `identifier.*`, `position.*`, `timing.*` | per technique: `links`, `correct`, `correct_share` |
 | `pattern.explained`, `pattern.share`, `pattern.pairings` | wrong links one fixed pairing explains, as a share of the wrong links, and the number of pairings |
 | `followed.longest`, `tracks`, `tracks.mixed` | longest correct chain; vehicle tracks, and those joining several vehicles |

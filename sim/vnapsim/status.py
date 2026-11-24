@@ -31,6 +31,7 @@ class Simulation:
         self.mobility = None  # mobility client (position updates on the control channel)
         self.pki = None       # the run's PKI service (certificate authority, batch refill)
         self.observers = []  # passive listeners (eavesdropper) on the simulation network
+        self.collector = None  # verification collector and warning probe (the stations' brokers)
         self.networks = {}
         members = {}
         for net in (lan, ctl):
@@ -62,6 +63,8 @@ class Simulation:
                 self.pki = info
             elif role == "eavesdropper" and name in members.get(lan, ()):
                 self.observers.append(info)
+            elif role == "collector" and name in members.get(lan, ()):
+                self.collector = info
             elif name in members.get(ctl, ()) and "broker" in cmd:
                 self.broker = info
             elif name in members.get(ctl, ()) and "client" in cmd:
@@ -190,6 +193,22 @@ def observer_reports(sim):
     return reports
 
 
+def collector_report(sim):
+    """The collector's state, and how much it recorded so far (lines of its two logs)."""
+    info = sim.collector
+    if not info:
+        return None
+    name = Simulation.name(info)
+    rep = {"name": name, "state": info["State"]["Status"], "ip": sim.ip(info, sim.lan),
+           "probe": bool(json.loads(env_of(info).get("COLLECTOR_CONFIG", "{}")).get("probe"))}
+    if rep["state"] == "running":
+        out = docker("exec", name, "sh", "-c", "wc -l < /logs/receptions.jsonl; wc -l < /logs/probe.jsonl 2>/dev/null || echo 0",
+                     check=False).split()
+        if len(out) == 2 and all(x.isdigit() for x in out):
+            rep["receptions"], rep["probe_records"] = int(out[0]), int(out[1])
+    return rep
+
+
 def build_status(sim):
     labels = {}
     for info in [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.stations:
@@ -277,6 +296,7 @@ def build_status(sim):
         "stations": stations,
         "control": control,
         "observers": observer_reports(sim),
+        "collector": collector_report(sim),
         "disk": {"free_gb": round(free_gb, 1), "low": free_gb < DISK_WARN_GB},
         "warnings": warnings,
     }

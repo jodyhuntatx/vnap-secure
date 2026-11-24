@@ -42,6 +42,48 @@ title = "Rerun on a quieter host."
 text = "The host stalled or the receiver heard nothing for {cost.outage_s:.0f} s in {cost.outages} stretch(es), and {cost.outage_changes} pseudonym change(s) fell into them (section 4.4). Those changes are left out of the cost figures, but the eavesdropper's linking around them is not reliable. Check the host's kernel log for disk timeouts (nvme ... timeout) or network restarts, and rerun."
 
 [[rule]]
+id = "denm-id-leak"
+priority = 95
+when = ["cost.denm_id_leaks>=1"]
+title = "Rerun with a station image that changes the DENM stationId."
+text = "{cost.denm_id_leaks} of the warning probe's DENMs carried the sender's configured stationId after a pseudonym change (section 4.5). They link the vehicle's pseudonyms for anyone listening, so the privacy result of this run is not valid. Use a station image built with the DENM stationId fix (CHANGELOG, 2026-11-24)."
+
+[[rule]]
+id = "warnings-lost"
+priority = 80
+when = ["cost.denm_available==1", "cost.denm_lost_in_silence>=1"]
+title = "Weigh the lost warnings."
+text = "Silent periods dropped {cost.denm_lost_in_silence} warning deliveries of {cost.denm_deliveries}, and delayed others by up to {cost.denm_delay_ms_max:.0f} ms (section 4.5). Compare a shorter silent period, or a variant that ends the silence or exempts warnings when one has to go out."
+
+[[rule]]
+id = "warnings-delayed"
+priority = 78
+when = ["cost.denm_available==1", "cost.denm_lost_in_silence==0", "cost.denm_delayed>=1"]
+title = "Weigh the delayed warnings."
+text = "Silent periods held back {cost.denm_delayed} of {cost.denm_deliveries} warning deliveries, by up to {cost.denm_delay_ms_max:.0f} ms (section 4.5); none was lost, because the DENMs were repeated for longer than the silence lasted. Compare a shorter silent period, or a variant that ends the silence when a warning has to go out."
+
+[[rule]]
+id = "warnings-unexplained"
+priority = 76
+when = ["cost.denm_available==1", "cost.denm_unexplained>=1"]
+title = "Look into the late or lost warnings."
+text = "{cost.denm_unexplained} warning deliveries were late or lost beyond what the sender's silent period explains (section 4.5). Check the sender's log for DENM encoding errors and the receivers' logs before comparing this run's cost with others."
+
+[[rule]]
+id = "verify-failures"
+priority = 72
+when = ["cost.verify_available==1", "cost.verify_failed_after_change>=1"]
+title = "Look into the verification failures after changes."
+text = "{cost.verify_failed_after_change} messages failed verification within 5 s after a receiver first heard a vehicle's new identity ({cost.verify_failed} in the whole run, section 4.5). A receiver that cannot check a new certificate discards the vehicle's messages until it can."
+
+[[rule]]
+id = "conflicts-missed"
+priority = 70
+when = ["cost.conflicts_available==1", "cost.conflict_missed>=1"]
+title = "Conflicts fell into stale time."
+text = "{cost.conflict_missed} of {cost.conflicts} conflicts (true time-to-collision below 4 s) lay entirely in time when one vehicle's information about the other was stale, {cost.conflict_exposure_s:.1f} s of exposure in all (section 4.5). Where conflicts and silent periods meet, typically at a crossing with a mix zone, compare the silent periods against this exposure."
+
+[[rule]]
 id = "unexplained-gaps"
 priority = 75
 when = ["cost.available==1", "cost.unexplained_gaps>=1"]

@@ -6,9 +6,11 @@ A run is a set of containers on two Docker networks of its own:
 
 ```
  message network vanetzalan0[-iN]  (V2X link: GeoNetworking frames)
-   ┌─────┐   ┌──────┐ ┌──────┐   ┌──────────────┐
-   │ RSU │   │ OBU1 │ │ OBU2 │…  │ eavesdropper │  raw socket, sees only frames
-   └─────┘   └──┬───┘ └──┬───┘   └──────────────┘
+   ┌─────┐   ┌──────┐ ┌──────┐   ┌──────────────┐ ┌───────────────┐
+   │ RSU │   │ OBU1 │ │ OBU2 │…  │ eavesdropper │ │ collector     │ MQTT to each station's broker:
+   └─────┘   └──┬───┘ └──┬───┘   └──────────────┘ │ (+ probe)     │ receptions, probe DENMs
+                │        │       raw socket,      └───────────────┘
+                │        │       GeoNetworking frames only
                 │        │       second interface of moving or pseudonym stations
  control network vnapctl0[-iN]
    ┌───────────────┐  ┌──────────────┐  ┌─────────────────┐  ┌──────────────┐
@@ -21,6 +23,12 @@ A run is a set of containers on two Docker networks of its own:
 - **Stations** run the patched `socktap` (`vnap:latest`), each with its embedded MQTT broker
   for application messages (`vanetza/in|out|own/*`). Stations with pseudonyms, movement or
   refill also join the control network, on a separate MQTT connection.
+- **Collector:** with an eavesdropper or a `[probe]`, a helper on the message network
+  subscribes to every station's embedded broker and records what the station received, with
+  its security report; the warning probe in it publishes DENMs on chosen stations'
+  `vanetza/in/denm`. Its MQTT runs over IP on the same bridge, which the eavesdropper does
+  not see: its raw socket takes only GeoNetworking frames (ethertype 0x8947), as a radio
+  receiver would.
 - **Control network:** carries pseudonym change events and answers, position updates and
   certificate batch requests ([control channels](reference/control-channels.md)). RSUs and
   the eavesdropper are not on it.
@@ -36,6 +44,7 @@ A run is a set of containers on two Docker networks of its own:
 | Party | Can see | Cannot see |
 |---|---|---|
 | Eavesdropper | frames on the message network | MQTT, control network, keys, ground truth |
+| Collector | each station's application messages on its embedded broker (receptions, security reports) | control network, keys, certificates |
 | Station | its own keys and certificates, the public certificates | CA keys, other stations' files |
 | Per-run PKI (serving) | CA keys, public material, batch state | vehicles' caterpillar and AT private keys (station key derivation) |
 | Control broker clients | the topics their account allows | (one shared account per run; no TLS) |

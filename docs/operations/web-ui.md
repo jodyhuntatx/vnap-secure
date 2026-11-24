@@ -163,7 +163,18 @@ stopped ticking. Changes in an outage are marked *outage*, and gaps, stale time 
 leave that time out. Rerun when the outages cover much of the run; see
 [troubleshooting](troubleshooting.md#outages-in-a-runs-results) for the host side.
 
-Not measured yet: conflict exposure, verification failures, warnings and CPU load.
+**At the receivers.** With the collector (on with an eavesdropper), the figures and tables add
+what every station made of the messages it received: messages that failed verification, in
+the run and within 5 s after the receiver first heard a vehicle's new identity. With a
+[warning probe](../reference/scenario-format.md) (`[probe]`), the warnings lost and delayed,
+and a table of the late and lost ones with the silence left when each was triggered: a
+warning triggered in the sender's silent period arrives with the first copy after it, or not
+at all. A red note marks DENMs that still carried the configured stationId after a change
+(a station image without the DENM fix): the run's privacy result is then not valid. With
+recorded positions, *conflict exposure*: the time two vehicles' true time-to-collision was
+below 4 s while one's information about the other was stale or showed no conflict.
+
+Not measured yet: CPU load and the stations' operation counts.
 
 The summary report has the same figures in its section 4, *Cost of the pseudonym changes*
 ([summary report](../functional/eavesdropper-and-scoring.md#summary-report)).

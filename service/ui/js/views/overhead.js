@@ -30,6 +30,12 @@ export function overheadPanel(panel, o) {
       "95th percentile of the distance between a receiver's last known position of the vehicle and its true position, during reception gaps; extended: the last position moved on by speed and heading") : null,
     recv ? figure(pct(s.full_cert_share), `CAMs with the full certificate (mean ${s.cam_bytes_mean ?? "–"} bytes)`,
       `the rest are signed with the certificate's 8-byte digest${s.cert_bytes ? ` instead of the ${s.cert_bytes}-byte certificate` : ""}`) : null,
+    o.warnings ? figure(`${o.warnings.lost} lost`, `warnings of ${o.warnings.deliveries} (${o.warnings.delayed} delayed, at most ${ms(o.warnings.delay_ms_max)})`,
+      "the warning probe's DENMs at each receiver: a copy sent in the sender's silent period is dropped, so the warning arrives late or not at all") : null,
+    o.verification ? figure(String(o.verification.failed), `messages failed verification (${o.verification.failed_after_change} after a change)`,
+      `each station's security report for every message it received; after a change: within ${o.verification.window_s} s of first hearing the new identity`) : null,
+    o.conflicts ? figure(`${o.conflicts.exposure_s} s`, `conflict exposure of ${o.conflicts.conflict_s} s in conflict (${o.conflicts.missed} of ${o.conflicts.conflicts} conflicts missed)`,
+      `time a vehicle's true time-to-collision with another was below ${o.conflicts.ttc_s} s while its information about the other was stale or showed no conflict`) : null,
     o.outages && o.outages.length ? figure(String(o.outages.length), `outage${o.outages.length === 1 ? "" : "s"}, ${Math.round(outageS)} s (${s.outage_changes} change${s.outage_changes === 1 ? "" : "s"} left out)`,
       "stretches in which the receiver heard nothing although a station should have sent, or the position recorder stalled: the host, not the stations. Gaps, stale time and delivery leave them out") : null));
   if (o.outages && o.outages.length) {
@@ -37,6 +43,10 @@ export function overheadPanel(panel, o) {
     panel.append(h("p", { class: outageS > 0.05 * (o.duration_s || 0) ? "errors" : "muted" }, `The host stalled or the receiver heard nothing for ${Math.round(outageS)} s `,
       `(${o.outages.map((x) => `${x.from.toFixed(0)}–${x.to.toFixed(0)} s`).slice(0, 6).join(", ")}${o.outages.length > 6 ? ", …" : ""}). `,
       "Changes in those stretches are marked \"outage\" and left out of the figures; rerun if they cover much of the run."));
+  }
+  if (o.warnings && o.warnings.id_leaks) {
+    panel.append(h("p", { class: "errors" }, `${o.warnings.id_leaks} warning DENMs carried the sender's configured stationId after a pseudonym change. `,
+      "They link the vehicle's pseudonyms, so this run's privacy result is not valid: the station image lacks the DENM stationId fix."));
   }
   if (recv && o.duration_s) panel.append(timeline(o, short));
   panel.append(h("h3", {}, "Changes"), changesTable(o.changes, short, recv));
@@ -60,9 +70,32 @@ export function overheadPanel(panel, o) {
       v.followed_s_max === null || v.followed_s_max === undefined ? "–" : `${v.followed_s_max} s${v.followed_m_max ? ` (${Math.round(v.followed_m_max)} m)` : ""}`,
       v.pool_peak ? `${v.pool_peak}${v.pool_bytes ? ` (${(v.pool_bytes / 1024).toFixed(1)} KiB)` : ""}` : "–",
       v.refill && v.refill.batches ? `${v.refill.batches} batch(es), ${v.refill.refresh_ms_mean} ms` : "–"])));
-  panel.append(h("p", { class: "muted" }, o.positions ? "" : "No recorded true positions in this run, so no position error. ",
-    "Not measured yet: conflict exposure, verification failures, warnings and CPU load. ",
-    "See Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx."));
+  if (o.verification || o.warnings) panel.append(...receivers(o, short, ms));
+  panel.append(h("p", { class: "muted" }, o.positions ? "" : "No recorded true positions in this run, so no position error or conflict exposure. ",
+    o.verification ? "" : "No collector recording, so no verification at the receivers. ",
+    o.warnings ? "" : "No warning probe in this run ([probe] in the scenario). ",
+    "Not measured yet: CPU load and the stations' operation counts. See Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx."));
+}
+
+// what each station made of the messages it received, and the warnings that came late or not at all
+function receivers(o, short, ms) {
+  const out = [];
+  const v = o.verification, w = o.warnings;
+  if (v) {
+    out.push(h("h3", {}, "Verification at the receivers"), table(["Receiver", "Received", "Verified", "Failed", "Unsecured", "Reports"],
+      v.receivers.map((r) => [short(r.receiver), r.received, r.success, r.failed, r.unsecured,
+        Object.entries(r.reports).map(([k, n]) => `${k} ${n}`).join(", ") || "–"])));
+  }
+  if (w && w.worst && w.worst.length) {
+    out.push(h("h3", {}, "Late and lost warnings"), h("p", { class: "muted" },
+      `${w.on_time} of ${w.deliveries} deliveries on time (the first copy arrived); ${w.in_silence} triggered during the sender's silent period. `,
+      w.unexplained ? `${w.unexplained} late or lost beyond what the silent period explains.` : "Every delay and loss is explained by a silent period."),
+    table(["Time", "Sender", "Receiver", "Silence left", "Delay", "Explained"],
+      w.worst.map((r) => [r.t === null ? "–" : `${r.t.toFixed(1)} s`, short(r.sender), short(r.receiver),
+        r.silent_left_ms ? `${r.silent_left_ms} ms` : "–", r.lost ? badge("lost", "bad") : ms(r.delay_ms),
+        r.explained ? "yes" : badge("no", "bad")])));
+  }
+  return out;
 }
 
 // timeline class and badge class per outcome: kept (green), followed (red), confused (the zone colour, apart from silence)

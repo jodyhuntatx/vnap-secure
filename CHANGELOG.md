@@ -20,6 +20,41 @@ behaviour; how it got there is recorded here.
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
 
+## 2026-11-24: phase 2 of the overhead design: what the receivers knew
+
+Phase 2 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`:
+- **Collector** (`vnap-collector`, `sim/images/collector/`): with an eavesdropper or a
+  `[probe]`, a helper on the message network subscribes to every station's embedded broker and
+  records each received CAM and DENM with the station's security report
+  (`collector-logs.tar`: `receptions.jsonl`). It starts before the control client, so the
+  first change is covered. About 1 % CPU and 12 MB per hour for five stations.
+- **Warning probe** (`[probe]`, in the collector): DENMs on the vehicles at random times (about
+  one per `interval_s`), each repeated every `repeat_interval_s` for `repeat_duration_s` as the
+  DEN basic service does (`probe.jsonl`). The station fills in its own position.
+- **Analysis** (`sim/vnapsim/receivers.py`, `overhead.json` version 3): verification failures
+  at the receivers, in the run and within 5 s after a receiver first hears a new identity; per
+  DENM and receiver the delay of the first copy or its loss, whether the sender's silent period
+  explains it, and DENMs that still carry the configured stationId after a change (identity
+  leaks); conflict exposure from the recorded positions (true TTC below 4 s, centres within
+  4 m) with missed conflicts.
+- **`metrics.json` version 2:** the receivers' `<station>.<message>.rx`, `.success_rate`,
+  `.failed` from the collector, as a live check has them, and `verify.*`, `denm.*`,
+  `conflict.*`.
+- **Report** section 4.5, **Results tab** figures and tables, rules `denm-id-leak`,
+  `warnings-lost`, `warnings-delayed`, `warnings-unexplained`, `verify-failures`,
+  `conflicts-missed`.
+- **Done-when check** of the design, on `linkability:silent` (3–13 s silence, image
+  `vnap:dev-denm`): of 42 probe DENMs, the 15 triggered in a silent period were delayed (by the
+  silence left, rounded up to the next repetition), the 27 others arrived within 30 ms; none
+  unexplained. On `crossing` (4 OBUs, 6–12 s silence in the mix zone): 572 deliveries, 476 on
+  time, 84 delayed by up to 9 s, 12 lost where the silence outlasted the 10 s of repetitions;
+  10 948 messages verified, none failed; 42 conflicts, 73 of their 126 s with stale or
+  misleading information, 16 missed entirely.
+- **Found on the way:** vanetza's JSON takes `TimestampIts` in seconds since 2004 (it scales by
+  1000); milliseconds overflow the field and the station refuses the DENM.
+- **Caveat:** the mobility client drives on the road's centre line, so opposite directions on
+  one arm meet head-on in the TTC; conflict counts include those passes.
+
 ## 2026-11-24: DENMs carry the current stationId
 
 Injected DENMs (`vanetza/in/denm`) were sent with the station's configured stationId in the

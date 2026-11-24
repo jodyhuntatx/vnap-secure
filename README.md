@@ -44,6 +44,7 @@ project, included as a git submodule.
 | Per-run PKI (`vnap-pki`) | the run's CA hierarchy; issues butterfly authorization tickets in batches | [certificate refill](docs/functional/certificate-refill.md) |
 | Mobility client (`vnap-mobility`) | drives vehicles along routes or random-turn crossings; mix zones | [vehicle movement](docs/functional/vehicle-movement.md) |
 | Eavesdropper (`vnap-eavesdropper`) | passive tracking attacker; scored against ground truth | [eavesdropper and scoring](docs/functional/eavesdropper-and-scoring.md) |
+| Collector (`vnap-collector`) | records what every station receives, with its security report; the warning probe sends DENMs | [scenario format](docs/reference/scenario-format.md), [vnapctl](docs/operations/vnapctl.md#saving-a-runs-results) |
 | `vnapctl` / `vnapsim` | scenario validation, start/stop, status, events, checks | [vnapctl](docs/operations/vnapctl.md) |
 | Service | accounts, runs, live view, control, results, backups; web UI | [deployment](docs/operations/service-deployment.md), [web UI](docs/operations/web-ui.md) |
 

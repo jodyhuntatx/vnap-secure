@@ -17,7 +17,7 @@ import tomllib
 from datetime import datetime, timezone
 
 from .scenario import load_scenario
-from .common import current_user, CITS_PKI_DIR, CITS_PKI_FOUND, IMAGES_DIR, ORIGIN, cits_pki_version, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker, progress
+from .common import current_user, CITS_PKI_DIR, CITS_PKI_FOUND, IMAGES_DIR, ORIGIN, cits_pki_version, COLLECTOR_IMAGE, CTL_IMAGE, EAVESDROPPER_IMAGE, HERE, MOBILITY_IMAGE, MQTT_IMAGE, PKI_IMAGE, ScenarioError, debug, docker, progress
 from .status import Simulation, build_status
 
 
@@ -149,6 +149,7 @@ def context_hash(directory, exclude=(), h=None):
 # hour of frames and positions, so the cap is only a guard
 LOGS_TMPFS = "/logs:size=1g"
 EAVESDROPPER_READY_S = 20   # it loads its ASN.1 codecs before it listens
+COLLECTOR_READY_S = 30      # it subscribes once the stations' embedded brokers are up
 
 
 def ensure_image(r, image, subdir, exclude=(), extra=None, labels=None):
@@ -221,7 +222,7 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
     if not dry_run:
         progress(f"scenario {sc['name']}: checking that {lan} is free ...")
     sim = Simulation(lan, ctl)
-    if sim.running or sim.broker or sim.client or sim.mobility:
+    if sim.running or sim.broker or sim.client or sim.mobility or sim.collector:
         s = build_status(sim)
         who = s["run"]
         raise ScenarioError(f"a simulation is already running on {lan}: scenario {who['scenario'] or '(unlabelled)'}"
@@ -230,6 +231,7 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
     names = [s["name"] for s in sc["stations"]] + ([sc["control"]["broker"]["name"], sc["control"]["client"]["name"]]
                                                      if sc["control"] else []) \
         + ([sc["eavesdropper"]["name"]] if sc["eavesdropper"] else []) \
+        + ([sc["collector"]["name"]] if sc.get("collector") else []) \
         + ([sc["control"]["mobility"]["name"]] if sc["control"] and sc["control"].get("mobility") else []) \
         + ([sc["pki"]["name"]] if sc["pki"] else [])
     taken = [n for n in names if container_exists(n)]
@@ -325,6 +327,26 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
                 ctl_ip = str(ipaddress.ip_network(c["subnet"]).network_address + int(host))
                 r.run(["network", "connect", "--ip", ctl_ip, ctl, st["name"]])
             r.run(["start", st["name"]])
+        co = sc.get("collector")
+        if co:
+            collector_image = ensure_image(r, COLLECTOR_IMAGE, "collector")
+            if not dry_run:
+                progress(f"starting the collector {co['name']}" + (" with the warning probe" if co["probe"] else "") + " ...")
+            config = {"stations": [{"name": st["name"], "ip": st["ip"], "station_id": st["station_id"]} for st in sc["stations"]],
+                      "topics": ["vanetza/out/cam", "vanetza/out/denm"],
+                      # the trigger times: a fixed seed repeats them; otherwise a new one, recorded in the config
+                      "probe": co["probe"] and {**co["probe"], "seed": co["probe"]["seed"] if co["probe"]["seed"] is not None
+                                                else random.randrange(1 << 31)}}
+            # only the message network, and only the stations' own brokers: no control network, no keys
+            r.run(["run", "-d", "--name", co["name"], "--network", lan, "--ip", co["ip"], "--tmpfs", LOGS_TMPFS,
+                   *run_labels(sc, run_id, "collector"),
+                   "-e", "COLLECTOR_CONFIG=" + json.dumps(config, separators=(",", ":")), collector_image])
+            r.created_containers.append(co["name"])
+            if not dry_run:
+                # the changes start with the control client: the receivers' records should cover the first one
+                progress(f"waiting for the collector {co['name']} to subscribe ...")
+                if not wait_for_log(co["name"], "[COLLECTOR] live", COLLECTOR_READY_S):
+                    progress(f"the collector has not reached every station's broker after {COLLECTOR_READY_S} s; continuing")
         if c:
             cl = c["client"]
             if not dry_run:
@@ -503,7 +525,7 @@ def scenario_down(lan, ctl, force=False, dry_run=False, keep_networks=False):
     if not dry_run:
         progress(f"looking for the simulation on {lan} ...")
     sim = Simulation(lan, ctl)
-    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki) if c] + sim.observers
+    containers = sim.stations + [c for c in (sim.broker, sim.client, sim.mobility, sim.pki, sim.collector) if c] + sim.observers
     # probes and helpers from this tool are not part of the run
     names = [Simulation.name(c) for c in containers]
     owners = {(c["Config"].get("Labels") or {}).get("vnap.started_by") for c in containers}
