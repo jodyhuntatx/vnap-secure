@@ -1,6 +1,14 @@
 --- a/vanetza/security/straight_verify_service.cpp
 +++ b/vanetza/security/straight_verify_service.cpp
-@@ -13,6 +13,7 @@
+@@ -2,6 +2,7 @@
+ #include <vanetza/common/position_provider.hpp>
+ #include <vanetza/common/runtime.hpp>
+ #include <vanetza/security/backend.hpp>
++#include <vanetza/security/op_counters.hpp>
+ #include <vanetza/security/public_key.hpp>
+ #include <vanetza/security/straight_verify_service.hpp>
+ #include <vanetza/security/v2/basic_elements.hpp>
+@@ -13,6 +14,7 @@
  #include <vanetza/security/v3/asn1_conversions.hpp>
  #include <vanetza/security/v3/asn1_types.hpp>
  #include <vanetza/security/v3/certificate_cache.hpp>
@@ -8,7 +16,7 @@
  #include <vanetza/security/v3/certificate_provider.hpp>
  #include <vanetza/security/v3/certificate_validator.hpp>
  #include <vanetza/security/v3/hash.hpp>
-@@ -106,6 +107,15 @@
+@@ -106,6 +108,16 @@
      m_context_v3.m_sign_policy = policy;
  }
  
@@ -16,6 +24,7 @@
 +{
 +    if (trust_store) {
 +        m_context_v3.m_chain_verifier = std::make_shared<v3::CertificateChainVerifier>(m_backend, *trust_store);
++        m_context_v3.m_chain_verifier->count_into(&op_counters().chain_check);
 +    } else {
 +        m_context_v3.m_chain_verifier.reset();
 +    }
@@ -24,7 +33,7 @@
  VerifyConfirm StraightVerifyService::verify(const VerifyRequest& request)
  {
      struct visitor : public boost::static_visitor<VerifyConfirm>
-@@ -501,6 +511,23 @@
+@@ -501,6 +513,23 @@
              return confirm;
          }
      }

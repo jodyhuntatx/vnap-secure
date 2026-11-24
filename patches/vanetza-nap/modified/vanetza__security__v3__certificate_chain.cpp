@@ -201,7 +201,10 @@ CertificateValidity CertificateChainVerifier::verify(const asn1::EtsiTs103097Cer
         return aa_validity;
     } else if (is_verified(*at_digest)) {
         return CertificateValidity::valid();
-    } else if (!validity_within_issuer(at, aa_asn)) {
+    }
+
+    OpTimer timer(m_counter);
+    if (!validity_within_issuer(at, aa_asn)) {
         return CertificateInvalidReason::Inconsistent_With_Signer;
     } else if (!verify_certificate_signature(m_backend, at, aa_asn)) {
         return CertificateInvalidReason::Missing_Signature;

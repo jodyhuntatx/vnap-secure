@@ -11,6 +11,7 @@ add_vanetza_component(security
     hmac.cpp
     id_change_service.cpp
     key_type.cpp
+    op_counters.cpp
     peer_request_tracker.cpp
     secured_message.cpp
     sha.cpp

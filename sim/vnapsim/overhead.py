@@ -24,7 +24,9 @@ stretches where the reference receiver heard nothing from stations that were not
 recorder stalled (the host, not the stations; gaps that overlap one are not counted against
 the change). Phase 2 (vnapsim.receivers): with the collector's recording (collector-logs.tar), the
 receivers' verification failures and the warning probe's delays and losses; with recorded positions,
-conflict exposure. Not yet: CPU and the stations' operation counts (phases 3 and 4).
+conflict exposure. Phase 4 (vnapsim.counters): with station images from vnap:r2-p20, the stations'
+security operation counts and times, per change (the ID change, the neighbours' chain checks) and per
+refill (key derivations, batch checks). Not yet: CPU (phase 3).
 
   python3 -m vnapsim.overhead <results dir> [--json] [--write]
 """
@@ -41,9 +43,10 @@ import tarfile
 from datetime import datetime
 
 from .logs import RE_CHANGED, RE_IDC_SILENT, RE_POOL_START, RE_REJECTED
+from . import counters as op_counters
 from . import receivers
 
-VERSION = 3
+VERSION = 4
 STALE_S = 1.0          # the longest CAM interval of EN 302 637-2
 SYNC_WINDOW_S = 2.0    # changes of two vehicles this close count as synchronized
 GAP_MARK = 1.5         # timeline: inter-CAM gaps longer than this many median intervals are drawn
@@ -438,8 +441,12 @@ def analyse(results_dir):
     warnings = receivers.warnings(probe, receptions or [], id_owner, configured, history, outage_times) if probe else None
     conflicts = receivers.conflicts(tracks, by_vehicle, {sid: n for n, sid in station_id.items()}, STALE_S,
                                     outage_times, extend) if tracks and frames else None
+    # phase 4: the stations' operation counters
+    ops = op_counters.analyse(logs, [{"vehicle": name, "t": c["t"], "silent_ms": c["silent_ms"]}
+                                     for name, h in history.items() for c in h["changes"]])
     for rows, keys in (((verification or {}).get("changes", []), ("t",)), ((warnings or {}).get("worst", []), ("t",)),
-                       ((conflicts or {}).get("events", []), ("from", "to"))):
+                       ((conflicts or {}).get("events", []), ("from", "to")),
+                       ((ops or {}).get("changes", []), ("t",)), ((ops or {}).get("refills", []), ("t",))):
         for r in rows:
             for k in keys:
                 r[k] = rel(r[k])
@@ -504,9 +511,14 @@ def analyse(results_dir):
             "conflicts": conflicts["conflicts"] if conflicts else None,
             "conflict_exposure_s": conflicts["exposure_s"] if conflicts else None,
             "conflict_missed": conflicts["missed"] if conflicts else None,
+            **{key: (ops["summary"][key] if ops else None)
+               for key in ("id_change_us_mean", "id_change_us_max", "chain_checks_per_change", "receivers_per_change",
+                           "unknown_signer_per_change", "chain_check_us_mean", "chain_check_us_per_change",
+                           "derivation_us_mean", "batch_check_us_mean", "sign_us_mean", "verify_us_mean")},
         },
         "collector": "recorded" if receptions is not None else None,
         "verification": verification, "warnings": warnings, "conflicts": conflicts,
+        "counters": ops,
         "outages": [{"from": rel(a), "to": rel(b), "s": r3(b - a), "seen_by": by} for a, b, by in outages],
         "vehicles": per_vehicle, "changes": changes, "timeline": timeline,
     }
@@ -579,6 +591,16 @@ def format_text(result):
     if c:
         lines.append(f"conflicts (TTC < {c['ttc_s']:g} s): {c['conflicts']}, {c['conflict_s']} s; exposure {c['exposure_s']} s, "
                      f"missed {c['missed']}")
+    o = result.get("counters")
+    if o:
+        t = o["summary"]
+        lines += [f"operations: ID change mean {num(t['id_change_us_mean'], 'us')} (max {num(t['id_change_us_max'], 'us')}); "
+                  f"per change {num(t['chain_checks_per_change'], 'chain check(s)')} at {num(t['receivers_per_change'], 'receiver(s)')}, "
+                  f"{num(t['chain_check_us_per_change'], 'us')}; unknown signers {num(t['unknown_signer_per_change'], 'per change')}",
+                  f"  signing {num(t['sign_us_mean'], 'us')} per message, verifying {num(t['verify_us_mean'], 'us')}, "
+                  f"chain check {num(t['chain_check_us_mean'], 'us')}; {t['refills']} refill(s): "
+                  f"{t['derivations']} key derivation(s) ({num(t['derivation_us_mean'], 'us')} each), "
+                  f"{t['batch_checks']} batch check(s) ({num(t['batch_check_us_mean'], 'us')} each)"]
     if result.get("positions"):
         lines.append(f"position error during gaps p95 {num(s['pos_error_m_p95'], 'm')} (last known), "
                      f"{num(s['pos_error_m_p95_extended'], 'm')} (extended)")

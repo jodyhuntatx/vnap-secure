@@ -35,6 +35,7 @@ build. It applies to upstream vanetza-nap `release2-main` at the commit in
 | [Mobility and CAM](mobility-and-cam.md) | Position control channel | position from an MQTT topic at runtime | simulation-specific |
 | | CAM kinematics | heading, speed and heading confidence, acceleration, yaw rate in the CAM's units | candidate |
 | | CAM timer rephase | the CAM timer restarts at a random phase on every full ID change | simulation-specific |
+| [Operation counters](operation-counters.md) | Security operation counters | counts and times of signatures, verifications, chain checks, key derivations and ID changes, logged every second | simulation-specific |
 
 "Candidate" means the change fixes upstream behaviour and could be proposed upstream as is.
 "Simulation-specific" means it exists for this study (control channels, PKI protocol).
@@ -49,8 +50,8 @@ is missing here.
 | `Dockerfile` | | build and container |
 | `entrypoint.sh` | | build and container; pseudonym and ID change; certificate refill; mobility and CAM |
 | `tools/socktap/CMakeLists.txt` | | pseudonym and ID change; certificate refill; mobility and CAM |
-| `tools/socktap/main.cpp` | | thread safety; pseudonym and ID change; certificate refill; mobility and CAM |
-| `tools/socktap/security.cpp` | | certificate verification; pseudonym and ID change; certificate refill |
+| `tools/socktap/main.cpp` | | thread safety; pseudonym and ID change; certificate refill; mobility and CAM; operation counters |
+| `tools/socktap/security.cpp` | | certificate verification; pseudonym and ID change; certificate refill; operation counters |
 | `tools/socktap/security.hpp` | | pseudonym and ID change; certificate refill |
 | `tools/socktap/applications/cam_application.cpp` | | thread safety; pseudonym and ID change; mobility and CAM |
 | `tools/socktap/applications/cam_application.hpp` | | mobility and CAM |
@@ -75,7 +76,7 @@ is missing here.
 | `tools/socktap/pseudonym_channel.hpp` | new | pseudonym and ID change |
 | `tools/socktap/id_change.cpp` | new | pseudonym and ID change |
 | `tools/socktap/id_change.hpp` | new | pseudonym and ID change |
-| `tools/socktap/pki_channel.cpp` | new | certificate refill |
+| `tools/socktap/pki_channel.cpp` | new | certificate refill; operation counters |
 | `tools/socktap/pki_channel.hpp` | new | certificate refill |
 | `tools/socktap/bke.cpp` | new | certificate refill |
 | `tools/socktap/bke.hpp` | new | certificate refill |
@@ -83,15 +84,17 @@ is missing here.
 | `vanetza/asn1/cam.hpp` | | thread safety |
 | `vanetza/common/manual_runtime.cpp` | | thread safety |
 | `vanetza/common/manual_runtime.hpp` | | thread safety |
-| `vanetza/security/CMakeLists.txt` | | certificate verification; pseudonym and ID change; certificate refill |
+| `vanetza/security/CMakeLists.txt` | | certificate verification; pseudonym and ID change; certificate refill; operation counters |
 | `vanetza/security/backend_cryptopp.cpp` | | thread safety |
 | `vanetza/security/backend_cryptopp.hpp` | | thread safety |
-| `vanetza/security/straight_verify_service.cpp` | | certificate verification |
+| `vanetza/security/straight_verify_service.cpp` | | certificate verification; operation counters |
 | `vanetza/security/straight_verify_service.hpp` | | certificate verification |
-| `vanetza/security/id_change_service.cpp` | new | pseudonym and ID change |
+| `vanetza/security/id_change_service.cpp` | new | pseudonym and ID change; operation counters |
 | `vanetza/security/id_change_service.hpp` | new | pseudonym and ID change |
 | `vanetza/security/pseudonym_control.hpp` | new | pseudonym and ID change; certificate refill |
 | `vanetza/security/pseudonym_pool.hpp` | new | certificate refill |
+| `vanetza/security/op_counters.cpp` | new | operation counters |
+| `vanetza/security/op_counters.hpp` | new | operation counters |
 | `vanetza/security/v2/certificate_cache.cpp` | | thread safety |
 | `vanetza/security/v2/certificate_cache.hpp` | | thread safety |
 | `vanetza/security/v2/default_certificate_validator.cpp` | | certificate verification |
@@ -101,8 +104,8 @@ is missing here.
 | `vanetza/security/v2/pseudonym_certificate_provider.hpp` | new | pseudonym and ID change; certificate refill |
 | `vanetza/security/v3/certificate_cache.cpp` | | thread safety |
 | `vanetza/security/v3/certificate_cache.hpp` | | thread safety |
-| `vanetza/security/v3/certificate_chain.cpp` | new | certificate verification |
-| `vanetza/security/v3/certificate_chain.hpp` | new | certificate verification |
+| `vanetza/security/v3/certificate_chain.cpp` | new | certificate verification; operation counters |
+| `vanetza/security/v3/certificate_chain.hpp` | new | certificate verification; operation counters |
 | `vanetza/security/v3/persistence.cpp` | | certificate verification |
 | `vanetza/security/v3/sign_header_policy.cpp` | | thread safety |
 | `vanetza/security/v3/sign_header_policy.hpp` | | thread safety |

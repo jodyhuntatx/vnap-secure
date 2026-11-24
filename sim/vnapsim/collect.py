@@ -32,7 +32,7 @@ from .receivers import identities, read_collector
 from .scoring import score_run
 from .status import Simulation, build_status
 
-METRICS_VERSION = 2
+METRICS_VERSION = 3
 
 
 def collect(sim, out):
@@ -215,6 +215,15 @@ def write_metrics(out):
                        ("conflict.missed", s.get("conflict_missed"))):
         if value is not None:
             m[key] = value
+    for key in ("id_change_us_mean", "id_change_us_max", "chain_checks_per_change", "unknown_signer_per_change",
+                "chain_check_us_mean", "chain_check_us_per_change", "derivation_us_mean", "batch_check_us_mean",
+                "sign_us_mean", "verify_us_mean"):
+        if s.get(key) is not None:
+            m[f"ops.{key}"] = s[key]
+    for st in (o.get("counters") or {}).get("stations", []):
+        for key in ("sign_us_mean", "verify_us_mean", "chain_check_us_mean", "signs_per_s", "verifies_per_s"):
+            if st.get(key) is not None:
+                m[f"{st['station']}.ops.{key}"] = st[key]
     if o:
         m["outages"] = len(o.get("outages", []))
         m["outages.s"] = round(sum(x["s"] for x in o.get("outages", [])), 3)
@@ -225,6 +234,8 @@ def write_metrics(out):
         # rx and verification come from the stations' MQTT output: the collector's recording, else only a live check
         "not_collected": ([] if receptions else ["<station>.<message>.rx, .rx_from.*, .success_rate, .failed (no collector "
                                                  "recording: a run without [collector], or from before it)"])
+        + ([] if o.get("counters") else ["ops.*, <station>.ops.* (no [COUNTERS] lines: "
+                                                                       "a station image before vnap:r2-p20)"])
         + ["control.* (the control channel, recorded live only)"],
         "metrics": dict(sorted(m.items())),
     }

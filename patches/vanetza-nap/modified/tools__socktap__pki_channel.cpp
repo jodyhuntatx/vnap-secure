@@ -1,4 +1,5 @@
 #include "pki_channel.hpp"
+#include <vanetza/security/op_counters.hpp>
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -227,8 +228,9 @@ void PkiChannel::handle_batch(const std::string& payload)
                     batch["indices"][k].GetUint(), offset);
                 write_pkcs8_private_key(key, key_path.string());
                 fs::permissions(key_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
-                derivation_us += std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - start).count();
+                const auto took = std::chrono::steady_clock::now() - start;
+                vanetza::security::op_counters().derivation.add(took);
+                derivation_us += std::chrono::duration_cast<std::chrono::microseconds>(took).count();
             } else {
                 std::string key;
                 if (!base64_decode(secrets[k].GetString(), key)) {

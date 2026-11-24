@@ -39,7 +39,7 @@ PARTS = [
     ("Patch set", ["docs/patches/README.md", "docs/patches/build-and-container.md",
                    "docs/patches/certificate-verification.md", "docs/patches/thread-safety.md",
                    "docs/patches/pseudonym-and-id-change.md", "docs/patches/certificate-refill.md",
-                   "docs/patches/mobility-and-cam.md"]),
+                   "docs/patches/mobility-and-cam.md", "docs/patches/operation-counters.md"]),
     ("Results", ["results/README.md"]),
     ("Appendix", ["CHANGELOG.md", "sim/images/eavesdropper/asn1/README.md"]),
 ]

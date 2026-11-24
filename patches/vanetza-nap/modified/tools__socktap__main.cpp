@@ -26,11 +26,13 @@
 #include <boost/asio/signal_set.hpp>
 #include <boost/program_options.hpp>
 #include <vanetza/common/annotation.hpp>
+#include <vanetza/security/op_counters.hpp>
 #include <iostream>
 #include <prometheus/exposer.h>
 #include <unistd.h>
 #include <multi_link.hpp>
 
+#include <chrono>
 #include <thread>
 
 namespace asio = boost::asio;
@@ -45,6 +47,9 @@ int main(int argc, const char** argv)
     options.add_options()
         ("help", "Print out available options.")
         ("config,c", po::value<std::string>()->default_value("config.ini"), "Config file path")
+        ("op-counters-interval", po::value<int>()->default_value(1000),
+            "Log the security operation counters ([COUNTERS] line: count and total us of signatures, "
+            "verifications, chain checks, key derivations, ID changes) every this many ms; 0: never")
     ;
     add_positioning_options(options);
     add_security_options(options);
@@ -383,6 +388,18 @@ int main(int argc, const char** argv)
             context.enable(app.second.get());
         }
         context.start(); // worker threads wait for routers and applications to be ready
+
+        // vnap-secure: cumulative operation counters, so that the cost of each pseudonym change and
+        // refill can be read from the log (the differences between two lines)
+        const int counters_ms = vm["op-counters-interval"].as<int>();
+        if (security && counters_ms > 0) {
+            std::thread([counters_ms]() {
+                for (;;) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(counters_ms));
+                    std::cerr << ("[COUNTERS] " + security::op_counters().json() + "\n");
+                }
+            }).detach();
+        }
 
         io_context.run();
     } catch (PositioningException& e) {

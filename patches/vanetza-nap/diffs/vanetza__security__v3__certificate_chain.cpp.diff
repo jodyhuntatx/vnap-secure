@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/vanetza/security/v3/certificate_chain.cpp
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,219 @@
 +#include <vanetza/asn1/asn1c_wrapper.hpp>
 +#include <vanetza/security/backend.hpp>
 +#include <vanetza/security/v3/certificate_cache.hpp>
@@ -204,7 +204,10 @@
 +        return aa_validity;
 +    } else if (is_verified(*at_digest)) {
 +        return CertificateValidity::valid();
-+    } else if (!validity_within_issuer(at, aa_asn)) {
++    }
++
++    OpTimer timer(m_counter);
++    if (!validity_within_issuer(at, aa_asn)) {
 +        return CertificateInvalidReason::Inconsistent_With_Signer;
 +    } else if (!verify_certificate_signature(m_backend, at, aa_asn)) {
 +        return CertificateInvalidReason::Missing_Signature;

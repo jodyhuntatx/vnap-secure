@@ -11,7 +11,27 @@
  #include "security.hpp"
  #include "time_trigger.hpp"
  #include "config.hpp"
-@@ -44,6 +48,9 @@
+@@ -22,11 +26,13 @@
+ #include <boost/asio/signal_set.hpp>
+ #include <boost/program_options.hpp>
+ #include <vanetza/common/annotation.hpp>
++#include <vanetza/security/op_counters.hpp>
+ #include <iostream>
+ #include <prometheus/exposer.h>
+ #include <unistd.h>
+ #include <multi_link.hpp>
+ 
++#include <chrono>
+ #include <thread>
+ 
+ namespace asio = boost::asio;
+@@ -41,9 +47,15 @@
+     options.add_options()
+         ("help", "Print out available options.")
+         ("config,c", po::value<std::string>()->default_value("config.ini"), "Config file path")
++        ("op-counters-interval", po::value<int>()->default_value(1000),
++            "Log the security operation counters ([COUNTERS] line: count and total us of signatures, "
++            "verifications, chain checks, key derivations, ID changes) every this many ms; 0: never")
      ;
      add_positioning_options(options);
      add_security_options(options);
@@ -21,7 +41,7 @@
      add_link_layer_options(options);
  
  
-@@ -165,11 +172,18 @@
+@@ -165,11 +177,18 @@
              std::cerr << "Requested positioning method is not available\n";
              return 1;
          }
@@ -40,7 +60,7 @@
  
          metrics_t metrics_s = {};
  
-@@ -201,6 +215,49 @@
+@@ -201,6 +220,49 @@
  
          RouterContext context(mib, trigger, *positioning, security.get(), config_s.ignore_own_messages, config_s.ignore_rsu_messages, num_threads, io_context);
          context.set_link_layer(link_layer.get());
@@ -90,7 +110,7 @@
          context.require_position_fix(vm.count("require-gnss-fix") > 0);
  
          std::mutex prom_mtx; 
-@@ -214,6 +271,10 @@
+@@ -214,6 +276,10 @@
                  new CamApplication(*positioning, context.get_dccp().get_trigger().runtime(), pubsub, config_s, metrics_s, get_router(num_threads), 1, prom_mtx)
              };
              cam_app->set_interval(std::chrono::milliseconds(config_s.cam.periodicity));
@@ -101,11 +121,23 @@
              apps.emplace("cam", std::move(cam_app));
          }
  
-@@ -321,6 +382,7 @@
+@@ -321,6 +387,19 @@
              std::cout << "Enable application '" << app.first << "'...\n";
              context.enable(app.second.get());
          }
 +        context.start(); // worker threads wait for routers and applications to be ready
++
++        // vnap-secure: cumulative operation counters, so that the cost of each pseudonym change and
++        // refill can be read from the log (the differences between two lines)
++        const int counters_ms = vm["op-counters-interval"].as<int>();
++        if (security && counters_ms > 0) {
++            std::thread([counters_ms]() {
++                for (;;) {
++                    std::this_thread::sleep_for(std::chrono::milliseconds(counters_ms));
++                    std::cerr << ("[COUNTERS] " + security::op_counters().json() + "\n");
++                }
++            }).detach();
++        }
  
          io_context.run();
      } catch (PositioningException& e) {

@@ -218,7 +218,7 @@ Administrators, i.e. plain `vnapctl`, are not.
   environment variables `sim/policy.toml` allows:
 
   ```toml
-  approved_images = ["vnap:latest", "vnap:r2-p19"]   # scenario key "image"
+  approved_images = ["vnap:latest", "vnap:r2-p20", "vnap:r2-p19"]   # scenario key "image"
   allowed_env = ["VANETZA_LATITUDE", "VANETZA_LONGITUDE"]
   ```
 

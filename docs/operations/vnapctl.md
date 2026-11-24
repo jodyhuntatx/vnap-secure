@@ -267,7 +267,16 @@ run instead of a check window. It adds:
 - with the warning probe: `denm.triggers`, `.lost`, `.delayed`, `.delay_ms_max`, `.unexplained`
   (lost or late beyond what the sender's silent period explains) and `.id_leaks` (DENMs that
   still carry the configured stationId after a change: a station image without the DENM fix);
-- with recorded positions: `conflict.count`, `conflict.exposure_s`, `conflict.missed`.
+- with recorded positions: `conflict.count`, `conflict.exposure_s`, `conflict.missed`;
+- with station images from `vnap:r2-p20` (the `[COUNTERS]` lines,
+  [operation counters](../patches/operation-counters.md)): `ops.id_change_us_mean`, `.id_change_us_max`
+  (the ID change handshake), `ops.chain_checks_per_change`, `.unknown_signer_per_change`,
+  `.chain_check_us_per_change` (the neighbours' work for a vehicle's new AT, from the change to
+  3 s after its silent period), `ops.chain_check_us_mean`, `.derivation_us_mean`,
+  `.batch_check_us_mean`, `.sign_us_mean`, `.verify_us_mean` (per operation), and per station
+  `<station>.ops.sign_us_mean`, `.verify_us_mean`, `.chain_check_us_mean`, `.signs_per_s`,
+  `.verifies_per_s`. `overhead.json` has the same per change (`counters.changes`) and per refill
+  (`counters.refills`: certificates, derivations and batch checks with their times).
 
 The control channel (`control.*`) is recorded only by a live check. The cost names are per
 sending vehicle, as the reference receiver heard it.

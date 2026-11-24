@@ -1,0 +1,37 @@
+#include <vanetza/security/op_counters.hpp>
+
+namespace vanetza
+{
+namespace security
+{
+
+OpCounters& op_counters()
+{
+    static OpCounters counters;
+    return counters;
+}
+
+std::string OpCounters::json() const
+{
+    std::string out = "{";
+    auto field = [&out](const char* name, const OpCounter& c) {
+        if (out.size() > 1) {
+            out += ",";
+        }
+        out += "\"" + std::string(name) + "\":[" + std::to_string(c.count()) + "," + std::to_string(c.us()) + "]";
+    };
+    field("sign", sign);
+    field("verify", verify);
+    field("verify_failed", verify_failed);
+    field("unknown_signer", unknown_signer);
+    field("ecdsa_sign", ecdsa_sign);
+    field("ecdsa_verify", ecdsa_verify);
+    field("chain_check", chain_check);
+    field("batch_check", batch_check);
+    field("derivation", derivation);
+    field("id_change", id_change);
+    return out + "}";
+}
+
+} // namespace security
+} // namespace vanetza

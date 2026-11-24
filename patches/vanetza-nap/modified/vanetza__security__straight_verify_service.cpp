@@ -2,6 +2,7 @@
 #include <vanetza/common/position_provider.hpp>
 #include <vanetza/common/runtime.hpp>
 #include <vanetza/security/backend.hpp>
+#include <vanetza/security/op_counters.hpp>
 #include <vanetza/security/public_key.hpp>
 #include <vanetza/security/straight_verify_service.hpp>
 #include <vanetza/security/v2/basic_elements.hpp>
@@ -111,6 +112,7 @@ void StraightVerifyService::use_trust_store(const v3::CertificateCache* trust_st
 {
     if (trust_store) {
         m_context_v3.m_chain_verifier = std::make_shared<v3::CertificateChainVerifier>(m_backend, *trust_store);
+        m_context_v3.m_chain_verifier->count_into(&op_counters().chain_check);
     } else {
         m_context_v3.m_chain_verifier.reset();
     }

@@ -11,7 +11,8 @@ behaviour; how it got there is recorded here.
 
 | Tag | Built | Adds |
 |---|---|---|
-| `vnap:r2-p19` (= `latest`) | 2026-10-07 | butterfly key derivation on the station (PKI returns offsets, not keys) |
+| `vnap:r2-p20` (= `latest`) | 2026-11-24 | DENMs carry the current stationId; security operation counters (`[COUNTERS]`, `[IDCHANGE] completed`) |
+| `vnap:r2-p19` | 2026-10-07 | butterfly key derivation on the station (PKI returns offsets, not keys) |
 | `vnap:r2-p18` | 2026-10-07 | certificate refill: pseudonym pool growing at runtime from the run's PKI |
 | `vnap:r2-p17` | 2026-10-04 | CAM timer restarts at a random phase on every full ID change |
 | `vnap:r2-p16` | 2026-10-04 | position control channel and CAM kinematics fixes (vehicle movement) |
@@ -19,6 +20,32 @@ behaviour; how it got there is recorded here.
 
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
 `results/README.md`: the CAM timer then kept its phase across ID changes.
+
+## 2026-11-24: phase 4 of the overhead design: station operation counters (`vnap:r2-p20`)
+
+Phase 4 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`, moved ahead of phase 3 so
+that one image (`vnap:r2-p20`, with the DENM stationId fix) serves every phase 3 measurement:
+- **Station counters** ([operation counters](docs/patches/operation-counters.md)): count and
+  total time of messages signed and verified, verification failures and unknown signers, ECDSA
+  operations (backend-independent), chain checks of received ATs, batch checks and key
+  derivations of refills, and ID changes. socktap logs them every second (`[COUNTERS]`,
+  `--op-counters-interval`) and each committed change as `[IDCHANGE] completed in <us> us`.
+- **Analysis** (`sim/vnapsim/counters.py`, `overhead.json` version 4): per change, the ID
+  change time and the neighbours' chain checks, unknown signers and failures from the change to
+  3 s after its silent period (shared equally where windows overlap); per refill, the
+  derivations and batch checks; per station, totals and mean times. `metrics.json` (version 3)
+  adds `ops.*` and `<station>.ops.*`. Not yet in the report or the Results tab (phase 5).
+- **Live check** (`crossing:periodic`, 4 vehicles, pools of 4 refilled by 4, about 3 min,
+  36 changes): 4.0 chain checks per change at 4 receivers, as expected (one per neighbour);
+  0 unknown signers; 12 refills with 48 derivations and 48 batch checks. Times on this VM
+  (aarch64, Crypto++): ID change 76 us mean (313 us max), signing 1.9 ms per message,
+  verification 8.9 ms, chain check 8.4 ms, batch check 4.9 ms, key derivation 0.1 ms. A change
+  thus costs its neighbours about 36 ms of chain checks in all, the vehicle well under 1 ms.
+- **Caveat:** the `sign` count includes refused requests (e.g. before the station has a
+  position); `ecdsa_sign` counts signatures made. v2 counts no chain checks.
+- **Observation, not changed:** every CAM in these runs carries the full certificate
+  (full-certificate share 100 %, also on the phase 2 runs), not a digest most of the time. The
+  certificate's size then counts on every message, not only after a change.
 
 ## 2026-11-24: phase 2 of the overhead design: what the receivers knew
 

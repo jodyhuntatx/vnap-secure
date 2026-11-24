@@ -1,0 +1,74 @@
+#pragma once
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <string>
+
+namespace vanetza
+{
+namespace security
+{
+
+/**
+ * Count and total time of one kind of security operation (vnap-secure: computation load of
+ * pseudonym changes). Thread-safe; read as a whole only approximately (two separate atomics).
+ */
+class OpCounter
+{
+public:
+    void add(std::chrono::steady_clock::duration took)
+    {
+        m_count.fetch_add(1, std::memory_order_relaxed);
+        m_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(took).count(), std::memory_order_relaxed);
+    }
+
+    void add() { m_count.fetch_add(1, std::memory_order_relaxed); }
+
+    std::uint64_t count() const { return m_count.load(std::memory_order_relaxed); }
+    std::uint64_t us() const { return m_ns.load(std::memory_order_relaxed) / 1000; }
+
+private:
+    std::atomic<std::uint64_t> m_count { 0 };
+    std::atomic<std::uint64_t> m_ns { 0 };
+};
+
+/**
+ * Process-wide counters of the security operations a station performs. Counts carry over to
+ * other hardware (multiplied by its per-operation times); times compare variants on one host.
+ */
+struct OpCounters
+{
+    OpCounter sign;           ///< outgoing messages signed (whole sign service)
+    OpCounter verify;         ///< received messages verified (whole verify service)
+    OpCounter verify_failed;  ///< ... of which not Success (count only)
+    OpCounter unknown_signer; ///< ... of which the signer certificate was unknown (digest only, not cached)
+    OpCounter ecdsa_sign;     ///< ECDSA signatures made by the backend (messages)
+    OpCounter ecdsa_verify;   ///< ECDSA verifications by the backend (messages and certificates)
+    OpCounter chain_check;    ///< received ATs checked against their AA (not memoized: a new AT)
+    OpCounter batch_check;    ///< own ATs of a refill batch checked against AA and root
+    OpCounter derivation;     ///< butterfly private keys derived on the station
+    OpCounter id_change;      ///< committed ID changes, PREPARE to the last COMMIT
+
+    /// one line of JSON: {"name": [count, total us], ...}
+    std::string json() const;
+};
+
+/// the counters of this process
+OpCounters& op_counters();
+
+/// adds the time from construction to destruction to a counter
+class OpTimer
+{
+public:
+    explicit OpTimer(OpCounter* counter) : m_counter(counter), m_start(std::chrono::steady_clock::now()) {}
+    ~OpTimer() { if (m_counter) m_counter->add(std::chrono::steady_clock::now() - m_start); }
+    OpTimer(const OpTimer&) = delete;
+    OpTimer& operator=(const OpTimer&) = delete;
+
+private:
+    OpCounter* m_counter;
+    std::chrono::steady_clock::time_point m_start;
+};
+
+} // namespace security
+} // namespace vanetza

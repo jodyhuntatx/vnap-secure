@@ -192,7 +192,7 @@ the vanetza-nap tree (`docs/`) and at
 
 ## Versions
 
-The current station image is `vnap:r2-p19` (also `vnap:latest`). Image tags, features by
+The current station image is `vnap:r2-p20` (also `vnap:latest`). Image tags, features by
 date and the history of this repository are in [CHANGELOG.md](CHANGELOG.md).
 
 **Moved sections.** The sections of the earlier single README are now in `docs/`; the

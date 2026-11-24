@@ -174,7 +174,8 @@ at all. A red note marks DENMs that still carried the configured stationId after
 recorded positions, *conflict exposure*: the time two vehicles' true time-to-collision was
 below 4 s while one's information about the other was stale or showed no conflict.
 
-Not measured yet: CPU load and the stations' operation counts.
+Not measured yet: CPU load. The stations' operation counts (images from `vnap:r2-p20`) are in
+`overhead.json` and `metrics.json`, not yet on this tab.
 
 The summary report has the same figures in its section 4, *Cost of the pseudonym changes*
 ([summary report](../functional/eavesdropper-and-scoring.md#summary-report)).

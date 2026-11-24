@@ -1,6 +1,9 @@
 #include <vanetza/security/id_change_service.hpp>
+#include <vanetza/security/op_counters.hpp>
 #include <algorithm>
 #include <chrono>
+#include <iostream>
+#include <string>
 #include <vector>
 
 namespace vanetza
@@ -101,6 +104,7 @@ IdChangeService::Result IdChangeService::change(const Id& id, const std::functio
         return result;
     }
 
+    const auto start = std::chrono::steady_clock::now();
     // snapshot: hooks are called without the lock held
     std::vector<std::pair<Subscription, Subscriber>> subscribers;
     {
@@ -129,6 +133,13 @@ IdChangeService::Result IdChangeService::change(const Id& id, const std::functio
         s.hook(outcome, id, s.data);
     }
     result.committed = outcome == Command::Commit;
+    if (result.committed) {
+        // vnap-secure: the handshake's cost per change (computation load)
+        const auto took = std::chrono::steady_clock::now() - start;
+        op_counters().id_change.add(took);
+        std::cerr << ("[IDCHANGE] completed in "
+            + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(took).count()) + " us\n");
+    }
     return result;
 }
 

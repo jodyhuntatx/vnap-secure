@@ -1,6 +1,13 @@
 --- a/tools/socktap/security.cpp
 +++ b/tools/socktap/security.cpp
-@@ -6,17 +6,21 @@
+@@ -1,34 +1,124 @@
+ #include "security.hpp"
++#include <vanetza/security/backend.hpp>
+ #include <vanetza/security/delegating_security_entity.hpp>
++#include <vanetza/security/op_counters.hpp>
+ #include <vanetza/security/straight_verify_service.hpp>
+ #include <vanetza/security/v2/certificate_cache.hpp>
+ #include "vanetza/security/v2/certificate_provider.hpp"
  #include <vanetza/security/v2/default_certificate_validator.hpp>
  #include <vanetza/security/v2/naive_certificate_provider.hpp>
  #include <vanetza/security/v2/persistence.hpp>
@@ -19,10 +26,152 @@
  #include <vanetza/security/v3/static_certificate_provider.hpp>
  
 +#include <algorithm>
++#include <chrono>
  #include <stdexcept>
  #include <iostream>
  
-@@ -119,6 +123,8 @@
+ using namespace vanetza;
+ namespace po = boost::program_options;
+ 
++namespace
++{
++
++/**
++ * Backend that counts and times the ECDSA operations of another (vnap-secure: computation load).
++ * Works with any backend, so the counts do not depend on Crypto++ or OpenSSL.
++ */
++class CountingBackend : public security::Backend
++{
++public:
++    explicit CountingBackend(std::unique_ptr<security::Backend> backend) : m_backend(std::move(backend))
++    {
++        if (!m_backend) {
++            throw std::runtime_error("no security backend");
++        }
++    }
++
++    security::EcdsaSignature sign_data(const security::ecdsa256::PrivateKey& key, const ByteBuffer& data) override
++    {
++        security::OpTimer timer(&security::op_counters().ecdsa_sign);
++        return m_backend->sign_data(key, data);
++    }
++
++    security::Signature sign_digest(const security::PrivateKey& key, const ByteBuffer& digest) override
++    {
++        security::OpTimer timer(&security::op_counters().ecdsa_sign);
++        return m_backend->sign_digest(key, digest);
++    }
++
++    bool verify_data(const security::ecdsa256::PublicKey& key, const ByteBuffer& data, const security::EcdsaSignature& sig) override
++    {
++        security::OpTimer timer(&security::op_counters().ecdsa_verify);
++        return m_backend->verify_data(key, data, sig);
++    }
++
++    bool verify_digest(const security::PublicKey& key, const ByteBuffer& digest, const security::Signature& sig) override
++    {
++        security::OpTimer timer(&security::op_counters().ecdsa_verify);
++        return m_backend->verify_digest(key, digest, sig);
++    }
++
++    boost::optional<security::Uncompressed> decompress_point(const security::EccPoint& point) override
++    {
++        return m_backend->decompress_point(point);
++    }
++
++    ByteBuffer calculate_hash(security::HashAlgorithm algo, const ByteBuffer& data) override
++    {
++        return m_backend->calculate_hash(algo, data);
++    }
++
++private:
++    std::unique_ptr<security::Backend> m_backend;
++};
++
++std::unique_ptr<security::Backend> counting_backend()
++{
++    return std::unique_ptr<security::Backend> { new CountingBackend(security::create_backend("default")) };
++}
++
++security::EncapConfirm counted_encapsulate(security::SecurityEntity& entity, security::EncapRequest&& request)
++{
++    security::OpTimer timer(&security::op_counters().sign);
++    return entity.encapsulate_packet(std::move(request));
++}
++
++security::DecapConfirm counted_decapsulate(security::SecurityEntity& entity, security::DecapRequest&& request)
++{
++    auto& counters = security::op_counters();
++    const auto start = std::chrono::steady_clock::now();
++    security::DecapConfirm confirm = entity.decapsulate_packet(std::move(request));
++    counters.verify.add(std::chrono::steady_clock::now() - start);
++    if (!security::is_successful(confirm.report)) {
++        counters.verify_failed.add();
++        if (confirm.report == security::VerificationReport::Signer_Certificate_Not_Found) {
++            counters.unknown_signer.add();
++        }
++    }
++    return confirm;
++}
++
++} // namespace
++
+ class SecurityContextV2 : public security::SecurityEntity
+ {
+ public:
+     SecurityContextV2(const Runtime& runtime, PositionProvider& positioning) :
+         runtime(runtime), positioning(positioning),
+-        backend(security::create_backend("default")),
++        backend(counting_backend()),
+         sign_header_policy(runtime, positioning),
+         cert_cache(runtime),
+         cert_validator(*backend, cert_cache, trust_store)
+@@ -40,7 +130,7 @@
+         if (!entity) {
+             throw std::runtime_error("security entity is not ready");
+         }
+-        return entity->encapsulate_packet(std::move(request));
++        return counted_encapsulate(*entity, std::move(request));
+     }
+ 
+     security::DecapConfirm decapsulate_packet(security::DecapRequest&& request) override
+@@ -48,7 +138,7 @@
+         if (!entity) {
+             throw std::runtime_error("security entity is not ready");
+         }
+-        return entity->decapsulate_packet(std::move(request));
++        return counted_decapsulate(*entity, std::move(request));
+     }
+ 
+     void build_entity()
+@@ -83,7 +173,7 @@
+ public:
+     SecurityContextV3(const Runtime& runtime, PositionProvider& positioning) :
+         runtime(runtime), positioning(positioning),
+-        backend(security::create_backend("default"))
++        backend(counting_backend())
+     {
+         cert_validator.use_runtime(&runtime);
+         cert_validator.use_position_provider(&positioning);
+@@ -95,7 +185,7 @@
+         if (!entity) {
+             throw std::runtime_error("security entity is not ready");
+         }
+-        return entity->encapsulate_packet(std::move(request));
++        return counted_encapsulate(*entity, std::move(request));
+     }
+ 
+     security::DecapConfirm decapsulate_packet(security::DecapRequest&& request) override
+@@ -103,7 +193,7 @@
+         if (!entity) {
+             throw std::runtime_error("security entity is not ready");
+         }
+-        return entity->decapsulate_packet(std::move(request));
++        return counted_decapsulate(*entity, std::move(request));
+     }
+ 
+     void build_entity()
+@@ -119,6 +209,8 @@
          verify_service->use_certificate_provider(cert_provider.get());
          verify_service->use_certificate_validator(&cert_validator);
          verify_service->use_sign_header_policy(sign_header_policy.get());
@@ -31,7 +180,7 @@
          entity.reset(new security::DelegatingSecurityEntity { std::move(sign_service), std::move(verify_service) });
      }
  
-@@ -127,6 +133,7 @@
+@@ -127,6 +219,7 @@
      std::unique_ptr<security::Backend> backend;
      std::unique_ptr<security::SecurityEntity> entity;
      std::unique_ptr<security::v3::CertificateProvider> cert_provider;
@@ -39,7 +188,7 @@
      std::unique_ptr<security::v3::DefaultSignHeaderPolicy> sign_header_policy;
      security::v3::DefaultCertificateValidator cert_validator;
      security::v3::DefaultLocationChecker location_checker;
-@@ -166,16 +173,74 @@
+@@ -166,16 +259,74 @@
      return std::make_unique<security::v2::StaticCertificateProvider>(authorization_ticket, authorization_ticket_key.private_key, chain);
  }
  
@@ -120,7 +269,7 @@
  
      auto provider = std::make_unique<security::v3::StaticCertificateProvider>(authorization_ticket, priv_key);
      for (auto& chain_path : cert_chain_path) {
-@@ -186,7 +251,7 @@
+@@ -186,7 +337,7 @@
  }
  
  std::unique_ptr<security::SecurityEntity>
@@ -129,7 +278,7 @@
  {
      std::unique_ptr<security::SecurityEntity> security;
      // const std::string name = vm["security"].as<std::string>();
-@@ -208,7 +273,81 @@
+@@ -208,7 +359,81 @@
              throw std::runtime_error("Either --certificate and --certificate-key must be present or none.");
          }
  
@@ -212,7 +361,7 @@
              const std::string& cert_path = vm["certificate"].as<std::string>();
              const std::string& cert_key_path = vm["certificate-key"].as<std::string>();
              std::vector<std::string> chain_paths;
-@@ -219,6 +358,7 @@
+@@ -219,6 +444,7 @@
              if (version == 3) {
                  auto context = std::make_unique<SecurityContextV3>(runtime, positioning);
                  context->cert_provider = load_v3_certificates(cert_path, cert_key_path, chain_paths);
@@ -220,7 +369,7 @@
                  context->build_entity();
                  security = std::move(context);
              } else {
-@@ -230,6 +370,14 @@
+@@ -230,6 +456,14 @@
                          context->trust_store.insert(trusted_certificate);
                      }
                  }
@@ -235,7 +384,7 @@
                  context->build_entity();
                  security = std::move(context);
              }
-@@ -237,6 +385,7 @@
+@@ -237,6 +471,7 @@
              if (version == 3) {
                  auto context = std::make_unique<SecurityContextV3>(runtime, positioning);
                  context->cert_provider = std::make_unique<security::v3::NaiveCertificateProvider>(runtime);
@@ -243,7 +392,7 @@
                  context->build_entity();
                  security = std::move(context);
              } else {
-@@ -257,6 +406,119 @@
+@@ -257,6 +492,123 @@
      return security;
  }
  
@@ -302,7 +451,11 @@
 +                        continue;
 +                    }
 +                    auto key = load_v3_private_key(certificate, files.second);
-+                    const auto validity = verifier.verify(*certificate, &provider->cache(), now);
++                    security::CertificateValidity validity;
++                    {
++                        security::OpTimer timer(&security::op_counters().batch_check);
++                        validity = verifier.verify(*certificate, &provider->cache(), now);
++                    }
 +                    std::cerr << (std::string("[V3-CHAIN] batch authorization ticket ") + files.first + ": "
 +                                  + chain_result(validity) + "\n");
 +                    if (!validity) {
@@ -363,7 +516,7 @@
  void add_security_options(po::options_description& options)
  {
      options.add_options()
-@@ -265,6 +527,12 @@
+@@ -265,6 +617,12 @@
          ("certificate-key", po::value<std::string>(), "Certificate key to use for secured messages.")
          ("certificate-chain", po::value<std::vector<std::string> >()->multitoken(), "Certificate chain to use, use as often as needed.")
          ("trusted-certificate", po::value<std::vector<std::string> >()->multitoken(), "Trusted certificate, use as often as needed.")

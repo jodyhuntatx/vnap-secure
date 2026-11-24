@@ -1,5 +1,7 @@
 #include "security.hpp"
+#include <vanetza/security/backend.hpp>
 #include <vanetza/security/delegating_security_entity.hpp>
+#include <vanetza/security/op_counters.hpp>
 #include <vanetza/security/straight_verify_service.hpp>
 #include <vanetza/security/v2/certificate_cache.hpp>
 #include "vanetza/security/v2/certificate_provider.hpp"
@@ -21,18 +23,102 @@
 #include <vanetza/security/v3/static_certificate_provider.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <iostream>
 
 using namespace vanetza;
 namespace po = boost::program_options;
 
+namespace
+{
+
+/**
+ * Backend that counts and times the ECDSA operations of another (vnap-secure: computation load).
+ * Works with any backend, so the counts do not depend on Crypto++ or OpenSSL.
+ */
+class CountingBackend : public security::Backend
+{
+public:
+    explicit CountingBackend(std::unique_ptr<security::Backend> backend) : m_backend(std::move(backend))
+    {
+        if (!m_backend) {
+            throw std::runtime_error("no security backend");
+        }
+    }
+
+    security::EcdsaSignature sign_data(const security::ecdsa256::PrivateKey& key, const ByteBuffer& data) override
+    {
+        security::OpTimer timer(&security::op_counters().ecdsa_sign);
+        return m_backend->sign_data(key, data);
+    }
+
+    security::Signature sign_digest(const security::PrivateKey& key, const ByteBuffer& digest) override
+    {
+        security::OpTimer timer(&security::op_counters().ecdsa_sign);
+        return m_backend->sign_digest(key, digest);
+    }
+
+    bool verify_data(const security::ecdsa256::PublicKey& key, const ByteBuffer& data, const security::EcdsaSignature& sig) override
+    {
+        security::OpTimer timer(&security::op_counters().ecdsa_verify);
+        return m_backend->verify_data(key, data, sig);
+    }
+
+    bool verify_digest(const security::PublicKey& key, const ByteBuffer& digest, const security::Signature& sig) override
+    {
+        security::OpTimer timer(&security::op_counters().ecdsa_verify);
+        return m_backend->verify_digest(key, digest, sig);
+    }
+
+    boost::optional<security::Uncompressed> decompress_point(const security::EccPoint& point) override
+    {
+        return m_backend->decompress_point(point);
+    }
+
+    ByteBuffer calculate_hash(security::HashAlgorithm algo, const ByteBuffer& data) override
+    {
+        return m_backend->calculate_hash(algo, data);
+    }
+
+private:
+    std::unique_ptr<security::Backend> m_backend;
+};
+
+std::unique_ptr<security::Backend> counting_backend()
+{
+    return std::unique_ptr<security::Backend> { new CountingBackend(security::create_backend("default")) };
+}
+
+security::EncapConfirm counted_encapsulate(security::SecurityEntity& entity, security::EncapRequest&& request)
+{
+    security::OpTimer timer(&security::op_counters().sign);
+    return entity.encapsulate_packet(std::move(request));
+}
+
+security::DecapConfirm counted_decapsulate(security::SecurityEntity& entity, security::DecapRequest&& request)
+{
+    auto& counters = security::op_counters();
+    const auto start = std::chrono::steady_clock::now();
+    security::DecapConfirm confirm = entity.decapsulate_packet(std::move(request));
+    counters.verify.add(std::chrono::steady_clock::now() - start);
+    if (!security::is_successful(confirm.report)) {
+        counters.verify_failed.add();
+        if (confirm.report == security::VerificationReport::Signer_Certificate_Not_Found) {
+            counters.unknown_signer.add();
+        }
+    }
+    return confirm;
+}
+
+} // namespace
+
 class SecurityContextV2 : public security::SecurityEntity
 {
 public:
     SecurityContextV2(const Runtime& runtime, PositionProvider& positioning) :
         runtime(runtime), positioning(positioning),
-        backend(security::create_backend("default")),
+        backend(counting_backend()),
         sign_header_policy(runtime, positioning),
         cert_cache(runtime),
         cert_validator(*backend, cert_cache, trust_store)
@@ -44,7 +130,7 @@ public:
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
         }
-        return entity->encapsulate_packet(std::move(request));
+        return counted_encapsulate(*entity, std::move(request));
     }
 
     security::DecapConfirm decapsulate_packet(security::DecapRequest&& request) override
@@ -52,7 +138,7 @@ public:
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
         }
-        return entity->decapsulate_packet(std::move(request));
+        return counted_decapsulate(*entity, std::move(request));
     }
 
     void build_entity()
@@ -87,7 +173,7 @@ class SecurityContextV3 : public security::SecurityEntity
 public:
     SecurityContextV3(const Runtime& runtime, PositionProvider& positioning) :
         runtime(runtime), positioning(positioning),
-        backend(security::create_backend("default"))
+        backend(counting_backend())
     {
         cert_validator.use_runtime(&runtime);
         cert_validator.use_position_provider(&positioning);
@@ -99,7 +185,7 @@ public:
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
         }
-        return entity->encapsulate_packet(std::move(request));
+        return counted_encapsulate(*entity, std::move(request));
     }
 
     security::DecapConfirm decapsulate_packet(security::DecapRequest&& request) override
@@ -107,7 +193,7 @@ public:
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
         }
-        return entity->decapsulate_packet(std::move(request));
+        return counted_decapsulate(*entity, std::move(request));
     }
 
     void build_entity()
@@ -461,7 +547,11 @@ std::function<PseudonymBatchResult(const PseudonymBatch&)> pseudonym_batch_loade
                         continue;
                     }
                     auto key = load_v3_private_key(certificate, files.second);
-                    const auto validity = verifier.verify(*certificate, &provider->cache(), now);
+                    security::CertificateValidity validity;
+                    {
+                        security::OpTimer timer(&security::op_counters().batch_check);
+                        validity = verifier.verify(*certificate, &provider->cache(), now);
+                    }
                     std::cerr << (std::string("[V3-CHAIN] batch authorization ticket ") + files.first + ": "
                                   + chain_result(validity) + "\n");
                     if (!validity) {

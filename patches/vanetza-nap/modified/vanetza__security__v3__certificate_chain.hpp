@@ -2,6 +2,7 @@
 #include <vanetza/common/clock.hpp>
 #include <vanetza/security/certificate_validity.hpp>
 #include <vanetza/security/hashed_id.hpp>
+#include <vanetza/security/op_counters.hpp>
 #include <vanetza/security/v3/certificate.hpp>
 #include <mutex>
 #include <unordered_set>
@@ -71,6 +72,12 @@ public:
      */
     CertificateValidity verify_ca(const asn1::EtsiTs103097Certificate& ca, Clock::time_point now);
 
+    /**
+     * Count the AT checks that are not memoized (a certificate seen for the first time) and their
+     * time into this counter (vnap-secure: computation load); null, the default, counts nothing.
+     */
+    void count_into(OpCounter* counter) { m_counter = counter; }
+
 private:
     bool is_verified(const HashedId8&) const;
     void mark_verified(const HashedId8&);
@@ -79,6 +86,7 @@ private:
     const CertificateCache& m_trust_store;
     mutable std::mutex m_mutex;
     std::unordered_set<HashedId8> m_verified;
+    OpCounter* m_counter = nullptr;
 };
 
 } // namespace v3
