@@ -1,11 +1,12 @@
 --- /dev/null
 +++ b/tools/socktap/id_change.hpp
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,52 @@
 +#ifndef ID_CHANGE_HPP_SOCKTAP
 +#define ID_CHANGE_HPP_SOCKTAP
 +
 +#include <vanetza/net/mac_address.hpp>
 +#include <vanetza/security/id_change_service.hpp>
++#include <chrono>
 +#include <cstdint>
 +#include <string>
 +
@@ -40,5 +41,15 @@
 + */
 +std::uint32_t own_station_id();
 +void set_own_station_id(std::uint32_t);
++
++/**
++ * End of the silent period after an ID change (set when one starts). The certificate requested at
++ * the change goes with a CAM that the silence drops, so the security entity asks, before signing
++ * each CAM, whether a silent period has just ended: true once, for the first CAM after it, which
++ * then carries the full certificate. Without it, neighbours receive CAMs signed by an AT they have
++ * not seen until the next once-a-second certificate.
++ */
++void set_silence_end(std::chrono::steady_clock::time_point);
++bool silence_just_ended();
 +
 +#endif /* ID_CHANGE_HPP_SOCKTAP */

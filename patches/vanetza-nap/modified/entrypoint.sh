@@ -88,6 +88,8 @@ if [ -n "$POSITION_CONTROL_BROKER" ]; then
     [ -n "$POSITION_CONTROL_TOPIC" ] && set -- "$@" --position-control-topic "$POSITION_CONTROL_TOPIC"
     [ -n "$POSITION_CONTROL_USERNAME" ] && set -- "$@" --position-control-username "$POSITION_CONTROL_USERNAME"
 fi
+# CAM_GENERATION (vnap-secure): dynamic (default, EN 302 637-2) or fixed (every VANETZA_CAM_PERIODICITY ms)
+[ -n "$CAM_GENERATION" ] && set -- "$@" --cam-generation "$CAM_GENERATION"
 
 if [ -n "$SECURITY" ]; then
     case $SECURITY in

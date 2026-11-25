@@ -21,6 +21,14 @@ public:
     void indicate(const DataIndication&, UpPacketPtr) override;
     void set_interval(vanetza::Clock::duration);
     /**
+     * CAM generation of EN 302 637-2 clause 6.1.3 (vnap-secure): checked every T_CheckCamGen
+     * (100 ms), a CAM is sent when the heading changed by more than 4 degrees, the position by
+     * more than 4 m or the speed by more than 0.5 m/s since the last CAM (that interval becomes
+     * T_GenCam for the next N_GenCam = 3 CAMs), or when T_GenCam has elapsed; the interval set
+     * with set_interval is T_GenCamMax. Without it (the default), CAMs follow that interval.
+     */
+    void set_dynamic(bool dynamic);
+    /**
      * Restart the CAM timer at a random phase after every committed ID change (vnapctl
      * scenarios: full ID change), so the new identity's CAM timing does not continue the
      * old one's. Without this, the phase within the CAM interval links the identities.
@@ -32,6 +40,7 @@ public:
 private:
     void schedule_timer();
     void on_timer(vanetza::Clock::time_point);
+    bool cam_due();   // dynamic generation: whether a CAM is due now (and if so, records its state)
 
     vanetza::PositionProvider& positioning_;
     vanetza::Runtime& runtime_;
@@ -45,6 +54,14 @@ private:
     std::atomic<bool> rephase_ { false };  // set by the ID change hook, applied by on_timer
     std::mt19937 rephase_rng_ { std::random_device{}() };
     std::shared_ptr<void> id_change_subscription_;
+
+    // dynamic CAM generation (EN 302 637-2 clause 6.1.3); used by the timer only
+    bool dynamic_ = false;
+    vanetza::Clock::duration gen_cam_ { std::chrono::seconds(1) };  // T_GenCam
+    int n_gen_cam_ = 0;                                                // CAMs sent on T_GenCam since a trigger
+    bool sent_any_ = false;
+    vanetza::Clock::time_point last_cam_time_;
+    double last_cam_lat_ = 0, last_cam_lon_ = 0, last_cam_speed_ = -1, last_cam_course_ = -1;
 
     // State for acceleration/yaw rate calculation
     double time_speed = 0;

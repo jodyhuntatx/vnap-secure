@@ -1,4 +1,6 @@
 #include "security.hpp"
+#include "id_change.hpp"
+#include <vanetza/common/its_aid.hpp>
 #include <vanetza/security/backend.hpp>
 #include <vanetza/security/delegating_security_entity.hpp>
 #include <vanetza/security/op_counters.hpp>
@@ -90,6 +92,12 @@ std::unique_ptr<security::Backend> counting_backend()
     return std::unique_ptr<security::Backend> { new CountingBackend(security::create_backend("default")) };
 }
 
+bool is_cam(const security::EncapRequest& request)
+{
+    const auto* sign = boost::get<security::SignRequest>(&request);
+    return sign && sign->its_aid == aid::CA;
+}
+
 security::EncapConfirm counted_encapsulate(security::SecurityEntity& entity, security::EncapRequest&& request)
 {
     security::OpTimer timer(&security::op_counters().sign);
@@ -129,6 +137,9 @@ public:
     {
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
+        }
+        if (is_cam(request) && silence_just_ended()) {
+            sign_header_policy.request_certificate();   // the first CAM after a silent period
         }
         return counted_encapsulate(*entity, std::move(request));
     }
@@ -184,6 +195,9 @@ public:
     {
         if (!entity) {
             throw std::runtime_error("security entity is not ready");
+        }
+        if (sign_header_policy && is_cam(request) && silence_just_ended()) {
+            sign_header_policy->request_certificate();   // the first CAM after a silent period
         }
         return counted_encapsulate(*entity, std::move(request));
     }

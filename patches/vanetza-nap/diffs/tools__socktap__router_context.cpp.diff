@@ -61,7 +61,7 @@
          auto sharedHdr = std::make_shared<const EthernetHeader>(hdr);
          queued_reception qr{std::make_unique<CohesivePacket>(std::move(packet)), sharedHdr};
          reception_tq->push(std::make_unique<queued_reception>(std::move(qr)));
-@@ -187,15 +204,103 @@
+@@ -187,15 +204,104 @@
  }
  
  void packet_reception_thread(int i) {
@@ -138,6 +138,7 @@
 +                std::uniform_int_distribution<long> dist(silence_min_.count(), silence_max_.count());
 +                const std::chrono::milliseconds silence { dist(random_gen) };
 +                dccp->silence_for(silence);
++                set_silence_end(std::chrono::steady_clock::now() + silence);
 +                std::cerr << "[IDCHANGE] silent period " << silence.count() << " ms" << std::endl;
 +            }
 +            id_change_locks_.clear();
@@ -167,7 +168,7 @@
  }
  
  void RouterContext::enable(Application* app)
-@@ -240,14 +345,21 @@
+@@ -240,14 +346,21 @@
  
  void RouterContext::update_position_vector()
  {
@@ -191,7 +192,7 @@
  }
  
  void RouterContext::update_packet_flow(const geonet::LongPositionVector& lpv)
-@@ -267,6 +379,7 @@
+@@ -267,6 +380,7 @@
  }
  
  void packet_processing_thread(){

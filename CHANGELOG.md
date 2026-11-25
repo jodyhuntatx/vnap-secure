@@ -11,7 +11,8 @@ behaviour; how it got there is recorded here.
 
 | Tag | Built | Adds |
 |---|---|---|
-| `vnap:r2-p20` (= `latest`) | 2026-11-24 | DENMs carry the current stationId; security operation counters (`[COUNTERS]`, `[IDCHANGE] completed`) |
+| `vnap:r2-p21` (= `latest`) | 2026-11-24 | CAM generation by EN 302 637-2 (heading, position, speed; at most 1 s); full certificate on the first CAM after a silent period |
+| `vnap:r2-p20` | 2026-11-24 | DENMs carry the current stationId; security operation counters (`[COUNTERS]`, `[IDCHANGE] completed`) |
 | `vnap:r2-p19` | 2026-10-07 | butterfly key derivation on the station (PKI returns offsets, not keys) |
 | `vnap:r2-p18` | 2026-10-07 | certificate refill: pseudonym pool growing at runtime from the run's PKI |
 | `vnap:r2-p17` | 2026-10-04 | CAM timer restarts at a random phase on every full ID change |
@@ -19,7 +20,47 @@ behaviour; how it got there is recorded here.
 | earlier `r2-p*` | 2026-09-28 – 10-03 | release2 patch set, pseudonym pool and events, thread-safety patches, ID change notification, silent periods |
 
 Results measured with images up to `r2-p16` carry the CAM timing caveat described in
-`results/README.md`: the CAM timer then kept its phase across ID changes.
+`results/README.md`: the CAM timer then kept its phase across ID changes. Images up to
+`r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
+CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
+
+## 2026-11-24: CAM generation by EN 302 637-2 (`vnap:r2-p21`)
+
+The phase 4 run showed every CAM carrying the full certificate. The cause was the CAM rate:
+socktap sent a CAM every `[cam] periodicity` ms (1000), and the certificate, attached at most
+once a second, then went on every CAM.
+- **CAM generation** ([patch](docs/patches/mobility-and-cam.md#cam-generation),
+  [behaviour](docs/functional/vehicle-movement.md#cam-generation)): checked every 100 ms; a CAM
+  when the heading changed by more than 4°, the position by more than 4 m or the speed by more
+  than 0.5 m/s, otherwise after T_GenCam (at most 1 s). `--cam-generation dynamic` (default) or
+  `fixed` (`CAM_GENERATION`, administrators only).
+- **Certificate after the silent period**
+  ([patch](docs/patches/pseudonym-and-id-change.md#silent-period)): the first run with dynamic
+  generation showed the certificate requested at a change going with a CAM the silent period
+  dropped. The first CAM of 20 of 32 new identities carried only a digest; receivers counted
+  2.2 unknown signers per change and 82 failed verifications. The first CAM after a silent
+  period now requests the certificate again.
+- **Live check** (`crossing:periodic`, 4 vehicles, pools of 4 refilled by 4, about 3 min, 36
+  changes each), against the same run on `vnap:r2-p20`:
+
+  | | r2-p20 (1 s) | r2-p21 |
+  |---|---|---|
+  | CAM interval of the moving cars (median) | 1000 ms | 402 ms |
+  | CAMs with the full certificate | 100 % | 36–37 % |
+  | CAM size, mean (digest / certificate) | 322 B (– / 322) | 240 B (193 / 323) |
+  | first CAM of a new identity with the certificate | 36 of 36 | 32 of 32 |
+  | unknown signers per change, failed verifications | 0, 0 | 0, 0 |
+  | messages verified per second and station | about 2.9 | about 5.8 |
+
+  The RSU still sends every second. Tracking success, 61 % and 50 %, is one run each and not
+  a comparison.
+- **PRD draft 0.2:** the PRD now has a Markdown source,
+  `Specs/VNAP-Secure-Simulation-Service-PRD.md`, from which `make docs-pdf` generates the PDF
+  (`build-pdf.py --prd`; `make test` checks it is current); it is also in the documentation
+  PDF. Draft 0.2 records the state of delivery and adds the station requirements STA-1 to STA-4
+  and the CAM rate risk.
+- **Results:** every result in `results/` was measured at 1 s CAMs; `results/README.md` says
+  so.
 
 ## 2026-11-24: phase 4 of the overhead design: station operation counters (`vnap:r2-p20`)
 
@@ -43,9 +84,8 @@ that one image (`vnap:r2-p20`, with the DENM stationId fix) serves every phase 3
   thus costs its neighbours about 36 ms of chain checks in all, the vehicle well under 1 ms.
 - **Caveat:** the `sign` count includes refused requests (e.g. before the station has a
   position); `ecdsa_sign` counts signatures made. v2 counts no chain checks.
-- **Observation, not changed:** every CAM in these runs carries the full certificate
-  (full-certificate share 100 %, also on the phase 2 runs), not a digest most of the time. The
-  certificate's size then counts on every message, not only after a change.
+- **Observation:** every CAM in these runs carries the full certificate (full-certificate
+  share 100 %, also on the phase 2 runs). Explained and changed in `vnap:r2-p21` (above).
 
 ## 2026-11-24: phase 2 of the overhead design: what the receivers knew
 
@@ -465,7 +505,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 
 ## PRD phases
 
-`Specs/VNAP-Secure-Simulation-Service-PRD.pdf` plans the service in nine phases:
+`Specs/VNAP-Secure-Simulation-Service-PRD.pdf` (source: the `.md` next to it) plans the service in nine phases; draft 0.2 adds the station requirements:
 
 | Phase | Content | Done |
 |---|---|---|
@@ -477,6 +517,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 | 7 | API service | 2026-10-08 |
 | 8 | Web UI | 2026-10-08 |
 | 9 | Hardening: backups, TOTP | 2026-10-08; MCP endpoint not yet |
+| draft 0.2 | Station fidelity (STA-1 to STA-4): CAM generation, stationId in DENMs, operation counters, certificate after the silent period | 2026-11-24 |
 
 ## Documentation moves
 

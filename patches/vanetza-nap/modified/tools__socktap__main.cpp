@@ -47,6 +47,9 @@ int main(int argc, const char** argv)
     options.add_options()
         ("help", "Print out available options.")
         ("config,c", po::value<std::string>()->default_value("config.ini"), "Config file path")
+        ("cam-generation", po::value<std::string>()->default_value("dynamic"),
+            "CAM generation: 'dynamic' (EN 302 637-2: on changes of heading, position or speed, at most every "
+            "[cam] periodicity ms) or 'fixed' (every [cam] periodicity ms)")
         ("op-counters-interval", po::value<int>()->default_value(1000),
             "Log the security operation counters ([COUNTERS] line: count and total us of signatures, "
             "verifications, chain checks, key derivations, ID changes) every this many ms; 0: never")
@@ -275,6 +278,11 @@ int main(int argc, const char** argv)
             std::unique_ptr<CamApplication> cam_app {
                 new CamApplication(*positioning, context.get_dccp().get_trigger().runtime(), pubsub, config_s, metrics_s, get_router(num_threads), 1, prom_mtx)
             };
+            const std::string generation = vm["cam-generation"].as<std::string>();
+            if (generation != "dynamic" && generation != "fixed") {
+                throw std::runtime_error("--cam-generation must be 'dynamic' or 'fixed', not '" + generation + "'");
+            }
+            cam_app->set_dynamic(generation == "dynamic");
             cam_app->set_interval(std::chrono::milliseconds(config_s.cam.periodicity));
             if (facilities_id_change) {
                 // full ID change: the CAM timing must not carry over to the new identity

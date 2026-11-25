@@ -167,6 +167,21 @@ docker run --rm --network vanetzalan0 eclipse-mosquitto:2 mosquitto_sub -h 192.1
 
 The web UI's *Map* tab shows the layout and live positions, and moves a station on click.
 
+## CAM generation
+
+Stations send CAMs as EN 302 637-2 (clause 6.1.3) specifies, from `vnap:r2-p21`:
+- **Checked every 100 ms:** a CAM is sent when, since the last one, the heading changed by more
+  than 4°, the position by more than 4 m or the speed by more than 0.5 m/s.
+- **Otherwise** after T_GenCam: the interval of the last such CAM for the next 3 CAMs, then 1 s
+  (`[cam] periodicity`, T_GenCamMax).
+- **In practice:** a car at 36 km/h (10 m/s) passes 4 m every 0.4 s and sends about every
+  0.4 s; an RSU or a parked car every second.
+- **Full certificate:** still at most once a second, so a moving car sends a digest in most
+  CAMs and the certificate in about one of three (193 against 323 bytes in `crossing`).
+- **Fixed interval:** `CAM_GENERATION=fixed` (container environment, administrators only)
+  sends every `[cam] periodicity` ms, as images up to `vnap:r2-p20` did; use it to reproduce
+  their results. Users can choose the image `vnap:r2-p20` instead.
+
 ## CAM kinematics
 
 Upstream filled these fields from a static position only, and several were wrong in units

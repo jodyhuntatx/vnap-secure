@@ -25,10 +25,13 @@
  #include <thread>
  
  namespace asio = boost::asio;
-@@ -41,9 +47,15 @@
+@@ -41,9 +47,18 @@
      options.add_options()
          ("help", "Print out available options.")
          ("config,c", po::value<std::string>()->default_value("config.ini"), "Config file path")
++        ("cam-generation", po::value<std::string>()->default_value("dynamic"),
++            "CAM generation: 'dynamic' (EN 302 637-2: on changes of heading, position or speed, at most every "
++            "[cam] periodicity ms) or 'fixed' (every [cam] periodicity ms)")
 +        ("op-counters-interval", po::value<int>()->default_value(1000),
 +            "Log the security operation counters ([COUNTERS] line: count and total us of signatures, "
 +            "verifications, chain checks, key derivations, ID changes) every this many ms; 0: never")
@@ -41,7 +44,7 @@
      add_link_layer_options(options);
  
  
-@@ -165,11 +177,18 @@
+@@ -165,11 +180,18 @@
              std::cerr << "Requested positioning method is not available\n";
              return 1;
          }
@@ -60,7 +63,7 @@
  
          metrics_t metrics_s = {};
  
-@@ -201,6 +220,49 @@
+@@ -201,6 +223,49 @@
  
          RouterContext context(mib, trigger, *positioning, security.get(), config_s.ignore_own_messages, config_s.ignore_rsu_messages, num_threads, io_context);
          context.set_link_layer(link_layer.get());
@@ -110,9 +113,15 @@
          context.require_position_fix(vm.count("require-gnss-fix") > 0);
  
          std::mutex prom_mtx; 
-@@ -214,6 +276,10 @@
+@@ -213,7 +278,16 @@
+             std::unique_ptr<CamApplication> cam_app {
                  new CamApplication(*positioning, context.get_dccp().get_trigger().runtime(), pubsub, config_s, metrics_s, get_router(num_threads), 1, prom_mtx)
              };
++            const std::string generation = vm["cam-generation"].as<std::string>();
++            if (generation != "dynamic" && generation != "fixed") {
++                throw std::runtime_error("--cam-generation must be 'dynamic' or 'fixed', not '" + generation + "'");
++            }
++            cam_app->set_dynamic(generation == "dynamic");
              cam_app->set_interval(std::chrono::milliseconds(config_s.cam.periodicity));
 +            if (facilities_id_change) {
 +                // full ID change: the CAM timing must not carry over to the new identity
@@ -121,7 +130,7 @@
              apps.emplace("cam", std::move(cam_app));
          }
  
-@@ -321,6 +387,19 @@
+@@ -321,6 +395,19 @@
              std::cout << "Enable application '" << app.first << "'...\n";
              context.enable(app.second.get());
          }

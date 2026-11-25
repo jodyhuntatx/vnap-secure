@@ -184,7 +184,7 @@ docs.
 | How it works | [security and chain verification](docs/functional/security-and-chain-verification.md) · [pseudonym change](docs/functional/pseudonym-change.md) · [certificate refill](docs/functional/certificate-refill.md) · [vehicle movement](docs/functional/vehicle-movement.md) · [eavesdropper and scoring](docs/functional/eavesdropper-and-scoring.md) |
 | Patch set | [patch documentation](docs/patches/README.md) |
 | Results | [test summaries](results/README.md) |
-| Specifications | `Specs/VNAP-Secure-Simulation-Service-PRD.pdf`, `Specs/VNAP-Secure-Repository-Reorganization-Plan.docx` |
+| Specifications | `Specs/VNAP-Secure-Simulation-Service-PRD.md` (the PRD; its PDF is generated from it), `Specs/VNAP-Secure-Repository-Reorganization-Plan.docx` |
 
 The general Vanetza-NAP documentation (configuration, MQTT/JSON formats, applications) is in
 the vanetza-nap tree (`docs/`) and at
@@ -192,7 +192,7 @@ the vanetza-nap tree (`docs/`) and at
 
 ## Versions
 
-The current station image is `vnap:r2-p20` (also `vnap:latest`). Image tags, features by
+The current station image is `vnap:r2-p21` (also `vnap:latest`). Image tags, features by
 date and the history of this repository are in [CHANGELOG.md](CHANGELOG.md).
 
 **Moved sections.** The sections of the earlier single README are now in `docs/`; the

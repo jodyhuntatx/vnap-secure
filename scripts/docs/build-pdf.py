@@ -4,6 +4,9 @@
   scripts/docs/build-pdf.py            build the PDF (needs scripts/docs/requirements.txt: make docs-pdf)
   scripts/docs/build-pdf.py --check    exit 1 if the PDF is missing or older than its sources (stdlib only;
                                        part of make test)
+  scripts/docs/build-pdf.py --prd [--check]
+                                       the same for the product requirements, Specs/VNAP-Secure-Simulation-
+                                       Service-PRD.md -> .pdf (one document, no cover or contents)
 
 The PDF has a cover, a table of contents, the introduction in scripts/docs/pdf-intro.md, and every
 tracked Markdown file outside external/, in the parts listed in PARTS; a file in no part is an error.
@@ -42,7 +45,13 @@ PARTS = [
                    "docs/patches/mobility-and-cam.md", "docs/patches/operation-counters.md"]),
     ("Results", ["results/README.md"]),
     ("Appendix", ["CHANGELOG.md", "sim/images/eavesdropper/asn1/README.md"]),
+    ("Specifications", ["Specs/VNAP-Secure-Simulation-Service-PRD.md"]),
 ]
+PRD_SRC = "Specs/VNAP-Secure-Simulation-Service-PRD.md"
+PRD = "--prd" in sys.argv[1:]
+if PRD:
+    OUT = os.path.join(REPO, PRD_SRC[:-3] + ".pdf")
+    TITLE = "VNAP-Secure Simulation Service · Product requirements"
 INTRO = "INTRO"
 DOCS = [d for _, ds in PARTS for d in ds]
 IMAGES = "docs/images"
@@ -64,7 +73,10 @@ def check_parts():
 def digest():
     """SHA-256 over everything the PDF is made from."""
     h = hashlib.sha256()
-    files = [os.path.realpath(__file__), INTRO_FILE] + [os.path.join(REPO, d) for d in DOCS]
+    if PRD:
+        files = [os.path.realpath(__file__), os.path.join(REPO, PRD_SRC)]
+    else:
+        files = [os.path.realpath(__file__), INTRO_FILE] + [os.path.join(REPO, d) for d in DOCS]
     img_dir = os.path.join(REPO, IMAGES)
     if os.path.isdir(img_dir):
         files += [os.path.join(img_dir, f) for f in sorted(os.listdir(img_dir))]
@@ -549,6 +561,12 @@ class Doc(BaseDocTemplate):
             if f.level == 0:
                 self.part_name = f.toc_text
 
+
+if PRD:
+    doc = Doc(OUT)
+    doc.multiBuild(convert(PRD_SRC, part_level=1))
+    print(f"{os.path.relpath(OUT, REPO)}: {doc.page} pages")
+    sys.exit(0)
 
 # the date of the newest committed change to the sources (no clock, so a rebuild is reproducible)
 changed = subprocess.run(["git", "-C", REPO, "log", "-1", "--format=%cs", "--", *DOCS, os.path.relpath(INTRO_FILE, REPO)],

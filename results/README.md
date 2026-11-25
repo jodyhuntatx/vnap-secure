@@ -14,6 +14,13 @@ cycle therefore carried over to its new identity. Matching on that timing alone 
 that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on every ID change
 (the same matching then linked 1 of 13). See [pseudonym change](../docs/functional/pseudonym-change.md#cam-timing).
 
+**CAM rate.** Every result below was measured with images up to vnap:r2-p20, which sent a CAM
+every second whatever the vehicle did. Every CAM then carried the full certificate, CAM timing
+was strictly regular, and neighbours heard a moving car less often than EN 302 637-2 asks
+(about every 0.4 s at 36 km/h). vnap:r2-p21 generates CAMs as the standard specifies; rerun a
+result before comparing it with newer ones. See
+[vehicle movement](../docs/functional/vehicle-movement.md#cam-generation).
+
 **Scenario names.** The results name the scenario files as they were when measured. Since
 2026-10-18 these are five foundational scenarios with variants, e.g. `c-its-pki-mixzone` is
 now `crossing:blocks` and `c-its-pki-convoy` is `convoy:periodic`. The table in

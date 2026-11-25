@@ -89,13 +89,17 @@ full ID change. This is the silent period strategy of ETSI TR 103 415 clause 4.1
   frames (CAMs, beacons, injected messages) until it ends. Reception continues.
 - **Logging:** `[IDCHANGE] silent period <n> ms` at the start, and
   `silent period over, <n> frame(s) suppressed` at the end.
+- **First CAM after it** carries the full certificate, so neighbours can verify the new
+  identity's first message.
 - **Cost** (TR 103 415): while silent, the vehicle is missing from its neighbours' view, and it
   reappears suddenly afterwards.
 
 ## CAM timing
 
-The CAM timer restarts at a random phase on every full ID change. The first CAM after the
-change is skipped, and the next comes after a random delay of up to one interval
+CAMs follow EN 302 637-2 ([vehicle movement](vehicle-movement.md#cam-generation)): a moving
+vehicle sends about every 0.4 s at 36 km/h, a stationary one every second. The CAM timer restarts at a
+random phase on every full ID change. The first CAM after the change is skipped, and the next
+comes after a random delay of up to one interval
 (`[IDCHANGE] CAM timer: new phase, next CAM in <n> ms`).
 
 Without this, each car's position within the 1 s CAM cycle carried over to its new identity

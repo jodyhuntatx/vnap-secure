@@ -59,6 +59,14 @@ channel in [control channels](../reference/control-channels.md#pseudonym-change)
   `PSEUDO_SILENT_MAX_MS`).
 - **Logs:** `[IDCHANGE] silent period <n> ms`, then `silent period over, <n> frame(s)
   suppressed`.
+- **Certificate after the silence** (from `vnap:r2-p21`): the change requests the full
+  certificate for the next CAM, but that CAM is dropped by the silence. `router_context.cpp`
+  records the silence's end (`set_silence_end`, `id_change.{hpp,cpp}`), and `security.cpp`
+  requests the certificate again for the first CAM signed after it (`silence_just_ended`).
+  Without this, neighbours received CAMs from an AT they had not seen until the next
+  once-a-second certificate: with EN 302 637-2 CAM generation, the first CAM of 20 of 32 new
+  identities carried only a digest, and receivers counted 2.2 unknown signers per change. At a
+  fixed 1 s interval every CAM carried the certificate, which hid it.
 
 ## Testing
 

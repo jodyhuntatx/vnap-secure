@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/tools/socktap/id_change.cpp
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,93 @@
 +#include "id_change.hpp"
 +#include <cryptopp/sha.h>
 +#include <algorithm>
@@ -72,4 +72,25 @@
 +void set_own_station_id(std::uint32_t id)
 +{
 +    station_id.store(id);
++}
++
++namespace
++{
++std::atomic<std::int64_t> silence_end_ns { 0 };   // steady_clock; 0: none pending
++}
++
++void set_silence_end(std::chrono::steady_clock::time_point end)
++{
++    silence_end_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count());
++}
++
++bool silence_just_ended()
++{
++    std::int64_t end = silence_end_ns.load();
++    if (end == 0) {
++        return false;
++    }
++    const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++    return now >= end && silence_end_ns.compare_exchange_strong(end, 0);
 +}

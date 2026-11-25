@@ -74,9 +74,33 @@ CamApplication::CamApplication(PositionProvider& positioning, Runtime& rt, PubSu
     }
 }
 
+namespace
+{
+
+// EN 302 637-2 clause 6.1.3 (without DCC: T_GenCamDcc = T_GenCamMin)
+constexpr auto T_GEN_CAM_MIN = std::chrono::milliseconds(100);
+constexpr auto T_CHECK_CAM_GEN = T_GEN_CAM_MIN;
+constexpr int N_GEN_CAM = 3;
+constexpr double HEADING_DEG = 4.0;
+constexpr double POSITION_M = 4.0;
+constexpr double SPEED_MPS = 0.5;
+
+} // namespace
+
+void CamApplication::set_dynamic(bool dynamic)
+{
+    dynamic_ = dynamic;
+}
+
 void CamApplication::set_interval(Clock::duration interval)
 {
     cam_interval_ = interval;
+    gen_cam_ = interval;
+    if (dynamic_ && interval != std::chrono::milliseconds(0)) {
+        std::cerr << ("[CAM] generation: dynamic (EN 302 637-2: heading 4 deg, position 4 m, speed 0.5 m/s; "
+                      "checked every 100 ms; at most every " + std::to_string(duration_cast<milliseconds>(interval).count())
+                      + " ms otherwise)\n");
+    }
     runtime_.cancel(this);
     if (interval != std::chrono::milliseconds(0)) schedule_timer();
 }
@@ -237,7 +261,7 @@ void CamApplication::indicate(const DataIndication& indication, UpPacketPtr pack
 
 void CamApplication::schedule_timer()
 {
-    runtime_.schedule(cam_interval_, std::bind(&CamApplication::on_timer, this, std::placeholders::_1), this);
+    runtime_.schedule(dynamic_ ? Clock::duration(T_CHECK_CAM_GEN) : cam_interval_, std::bind(&CamApplication::on_timer, this, std::placeholders::_1), this);
 }
 
 void CamApplication::rephase_on_id_change(security::IdChangeService& service)
@@ -394,6 +418,55 @@ void CamApplication::on_message(string topic, string mqtt_message, const std::ve
     prom_mtx.unlock();
 }
 
+bool CamApplication::cam_due()
+{
+    const auto now = runtime_.now();
+    const auto fix = positioning_.position_fix();
+    const double lat = fix.latitude / units::degree, lon = fix.longitude / units::degree;
+    const double speed = fix.speed.value().value();
+    const double course = fix.course.value().value();
+    const bool course_ok = std::isfinite(course) && course >= 0 && course < 360;
+    const bool speed_ok = std::isfinite(speed) && speed >= 0;
+
+    bool due = !sent_any_;
+    const auto elapsed = now - last_cam_time_;
+    if (!due && elapsed >= T_GEN_CAM_MIN) {
+        // condition 1: the vehicle's dynamics changed enough since the last CAM
+        bool dynamics = false;
+        if (course_ok && last_cam_course_ >= 0) {
+            const double d = std::fabs(std::fmod(course - last_cam_course_ + 540.0, 360.0) - 180.0);
+            dynamics |= d > HEADING_DEG;
+        }
+        const double north = (lat - last_cam_lat_) * 111195.0;
+        const double east = (lon - last_cam_lon_) * 111195.0 * std::cos(lat * M_PI / 180.0);
+        dynamics |= std::sqrt(north * north + east * east) > POSITION_M;
+        if (speed_ok && last_cam_speed_ >= 0) {
+            dynamics |= std::fabs(speed - last_cam_speed_) > SPEED_MPS;
+        }
+        if (dynamics) {
+            gen_cam_ = std::min(cam_interval_, Clock::duration(elapsed));
+            n_gen_cam_ = 0;
+            due = true;
+        } else if (elapsed >= gen_cam_) {
+            // condition 2: T_GenCam elapsed; after N_GenCam such CAMs it returns to T_GenCamMax
+            if (++n_gen_cam_ >= N_GEN_CAM) {
+                gen_cam_ = cam_interval_;
+                n_gen_cam_ = 0;
+            }
+            due = true;
+        }
+    }
+    if (due) {
+        sent_any_ = true;
+        last_cam_time_ = now;
+        last_cam_lat_ = lat;
+        last_cam_lon_ = lon;
+        last_cam_speed_ = speed_ok ? speed : -1;
+        last_cam_course_ = course_ok ? course : -1;
+    }
+    return due;
+}
+
 void CamApplication::on_timer(Clock::time_point)
 {
     if (rephase_.exchange(false)) {
@@ -401,11 +474,15 @@ void CamApplication::on_timer(Clock::time_point)
         // CAM of the new identity continues the old identity's timing. The gap since the last
         // CAM is one to two intervals (above T_GenCamMin), once; with a silent period these
         // CAMs are not sent anyway.
-        const auto interval_us = duration_cast<microseconds>(cam_interval_).count();
+        const auto interval_us = duration_cast<microseconds>(dynamic_ ? gen_cam_ : cam_interval_).count();
         std::uniform_int_distribution<long long> offset(0, std::max(1LL, (long long) interval_us) - 1);
         const microseconds next(offset(rephase_rng_));
         std::cerr << ("[IDCHANGE] CAM timer: new phase, next CAM in " + std::to_string(next.count() / 1000) + " ms\n");
         runtime_.schedule(duration_cast<Clock::duration>(next), std::bind(&CamApplication::on_timer, this, std::placeholders::_1), this);
+        return;
+    }
+    if (dynamic_ && !cam_due()) {
+        schedule_timer();   // check again after T_CheckCamGen
         return;
     }
     std::lock_guard<std::recursive_mutex> cam_lock(asn1::r2::cam_descriptor_mutex()); // see indicate()

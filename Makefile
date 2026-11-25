@@ -75,10 +75,12 @@ docs-check:
 # The same sources give the same bytes, so an unchanged PDF stays unchanged in git.
 docs-pdf: docs-deps
 	$(DOCS_PY) scripts/docs/build-pdf.py
+	$(DOCS_PY) scripts/docs/build-pdf.py --prd
 
 # part of make test, standard library only: the PDF's source digest matches the Markdown files
 docs-pdf-check:
 	scripts/docs/build-pdf.py --check
+	scripts/docs/build-pdf.py --prd --check
 
 # the PDF builder's packages (scripts/docs/requirements.txt), installed like service-deps
 docs-deps:

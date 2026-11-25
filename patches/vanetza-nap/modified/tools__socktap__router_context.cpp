@@ -275,6 +275,7 @@ bool RouterContext::on_id_change(vanetza::security::IdChangeService::Command com
                 std::uniform_int_distribution<long> dist(silence_min_.count(), silence_max_.count());
                 const std::chrono::milliseconds silence { dist(random_gen) };
                 dccp->silence_for(silence);
+                set_silence_end(std::chrono::steady_clock::now() + silence);
                 std::cerr << "[IDCHANGE] silent period " << silence.count() << " ms" << std::endl;
             }
             id_change_locks_.clear();

@@ -34,6 +34,7 @@ build. It applies to upstream vanetza-nap `release2-main` at the commit in
 | | Station key derivation | butterfly key expansion on the station (IEEE 1609.2.1) | simulation-specific |
 | [Mobility and CAM](mobility-and-cam.md) | Position control channel | position from an MQTT topic at runtime | simulation-specific |
 | | CAM kinematics | heading, speed and heading confidence, acceleration, yaw rate in the CAM's units | candidate |
+| | CAM generation | CAMs by EN 302 637-2: on heading, position and speed changes, at most every second otherwise | candidate |
 | | CAM timer rephase | the CAM timer restarts at a random phase on every full ID change | simulation-specific |
 | [Operation counters](operation-counters.md) | Security operation counters | counts and times of signatures, verifications, chain checks, key derivations and ID changes, logged every second | simulation-specific |
 

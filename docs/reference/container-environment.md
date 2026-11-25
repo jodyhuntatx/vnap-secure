@@ -16,6 +16,7 @@ a station by hand or writing another harness.
 | `PSEUDO_CONTROL_USERNAME` / `PSEUDO_CONTROL_PASSWORD` | control broker account (the password is read from the environment, not passed on the command line) |
 | `PSEUDO_MIN_INTERVAL` | minimum milliseconds between two pseudonym changes (1000); earlier events are rejected |
 | `PSEUDO_ID_CHANGE` | `full` (default): a pseudonym change also changes the GN address, MAC and CAM `stationId` through the ETSI ID change notification; `certificate`: only the certificate |
+| `CAM_GENERATION` | `dynamic` (default): CAMs by EN 302 637-2, on heading, position and speed changes ([vehicle movement](../functional/vehicle-movement.md#cam-generation)); `fixed`: every `VANETZA_CAM_PERIODICITY` ms (1000), as images up to `vnap:r2-p20` |
 | `PSEUDO_SILENT_MIN_MS` / `PSEUDO_SILENT_MAX_MS` | random radio silence after each full ID change, in ms (default 0 = off); see [pseudonym change](../functional/pseudonym-change.md#silent-period) |
 | `PKI_REFILL_AT` | certificate refill: request a new batch from the run's PKI when this many unused pseudonyms are left (unset or 0: fixed pool that wraps around). With refill no pseudonym is used twice; uses the pseudonym control broker; see [certificate refill](../functional/certificate-refill.md) |
 | `PKI_BATCH_SIZE` | certificates to request per batch (8) |
