@@ -472,7 +472,7 @@ def _cost_section(d, number):
         + ([] if v else ["verification failures at the receivers (no collector recording)"]) \
         + ([] if w else ["delayed or lost warnings (no warning probe: a [probe] section)"])
     b.append(("p", "Not measured in this run: " + "; ".join(missing + ["CPU load and the stations' operation counts (phases 3 "
-                   "and 4 of Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx)"]) + "."))
+                   "and 4 of the overhead design, section 10 of the PRD)"]) + "."))
     return b
 
 

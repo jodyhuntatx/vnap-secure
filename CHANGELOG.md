@@ -24,6 +24,20 @@ Results measured with images up to `r2-p16` carry the CAM timing caveat describe
 `r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
 CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
 
+## 2026-11-25: overhead design merged into the PRD (draft 0.3)
+
+`Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx` is now section 10 of
+`Specs/VNAP-Secure-Simulation-Service-PRD.md`, and the `.docx` is removed (it is in the git
+history; the reviewed copy `...-Overhead-Design-BS.docx` stays as the record of the review).
+- **Brought up to date:** phases 1, 2 and 4 marked delivered, phase 4 recorded as moved ahead
+  of phase 3; the components table has a state column; CAM generation by EN 302 637-2 and the
+  certificate after the silent period in the description of a change, the sizes, the method
+  and the joint experiment's fixed factors (`vnap:r2-p21` or later); the centre-line and CAM-rate
+  limits; the CAM rate open question narrowed.
+- **New requirements** OVH-1 to OVH-6 (PRD 5.11), and the overhead phases in the delivery plan.
+- **PDF:** in the PRD's own PDF, links to other documents go to GitHub
+  (`build-pdf.py --prd`).
+
 ## 2026-11-24: CAM generation by EN 302 637-2 (`vnap:r2-p21`)
 
 The phase 4 run showed every CAM carrying the full certificate. The cause was the CAM rate:
@@ -64,7 +78,7 @@ once a second, then went on every CAM.
 
 ## 2026-11-24: phase 4 of the overhead design: station operation counters (`vnap:r2-p20`)
 
-Phase 4 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`, moved ahead of phase 3 so
+Phase 4 of the overhead design (now section 10 of the PRD), moved ahead of phase 3 so
 that one image (`vnap:r2-p20`, with the DENM stationId fix) serves every phase 3 measurement:
 - **Station counters** ([operation counters](docs/patches/operation-counters.md)): count and
   total time of messages signed and verified, verification failures and unknown signers, ECDSA
@@ -89,7 +103,7 @@ that one image (`vnap:r2-p20`, with the DENM stationId fix) serves every phase 3
 
 ## 2026-11-24: phase 2 of the overhead design: what the receivers knew
 
-Phase 2 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`:
+Phase 2 of the overhead design (now section 10 of the PRD):
 - **Collector** (`vnap-collector`, `sim/images/collector/`): with an eavesdropper or a
   `[probe]`, a helper on the message network subscribes to every station's embedded broker and
   records each received CAM and DENM with the station's security report
@@ -144,7 +158,7 @@ The DENM application now writes the current stationId into the header, and into
 
 ## 2026-10-19: phase 1 of the overhead design complete
 
-Phase 1 of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`:
+Phase 1 of the overhead design (now section 10 of the PRD):
 - **Position recorder:** the mobility client writes every vehicle's true position 5 times a
   second to `positions.jsonl`, saved with the results.
 - **`overhead.json` version 2** (`sim/vnapsim/overhead.py`), recomputed for stored runs on
@@ -185,7 +199,7 @@ instead of sending it (`station N held off (...)`).
 
 ## 2026-10-19: privacy and cost of the pseudonym changes, per run
 
-This is the first iteration of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`. The
+This is the first iteration of the overhead design (now section 10 of the PRD). The
 *Results* tab of a stopped run shows every pseudonym change with what the eavesdropper made of
 it and what the receivers missed meanwhile:
 - headline figures: tracking success, wrong links, synchronized changes, reception gap, stale
@@ -505,7 +519,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 
 ## PRD phases
 
-`Specs/VNAP-Secure-Simulation-Service-PRD.pdf` (source: the `.md` next to it) plans the service in nine phases; draft 0.2 adds the station requirements:
+`Specs/VNAP-Secure-Simulation-Service-PRD.pdf` (source: the `.md` next to it) plans the service in nine phases; draft 0.2 adds the station requirements, draft 0.3 the overhead measurement design (section 10):
 
 | Phase | Content | Done |
 |---|---|---|
@@ -518,6 +532,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 | 8 | Web UI | 2026-10-08 |
 | 9 | Hardening: backups, TOTP | 2026-10-08; MCP endpoint not yet |
 | draft 0.2 | Station fidelity (STA-1 to STA-4): CAM generation, stationId in DENMs, operation counters, certificate after the silent period | 2026-11-24 |
+| draft 0.3 | Overhead measurement (OVH-1 to OVH-6, section 10): phases 1, 2, 4 | 2026-10-19, 2026-11-24; phase 3 next |
 
 ## Documentation moves
 

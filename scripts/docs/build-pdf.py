@@ -230,7 +230,8 @@ def resolve(doc, href):
         return href
     path, _, frag = href.partition("#")
     target = doc if not path else os.path.normpath(os.path.join(os.path.dirname(doc), path))
-    if target in DOCS or target == doc:
+    # the PRD alone links other documents to GitHub; the documentation PDF holds them all
+    if target in ([PRD_SRC] if PRD else DOCS) or target == doc:
         if frag and (target, frag) in ANCHORS:
             return "#" + doc_id(target) + "__" + frag
         return "#" + doc_id(target)

@@ -50,7 +50,7 @@ First image: `vnap:r2-p20`.
   after the sender's silent period.
 - **Carrying over to other hardware:** counts do not depend on the host; times do. Multiply the
   counts by a target OBU's or HSM's per-operation times
-  ([design](../../Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx), section 5.3).
+  ([design](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#1053-carrying-the-results-over-to-real-hardware), 10.5.3).
 
 ## Testing
 

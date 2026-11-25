@@ -101,7 +101,7 @@ Details are in [eavesdropper and scoring](../functional/eavesdropper-and-scoring
 
 After a run stops, the *Results* tab puts every pseudonym change next to what it cost: what
 the eavesdropper made of the change, and what the other stations missed meanwhile. These are the
-phase 1 measures of `Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`. They use only
+phase 1 measures of the [overhead design](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#10-overhead-of-pseudonym-changes-and-the-privacy-safety-trade-off). They use only
 data runs keep, so runs stopped before them show them too, without the position figures.
 
 - **Reference receiver:** reception is measured at the eavesdropper. On the lossless link it

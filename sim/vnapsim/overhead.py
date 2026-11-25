@@ -1,6 +1,7 @@
 """Privacy and cost of pseudonym changes in one run, from its results directory (overhead.json).
 
-Phase 1 of Specs/VNAP-Secure-Pseudonym-Change-Overhead-Design.docx: only data every run keeps.
+Phase 1 of the overhead design (Specs/VNAP-Secure-Simulation-Service-PRD.md, section 10): only data every
+run keeps.
 
   station logs (<station>.log)   when each vehicle changed pseudonym, to which certificate, and
                                  its silent periods (the ground truth, as for scoring)
