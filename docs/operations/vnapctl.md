@@ -101,6 +101,8 @@ rejection happens.
 ./vnapctl collect DIR [--json]                       # save the running simulation's results; before down
 ./vnapctl collect DIR --analyse                      # analyse saved results again (overhead.json, metrics.json)
 ./vnapctl overhead RESULTS_DIR [--json] [--write]    # privacy and cost of a stopped run's pseudonym changes
+./vnapctl sweep DIR --plan PLAN [--dry-run]          # a plan of runs over seeds, then the cost per change
+./vnapctl sweep DIR --analyse [--json]               # analyse a sweep's runs again
 ./vnapctl certs [status] [v2|v3] [--json]           # the committed test certificates' validity
 ./vnapctl certs regenerate v2|v3 [--lifetime KEY=N ...]   # a new set; see docs/certificates.md
 ```
@@ -243,7 +245,7 @@ the same files; run it before `down`, which removes the containers and their log
 |---|---|
 | `<container>.log` | every container's log, with docker timestamps |
 | `eavesdropper-logs.tar` | the eavesdropper's `messages.jsonl` (every frame), `events.jsonl`, `tracks.json` |
-| `collector-logs.tar` | the collector's `receptions.jsonl` (every message each station received, with its security report) and `probe.jsonl` (the warning probe's DENMs) |
+| `collector-logs.tar` | the collector's `receptions.jsonl` (every message each station received, with its security report), `probe.jsonl` (the warning probe's DENMs) and `cpu.jsonl` (the CPU time of every station container and of the PKI, 10 times a second) |
 | `positions.jsonl` | the vehicles' true positions, 5 times a second (the mobility client's recorder) |
 | `pki-issued.jsonl` | the run's PKI issue log (digests, never keys) |
 | `status.json`, `score.json` | the state of the run at the end, and the eavesdropper's score |
@@ -268,6 +270,11 @@ run instead of a check window. It adds:
   (lost or late beyond what the sender's silent period explains) and `.id_leaks` (DENMs that
   still carry the configured stationId after a change: a station image without the DENM fix);
 - with recorded positions: `conflict.count`, `conflict.exposure_s`, `conflict.missed`;
+- with the collector's CPU samples (runs from 2026-11-25): `cpu.vehicle_ms_per_s`,
+  `cpu.rsu_ms_per_s`, `cpu.pki_ms_per_s` (means over the stations of each kind),
+  `cpu.stations_ms_per_s` (all stations together), and per container `<name>.cpu.ms_per_s`,
+  `.ms_per_s_p95` (over 1 s windows). Milliseconds of CPU per second: 1000 is one core. See
+  [sweeps](#sweeps) for the cost per change;
 - with station images from `vnap:r2-p20` (the `[COUNTERS]` lines,
   [operation counters](../patches/operation-counters.md)): `ops.id_change_us_mean`, `.id_change_us_max`
   (the ID change handshake), `ops.chain_checks_per_change`, `.unknown_signer_per_change`,
@@ -284,6 +291,48 @@ sending vehicle, as the reference receiver heard it.
 The analyses read only the directory: `collect DIR --analyse` makes them again, for example
 after a change to a definition, also on the service's `data/results/<run id>`. A failing
 analysis writes `overhead-error.txt` or `metrics-error.txt` and leaves the raw files.
+
+## Sweeps
+
+`sweep` runs a plan: scenario variants over a list of seeds, each run started, observed for
+`duration_s`, collected and stopped, then analysed together. It is the sweep of the overhead
+design ([PRD](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#104-method), 10.4):
+
+```bash
+./vnapctl sweep ~/vnap-sweeps/overhead --plan sweeps/overhead.toml --dry-run   # what it would run
+./vnapctl --instance 3 sweep ~/vnap-sweeps/overhead --plan sweeps/overhead.toml
+./vnapctl sweep ~/vnap-sweeps/overhead --analyse                                # again, e.g. after a change
+```
+
+- **Plan:** `seeds` (each sets `control.mobility_seed`, so every cell drives the same paths per
+  seed), `set` (overrides of every run), and `[[group]]`s: a `scenario`, a `baseline` (the
+  overrides of a run without pseudonym changes), `factors` (a cell per combination of their
+  levels, each level a list of overrides) and optionally `rate_factor`, the factor that sets the
+  change rate, and `fit_exclude`, cells shown in the table but left out of the slopes (marked
+  `*`), for example where a silent period about as long as the change interval keeps the vehicles
+  silent nearly all the time. `sim/sweeps/overhead.toml` is the plan of the design: periodic changes every 60,
+  30, 10 and 5 s, each with no silent period, 3 to 13 s and 6 to 12 s, and the mix zone with the
+  same three silent periods; 3 seeds of 3 minutes, 51 runs, about 3.6 hours.
+- **Runs:** `DIR/<group>/<cell>/seed-<seed>/`, each a results directory as `collect` writes it,
+  with `sweep-run.json` (the cell and its overrides). A run with `metrics.json` is not run again,
+  so a stopped sweep continues where it was; a failed one leaves `sweep-error.txt` and is
+  retried. The seeds are the outer loop, so a partial sweep has whole seeds.
+- **Analysis:** `sweep.json` and `sweep.txt`: per cell, the mean and spread over seeds of the
+  CPU rates, stale share, tracking success, reception gap, delivery ratio, CAM size and chain
+  checks; per series (the cells that differ only in the change rate, with the baseline), the
+  slope of each measure against the change rate, fitted per seed, as mean and standard deviation
+  over seeds. A vehicle's measures are fitted against its own change rate (changes per second
+  per vehicle), so its CPU slope is the cost of a change of every vehicle, its own and its
+  neighbours' together; the RSU's and the PKI's against the run's (changes per second of all
+  vehicles), so theirs is the cost of one change to a receiver and to the PKI. Without a
+  `rate_factor` each cell is compared with the baseline alone.
+- **CPU and silence:** silent stations send nothing, so their neighbours verify fewer messages;
+  the CPU slope is the net effect of the changes' work and of that saving. The RSU's
+  verifications per second, also fitted, show the saving on its own.
+- **Host pauses:** a paused VM does not stop a run's 180 s from counting, but the CPU samples
+  are timed by the wall clock and then show a gap. Check each run's `cpu.jsonl` for gaps longer
+  than about 2 s, move the affected run's directory out of `DIR` (the analysis reads every run
+  under it) and start the sweep again; it reruns only that run.
 
 ## Your own scenarios
 

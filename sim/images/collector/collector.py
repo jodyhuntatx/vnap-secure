@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Verification collector and warning probe (phase 2 of the pseudonym-change overhead design).
+"""Verification collector, warning probe (phase 2 of the pseudonym-change overhead design) and CPU
+sampler (phase 3).
 
 Collector: subscribes to every station's embedded broker on the message network and records, for
 each message the station received, what the station made of it: sender stationId, security report,
@@ -12,14 +13,20 @@ publishing on their `vanetza/in/denm`, and repeats each one every `repeat_interv
 during a silent period is dropped with every other frame; its repetitions arrive after the silence
 (delayed) or not at all (lost). The collector's DENM records at the receivers tell which.
 
+CPU sampler: reads the cumulative CPU time (cpu.stat usage_usec) of the stations' containers from
+their cgroup directories, mounted read-only at /cpu/<name>, every `interval_ms`. The cgroups belong
+to the containers, so the stations' own code is not involved and the sampler's work is not counted.
+
   COLLECTOR_CONFIG  JSON: {"stations": [{"name", "ip", "station_id"}], "topics": [...],
                            "probe": null | {"stations": [names], "interval_s", "repeat_interval_s",
-                                            "repeat_duration_s", "seed"}}
+                                            "repeat_duration_s", "seed"},
+                           "cpu": null | {"interval_ms", "containers": [names under /cpu]}}
 
 Output in /logs (a tmpfs, collected before the run is removed):
   receptions.jsonl  {"t", "rx", "m", "from", "sec", "rep", "len"} per received message; DENMs also
                     "hdr" (header stationId), "orig" and "seq" (actionId)
   probe.jsonl       {"t", "station", "seq", "event": "trigger" | "send", "n"} per DENM sent
+  cpu.jsonl         {"t", "u": {name: usage_usec}} per sample
 """
 
 import heapq
@@ -34,6 +41,7 @@ import time
 import paho.mqtt.client as mqtt
 
 LOG_DIR = "/logs"
+CPU_DIR = "/cpu"
 ITS_EPOCH = 1072915200   # 2004-01-01T00:00:00Z: TimestampIts counts from here (milliseconds; in vanetza's JSON, seconds)
 SEQ_MAX = 65535
 
@@ -77,6 +85,37 @@ def denm_payload(station_id, seq, reference_s, validity_s):
             '"validityDuration":%d,"stationType":5},'
             '"situation":{"informationQuality":7,"eventType":{"ccAndScc":{"collisionRisk97":1}}}}'
             % (station_id, seq, reference_s, reference_s, validity_s))
+
+
+def usage_usec(path):
+    """Cumulative CPU time of a cgroup in microseconds (cpu.stat), or None while it cannot be read."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("usage_usec "):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def run_cpu(cfg, running):
+    """Sample the containers' CPU time until stopped; a container whose cgroup is gone (stopped) is left out."""
+    names = [n for n in cfg.get("containers") or [] if os.path.isdir(os.path.join(CPU_DIR, n))]
+    if not names:
+        print("[CPU] no cgroup mounted: no CPU samples", flush=True)
+        return
+    interval = max(10, int(cfg.get("interval_ms") or 100)) / 1000
+    out = Writer(os.path.join(LOG_DIR, "cpu.jsonl"))
+    paths = {n: os.path.join(CPU_DIR, n, "cpu.stat") for n in names}
+    print(f"[CPU] sampling {', '.join(names)} every {interval * 1000:g} ms", flush=True)
+    due = time.monotonic()
+    while running.is_set():
+        now = time.time()
+        u = {n: v for n, p in paths.items() if (v := usage_usec(p)) is not None}
+        out.write({"t": round(now, 4), "u": u})
+        due += interval
+        time.sleep(max(0.0, due - time.monotonic()))
 
 
 def main():
@@ -133,6 +172,8 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: running.clear())
     signal.signal(signal.SIGINT, lambda *_: running.clear())
 
+    if cfg.get("cpu"):
+        threading.Thread(target=run_cpu, args=(cfg["cpu"], running), daemon=True).start()
     if not probe:
         while running.is_set():
             time.sleep(0.5)

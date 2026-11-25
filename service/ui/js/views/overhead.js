@@ -74,7 +74,7 @@ export function overheadPanel(panel, o) {
   panel.append(h("p", { class: "muted" }, o.positions ? "" : "No recorded true positions in this run, so no position error or conflict exposure. ",
     o.verification ? "" : "No collector recording, so no verification at the receivers. ",
     o.warnings ? "" : "No warning probe in this run ([probe] in the scenario). ",
-    "Not measured yet: CPU load and the stations' operation counts. See section 10 of Specs/VNAP-Secure-Simulation-Service-PRD.md."));
+    "The stations' CPU time and operation counts are in overhead.json and metrics.json, not yet on this tab (section 10 of Specs/VNAP-Secure-Simulation-Service-PRD.md)."));
 }
 
 // what each station made of the messages it received, and the warnings that came late or not at all

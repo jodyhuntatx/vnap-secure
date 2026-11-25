@@ -179,6 +179,14 @@ def main():
                         "to a definition")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("sweep", help="run a plan of scenario variants over seeds and fit the cost per change "
+                                     "(the overhead design's sweep); resumes where it stopped")
+    p.add_argument("dir", help="sweep directory: one results directory per run, sweep.json and sweep.txt")
+    p.add_argument("--plan", help="the plan (TOML), e.g. sweeps/overhead.toml; --analyse defaults to DIR/plan.toml")
+    p.add_argument("--analyse", action="store_true", help="only analyse the runs already in DIR")
+    p.add_argument("--dry-run", action="store_true", help="list the runs still to do")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("certs", help="the committed test certificate sets: validity, regeneration")
     p.add_argument("action", nargs="?", choices=("status", "regenerate"), default="status")
     p.add_argument("set", nargs="?", choices=("v2", "v3"), help="regenerate: which set")
@@ -244,6 +252,13 @@ def main():
         if not os.path.isfile(os.path.join(args.dir, "status.json")):
             return fail(f"{args.dir}: not a results directory (no status.json)", EXIT_USAGE)
         return report_collected(args, collect.analyse(args.dir))
+
+    if args.cmd == "sweep":
+        from . import sweep
+        try:
+            return sweep.main(args, log=progress if not args.quiet else lambda *_: None)
+        except (OSError, ValueError) as e:
+            return fail(str(e), EXIT_USAGE)
 
     if args.cmd == "certs":
         from . import testcerts

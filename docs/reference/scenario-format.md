@@ -117,8 +117,10 @@ timing_tolerance_ms = 25.0        #   and max difference between predicted and a
 verbose = false                   # log every frame to the console
 
 [collector]                       # on by default with [eavesdropper] or [probe]: records what every station
-                                  # receives (sender, security report, size) from its embedded broker
-enabled = true                    # false: no collector (and no probe)
+                                  # receives (sender, security report, size) from its embedded broker,
+                                  # and samples the CPU time of the stations and the PKI (their cgroups,
+                                  # mounted read-only)
+enabled = true                    # false: no collector (no probe, no CPU samples)
 ip = "192.168.98.98"              # default: host .98 of the network
 
 [probe]                           # optional warning probe (in the collector): DENMs at random times

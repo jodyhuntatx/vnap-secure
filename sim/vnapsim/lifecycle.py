@@ -150,6 +150,8 @@ def context_hash(directory, exclude=(), h=None):
 LOGS_TMPFS = "/logs:size=1g"
 EAVESDROPPER_READY_S = 20   # it loads its ASN.1 codecs before it listens
 COLLECTOR_READY_S = 30      # it subscribes once the stations' embedded brokers are up
+CPU_INTERVAL_MS = 100       # the CPU sampler (phase 3 of the overhead design): about 10 samples a second
+CGROUP_ROOT = "/sys/fs/cgroup"
 
 
 def ensure_image(r, image, subdir, exclude=(), extra=None, labels=None):
@@ -181,6 +183,18 @@ def ensure_image(r, image, subdir, exclude=(), extra=None, labels=None):
     label_args = [a for k, v in (labels or {}).items() if v for a in ("--label", f"{k}={v}")]
     r.run(["build", "-q", "-t", ref, "-t", f"{image}:latest", *label_args, "-"], stdin_cmd=tar)
     return ref
+
+
+def cgroup_dir(name):
+    """The host directory of a running container's cgroup (v2), from its main process; None if not found."""
+    pid = subprocess.run(["docker", "inspect", "-f", "{{.State.Pid}}", name], capture_output=True, text=True).stdout.strip()
+    try:
+        with open(f"/proc/{int(pid)}/cgroup") as f:
+            path = next((line.split("::", 1)[1].strip() for line in f if line.startswith("0::")), None)
+    except (OSError, ValueError):
+        return None
+    d = os.path.join(CGROUP_ROOT, path.lstrip("/")) if path else None
+    return d if d and os.path.isfile(os.path.join(d, "cpu.stat")) else None
 
 
 def container_exists(name):
@@ -337,9 +351,14 @@ def scenario_up(sc, dry_run=False, wait=30.0, claimed=None, limits=None):
                       # the trigger times: a fixed seed repeats them; otherwise a new one, recorded in the config
                       "probe": co["probe"] and {**co["probe"], "seed": co["probe"]["seed"] if co["probe"]["seed"] is not None
                                                 else random.randrange(1 << 31)}}
+            # the CPU sampler: each station's (and the PKI's) own cgroup directory, read-only
+            cpu_mounts = {} if dry_run else {name: d for name in [st["name"] for st in sc["stations"]]
+                                             + ([sc["pki"]["name"]] if sc["pki"] else []) if (d := cgroup_dir(name))}
+            config["cpu"] = {"interval_ms": CPU_INTERVAL_MS, "containers": sorted(cpu_mounts)}
             # only the message network, and only the stations' own brokers: no control network, no keys
             r.run(["run", "-d", "--name", co["name"], "--network", lan, "--ip", co["ip"], "--tmpfs", LOGS_TMPFS,
                    *run_labels(sc, run_id, "collector"),
+                   *[a for name, d in sorted(cpu_mounts.items()) for a in ("--volume", f"{d}:/cpu/{name}:ro")],
                    "-e", "COLLECTOR_CONFIG=" + json.dumps(config, separators=(",", ":")), collector_image])
             r.created_containers.append(co["name"])
             if not dry_run:

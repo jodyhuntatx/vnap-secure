@@ -27,7 +27,8 @@ the change). Phase 2 (vnapsim.receivers): with the collector's recording (collec
 receivers' verification failures and the warning probe's delays and losses; with recorded positions,
 conflict exposure. Phase 4 (vnapsim.counters): with station images from vnap:r2-p20, the stations'
 security operation counts and times, per change (the ID change, the neighbours' chain checks) and per
-refill (key derivations, batch checks). Not yet: CPU (phase 3).
+refill (key derivations, batch checks). Phase 3 (vnapsim.cpu): the containers' CPU time from the
+collector's samples, per station (the cost per change comes from the sweep, vnapsim.sweep).
 
   python3 -m vnapsim.overhead <results dir> [--json] [--write]
 """
@@ -45,9 +46,10 @@ from datetime import datetime
 
 from .logs import RE_CHANGED, RE_IDC_SILENT, RE_POOL_START, RE_REJECTED
 from . import counters as op_counters
+from . import cpu as cpu_time
 from . import receivers
 
-VERSION = 4
+VERSION = 5
 STALE_S = 1.0          # the longest CAM interval of EN 302 637-2
 SYNC_WINDOW_S = 2.0    # changes of two vehicles this close count as synchronized
 GAP_MARK = 1.5         # timeline: inter-CAM gaps longer than this many median intervals are drawn
@@ -445,6 +447,11 @@ def analyse(results_dir):
     # phase 4: the stations' operation counters
     ops = op_counters.analyse(logs, [{"vehicle": name, "t": c["t"], "silent_ms": c["silent_ms"]}
                                      for name, h in history.items() for c in h["changes"]])
+    # phase 3: the containers' CPU time, sampled by the collector
+    roles = {st["name"]: "vehicle" if st.get("pseudonym") else "rsu" if st.get("station_type") == 15 else "station"
+             for st in status.get("stations", [])}
+    samples = cpu_time.read(col_tar) if os.path.isfile(col_tar) else None
+    cpu = cpu_time.analyse(samples, {n: roles.get(n, "pki") for n in samples[1]}) if samples else None
     for rows, keys in (((verification or {}).get("changes", []), ("t",)), ((warnings or {}).get("worst", []), ("t",)),
                        ((conflicts or {}).get("events", []), ("from", "to")),
                        ((ops or {}).get("changes", []), ("t",)), ((ops or {}).get("refills", []), ("t",))):
@@ -516,10 +523,12 @@ def analyse(results_dir):
                for key in ("id_change_us_mean", "id_change_us_max", "chain_checks_per_change", "receivers_per_change",
                            "unknown_signer_per_change", "chain_check_us_mean", "chain_check_us_per_change",
                            "derivation_us_mean", "batch_check_us_mean", "sign_us_mean", "verify_us_mean")},
+            **{"cpu_" + key: (cpu["summary"][key] if cpu else None)
+               for key in ("vehicle_ms_per_s", "rsu_ms_per_s", "pki_ms_per_s", "stations_ms_per_s")},
         },
         "collector": "recorded" if receptions is not None else None,
         "verification": verification, "warnings": warnings, "conflicts": conflicts,
-        "counters": ops,
+        "counters": ops, "cpu": cpu,
         "outages": [{"from": rel(a), "to": rel(b), "s": r3(b - a), "seen_by": by} for a, b, by in outages],
         "vehicles": per_vehicle, "changes": changes, "timeline": timeline,
     }
@@ -602,6 +611,12 @@ def format_text(result):
                   f"chain check {num(t['chain_check_us_mean'], 'us')}; {t['refills']} refill(s): "
                   f"{t['derivations']} key derivation(s) ({num(t['derivation_us_mean'], 'us')} each), "
                   f"{t['batch_checks']} batch check(s) ({num(t['batch_check_us_mean'], 'us')} each)"]
+    p = result.get("cpu")
+    if p:
+        t = p["summary"]
+        lines.append(f"CPU (ms per s, 1000 = one core): vehicles {num(t['vehicle_ms_per_s'], '')}, RSU {num(t['rsu_ms_per_s'], '')}, "
+                     f"PKI {num(t['pki_ms_per_s'], '')}; all stations {num(t['stations_ms_per_s'], '')}"
+                     .replace(" ,", ",").replace(" ;", ";"))
     if result.get("positions"):
         lines.append(f"position error during gaps p95 {num(s['pos_error_m_p95'], 'm')} (last known), "
                      f"{num(s['pos_error_m_p95_extended'], 'm')} (extended)")

@@ -471,8 +471,10 @@ def _cost_section(d, number):
                                                "true positions)"]) \
         + ([] if v else ["verification failures at the receivers (no collector recording)"]) \
         + ([] if w else ["delayed or lost warnings (no warning probe: a [probe] section)"])
-    b.append(("p", "Not measured in this run: " + "; ".join(missing + ["CPU load and the stations' operation counts (phases 3 "
-                   "and 4 of the overhead design, section 10 of the PRD)"]) + "."))
+    if missing:
+        b.append(("p", "Not measured in this run: " + "; ".join(missing) + "."))
+    b.append(("p", "The stations' CPU time and operation counts are in overhead.json and metrics.json, not yet in this "
+                   "report (phase 5 of the overhead design, section 10 of the PRD)."))
     return b
 
 

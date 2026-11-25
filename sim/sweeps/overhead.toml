@@ -1,0 +1,40 @@
+# Phase 3 of the overhead design (PRD section 10.4): the cost of pseudonym changes against their rate
+# and the silent period, with a run without changes as the baseline. Same mobility seeds in every cell.
+#   ../vnapctl sweep <dir> --plan sweeps/overhead.toml      (about 3.6 h; resumes where it stopped)
+description = "overhead design phase 3: change rate and silent period against a baseline without changes"
+duration_s = 180
+seeds = [101, 102, 103]
+set = ["image=vnap:r2-p21"]
+
+[[group]]
+# four vehicles changing together every N seconds wherever they are
+name = "periodic"
+scenario = "crossing:periodic"
+baseline = ['control.client.mode="manual"']
+rate_factor = "interval"
+# changing every 10 or 5 s with a silent period of up to 12-13 s leaves the vehicles silent most of the
+# time (at 5 s and 6-12 s nearly always): the staleness and the CPU saved stop growing with the rate
+fit_exclude = ["interval-10_silence-3-13", "interval-10_silence-6-12",
+               "interval-5_silence-3-13", "interval-5_silence-6-12"]
+
+[group.factors.interval]
+"60" = ["control.client.interval=60"]
+"30" = ["control.client.interval=30"]
+"10" = ["control.client.interval=10"]
+"5" = ["control.client.interval=5"]
+
+[group.factors.silence]
+none = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]
+"3-13" = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000"]
+"6-12" = ["defaults.pseudonyms.silent_min_ms=6000", "defaults.pseudonyms.silent_max_ms=12000"]
+
+[[group]]
+# the mix zone: each car changes once a lap (about one a minute) on entering it; refills arrive together
+name = "mixzone"
+scenario = "crossing"
+baseline = ["control.mix_zones=[]"]
+
+[group.factors.silence]
+none = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]
+"3-13" = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000"]
+"6-12" = ["defaults.pseudonyms.silent_min_ms=6000", "defaults.pseudonyms.silent_max_ms=12000"]

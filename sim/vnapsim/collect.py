@@ -32,7 +32,7 @@ from .receivers import identities, read_collector
 from .scoring import score_run
 from .status import Simulation, build_status
 
-METRICS_VERSION = 3
+METRICS_VERSION = 4
 
 
 def collect(sim, out):
@@ -224,6 +224,13 @@ def write_metrics(out):
         for key in ("sign_us_mean", "verify_us_mean", "chain_check_us_mean", "signs_per_s", "verifies_per_s"):
             if st.get(key) is not None:
                 m[f"{st['station']}.ops.{key}"] = st[key]
+    for st in (o.get("cpu") or {}).get("stations", []):
+        for key in ("ms_per_s", "ms_per_s_p95"):
+            if st.get(key) is not None:
+                m[f"{st['station']}.cpu.{key}"] = st[key]
+    for key in ("vehicle_ms_per_s", "rsu_ms_per_s", "pki_ms_per_s", "stations_ms_per_s"):
+        if s.get("cpu_" + key) is not None:
+            m[f"cpu.{key}"] = s["cpu_" + key]
     if o:
         m["outages"] = len(o.get("outages", []))
         m["outages.s"] = round(sum(x["s"] for x in o.get("outages", [])), 3)
@@ -236,6 +243,8 @@ def write_metrics(out):
                                                  "recording: a run without [collector], or from before it)"])
         + ([] if o.get("counters") else ["ops.*, <station>.ops.* (no [COUNTERS] lines: "
                                                                        "a station image before vnap:r2-p20)"])
+        + ([] if o.get("cpu") else ["cpu.*, <station>.cpu.* (no CPU samples: a run without a collector, or from "
+                                    "before phase 3)"])
         + ["control.* (the control channel, recorded live only)"],
         "metrics": dict(sorted(m.items())),
     }
