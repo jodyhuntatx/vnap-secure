@@ -52,9 +52,11 @@ from . import cpu as cpu_time
 from . import guessing
 from . import receivers
 
-VERSION = 9
+VERSION = 10
 STALE_S = 1.0          # the longest CAM interval of EN 302 637-2
 STALE_SENSITIVITY_S = (0.5, 2.0)   # the stale share again at these thresholds (PRD 10.9.6)
+CONFLICT_SENSITIVITY_RUNS = {   # the conflict exposure share again at: (TTC threshold s, stale threshold s)
+    "ttc_3": (3.0, STALE_S), "ttc_5": (5.0, STALE_S), "stale_0_5": (4.0, 0.5), "stale_2_0": (4.0, 2.0)}
 SYNC_WINDOW_S = 2.0    # changes of two vehicles this close count as synchronized
 GAP_MARK = 1.5         # timeline: inter-CAM gaps longer than this many median intervals are drawn
 TOLERANCE_MS = 250     # scheduling slack before a gap counts as longer than its causes explain
@@ -493,8 +495,14 @@ def analyse(results_dir):
     configured = {st["name"]: st.get("station_id") for st in status.get("stations", [])}
     warnings = receivers.warnings(probe, receptions or [], id_owner, configured, history, outage_times,
                                   start={name: v[0][0] for name, v in by_vehicle.items() if v} | {None: t_first}) if probe else None
-    conflicts = receivers.conflicts(tracks, by_vehicle, {sid: n for n, sid in station_id.items()}, STALE_S,
-                                    outage_times, extend) if tracks and frames else None
+    vehicle_of = {sid: n for n, sid in station_id.items()}
+    conflicts = receivers.conflicts(tracks, by_vehicle, vehicle_of, STALE_S, outage_times, extend) if tracks and frames else None
+    if conflicts:
+        # the primary safety measure of the joint experiment (PRD 10.9.3) again at other TTC and stale thresholds
+        conflicts["sensitivity"] = {}
+        for key, (ttc, stale) in CONFLICT_SENSITIVITY_RUNS.items():
+            alt = receivers.conflicts(tracks, by_vehicle, vehicle_of, stale, outage_times, extend, ttc_s=ttc)
+            conflicts["sensitivity"][key] = {"ttc_s": ttc, "stale_s": stale, "exposure_share": alt["exposure_share"] if alt else None}
     # phase 4: the stations' operation counters
     ops = op_counters.analyse(logs, [{"vehicle": name, "t": c["t"], "silent_ms": c["silent_ms"]}
                                      for name, h in history.items() for c in h["changes"]])
@@ -576,6 +584,9 @@ def analyse(results_dir):
             "denm_id_leaks": warnings["id_leaks"] if warnings else None,
             "conflicts": conflicts["conflicts"] if conflicts else None,
             "conflict_exposure_s": conflicts["exposure_s"] if conflicts else None,
+            "conflict_exposure_share": conflicts["exposure_share"] if conflicts else None,
+            **{f"conflict_exposure_share_{key}": conflicts["sensitivity"][key]["exposure_share"] if conflicts else None
+               for key in CONFLICT_SENSITIVITY_RUNS},
             "conflict_missed": conflicts["missed"] if conflicts else None,
             **{key: (ops["summary"][key] if ops else None)
                for key in ("id_change_us_mean", "id_change_us_max", "chain_checks_per_change", "receivers_per_change",

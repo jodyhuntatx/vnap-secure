@@ -36,7 +36,7 @@ export function overheadPanel(panel, o) {
       "the warning probe's DENMs at each receiver: a copy sent in the sender's silent period is dropped, so the warning arrives late or not at all") : null,
     o.verification ? figure(String(o.verification.failed), `messages failed verification (${o.verification.failed_after_change} after a change)`,
       `each station's security report for every message it received; after a change: within ${o.verification.window_s} s of first hearing the new identity`) : null,
-    o.conflicts ? figure(`${o.conflicts.exposure_s} s`, `conflict exposure of ${o.conflicts.conflict_s} s in conflict (${o.conflicts.missed} of ${o.conflicts.conflicts} conflicts missed)`,
+    o.conflicts ? figure(`${o.conflicts.exposure_s} s`, `conflict exposure of ${o.conflicts.conflict_s} s in conflict${o.conflicts.exposure_share != null ? ` (${Math.round(100 * o.conflicts.exposure_share)} %)` : ""}, ${o.conflicts.missed} of ${o.conflicts.conflicts} conflicts missed`,
       `time a vehicle's true time-to-collision with another was below ${o.conflicts.ttc_s} s while its information about the other was stale or showed no conflict`) : null,
     o.outages && o.outages.length ? figure(String(o.outages.length), `outage${o.outages.length === 1 ? "" : "s"}, ${Math.round(outageS)} s (${s.outage_changes} change${s.outage_changes === 1 ? "" : "s"} left out)`,
       "stretches in which the receiver heard nothing although a station should have sent, or the position recorder stalled: the host, not the stations. Gaps, stale time and delivery leave them out") : null));

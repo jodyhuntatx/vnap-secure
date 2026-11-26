@@ -175,6 +175,17 @@ class Conflicts(unittest.TestCase):
         other = next(p for p in c["pairs"] if p["receiver"] == "car2")
         self.assertLess(other["exposure_s"], 0.5)
 
+    def test_ttc_threshold(self):
+        # a higher TTC threshold starts the conflict earlier. At 3 s car1 knows nothing of car2 through its conflict
+        # and car2 is informed: half the conflict time is exposed. At 5 s the conflict starts at 0.4 s, before car2
+        # goes silent, so car1 is informed for a moment and the share is lower
+        cams = {"car1": cams_of(self.tracks[2]), "car2": cams_of(self.tracks[3], silent=(0.5, 9))}
+        c3, c5 = (receivers.conflicts(self.tracks, cams, self.vehicle_of, 1.0, [], extend, ttc_s=t) for t in (3.0, 5.0))
+        self.assertEqual((c3["ttc_s"], c5["ttc_s"]), (3.0, 5.0))
+        self.assertLess(c3["conflict_s"], c5["conflict_s"])
+        self.assertEqual(c3["exposure_share"], 0.5)
+        self.assertLess(c5["exposure_share"], c3["exposure_share"])
+
     def test_outage_ticks_left_out(self):
         cams = {"car1": cams_of(self.tracks[2]), "car2": cams_of(self.tracks[3], silent=(0.5, 9))}
         c = receivers.conflicts(self.tracks, cams, self.vehicle_of, 1.0, [(T0, T0 + 10)], extend)

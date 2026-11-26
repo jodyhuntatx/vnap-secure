@@ -24,6 +24,25 @@ Results measured with images up to `r2-p16` carry the CAM timing caveat describe
 `r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
 CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
 
+## 2026-11-26: conflict exposure share as the primary safety measure (PRD draft 0.4)
+
+- **Decision:** the joint experiment's primary safety measure is the conflict exposure share
+  (exposed time over time in conflict) instead of the stale share. In the pilot the mix zone had
+  a third of periodic-30's stale share but the same conflict exposure share (0.21), because it
+  goes silent where the vehicles meet. The PRD defines both measures and records the decision
+  (10.9.3); seeds, sensitivity, charts, H4 and the pilot results follow (10.9.5 to 10.9.9).
+- **`vnapctl frontier`:** conflict exposure share across, tracking success up. Sensitivity
+  frontiers at a TTC threshold of 3 s and 5 s, a stale threshold of 0.5 s and 2 s, with the
+  stale share in its place, and with each attacker alone. Seeds for the share within ±0.05 count
+  too ([vnapctl](docs/operations/vnapctl.md#joint-analysis)).
+- **`overhead.json` version 10:** `conflicts.sensitivity` and the summary keys
+  `conflict_exposure_share`, `conflict_exposure_share_ttc_3`, `_ttc_5`, `_stale_0_5` and
+  `_stale_2_0`. The report, the Results tab and the fact `cost.conflict_exposure_share` show the
+  share.
+- **Pilot, again:** both policies are on the frontier (the mix zone tracks less at the same
+  share); the mix zone alone at TTC 5 s, a stale threshold of 2 s or with the stale share. The
+  seed count stays 12 per cell.
+
 ## 2026-11-26: overhead design phase 6: guessing attacker, joint analysis, pilot
 
 - **Guessing attacker** (`sim/vnapsim/guessing.py`): links each new pseudonym to a random silent

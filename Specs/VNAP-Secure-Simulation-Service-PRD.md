@@ -4,10 +4,10 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 
 | Item | Value |
 |---|---|
-| Document | Product requirements document (PRD), draft 0.3 |
-| Date | 2026-11-25 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24) |
+| Document | Product requirements document (PRD), draft 0.4 |
+| Date | 2026-11-26 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24; draft 0.3: 2026-11-25) |
 | Owner | Joseph Hunt |
-| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 6 are delivered |
+| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 6 are delivered; draft 0.4 makes the conflict exposure share the primary safety measure of the joint experiment (10.9.3) |
 | Repositories | vnap-secure (harness, vnapctl, service, docs), vanetza-nap patch set in `patches/vanetza-nap/` (socktap patches), C-ITS-PKI (certificate tooling) |
 | Source | `Specs/VNAP-Secure-Simulation-Service-PRD.md`; the PDF is generated from it (`make docs-pdf`) |
 
@@ -18,6 +18,7 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 | 0.1 | 2026-10-07 | first draft; phases 1 and 2 approved to start |
 | 0.2 | 2026-11-24 | source moved to Markdown in the repository; state of delivery (2.3, 8); station requirements STA-1 to STA-4 (5.10): CAM generation by EN 302 637-2, current stationId in every message after an ID change, security operation counters, full certificate in the first CAM after a silent period; risk "CAM generation rate" (9) |
 | 0.3 | 2026-11-25 | the overhead measurement design (`VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`, design draft 0.3) merged as section 10, brought up to date with phases 1, 2 and 4 and with CAM generation by EN 302 637-2; requirements OVH-1 to OVH-6 (5.11); overhead phases in the delivery plan (8) |
+| 0.4 | 2026-11-26 | after the pilot (10.9.9): the primary safety measure of the joint experiment is the conflict exposure share instead of the stale share, with both measures defined (10.9.3); seeds, sensitivity, charts and H4 follow; the open question on it is closed (10.14) |
 
 ## 1. Summary
 
@@ -636,6 +637,8 @@ the stations, from the recorded true positions, speeds and headings of each pair
   that information, is above the threshold while the true TTC is below.
 - **Missed conflicts:** conflicts that begin and end entirely within a stale period at the
   receiver.
+- **Conflict exposure share:** conflict exposure over the time in conflict, both summed over
+  all pairs; the primary safety measure of the joint experiment since draft 0.4 (10.9.3).
 
 These are measures of missing information at the moments it would have mattered, not a
 probability of collision. On the crossing scenarios, conflicts occur mainly at the
@@ -744,14 +747,51 @@ the primary ones.
 | Side | Primary | Secondary |
 |---|---|---|
 | Privacy | tracking success: correct links / pseudonym changes made, for the strongest attacker | longest chain followed; time and distance followed; correct links relative to the guessing attacker; mistake share; change synchronization ratio |
-| Safety | stale share at receivers: share of time information about a vehicle is older than 1 s | conflict exposure; position error during gaps (95th percentile, extended variant); reception gap; delivery ratio; warning delay |
+| Safety | conflict exposure share: share of conflict time (true TTC below 4 s) in which a vehicle's information about the other was stale or showed no conflict | stale share; conflict exposure in seconds; conflicts missed; position error during gaps (95th percentile, extended variant); reception gap; delivery ratio; warning delay |
 | Hard limit | no lost warnings outside what the silent period itself explains | warning loss rate |
 | Cost | reported, not optimised | chain checks per receiver and minute; CPU per change; certificates per vehicle and hour; pool storage; security bytes per message |
 
-Conflict exposure was considered as the primary safety measure, because it weighs stale time by
-where it falls. It stays secondary for now: it depends on a TTC threshold and on how often the
-scenarios produce conflicts, which the pilot has to show first. If the pilot gives enough
-conflicts per run for a stable estimate, the choice is revisited before stage A (10.14).
+**The two safety measures.** Both describe what a pseudonym change's silent period costs the
+other road users. They differ in which silent time they count.
+
+- **Stale share.** For each vehicle, the share of time its latest CAM, as the reference
+  receiver heard it, is older than 1 s (the longest CAM interval of EN 302 637-2, so in normal
+  operation it is never exceeded). It runs from the vehicle's first CAM to the end of the
+  recording; time in outages of the host is left out. The run's value is the mean over the
+  vehicles. Almost all of it is silent periods: about changes × (silent period − 1 s), the
+  check of H2. It is simple, close to the policy, independent of the scenario's geometry, and
+  stable (in the pilot an sd over seeds of 0.7 to 1.1 points on 6 to 22 %). It counts every
+  silent second the same, wherever the vehicle is and whoever is near: a second on an empty
+  road weighs as much as one while two vehicles approach the same crossing.
+- **Conflict exposure** (10.6.4). From the recorded true positions (5 times a second), every ordered
+  pair of vehicles is checked: a *conflict* is a moment where their true time to collision
+  (both moving on at constant velocity until their centres are within 4 m) is below 4 s, the
+  range in which forward-collision and intersection warnings act. A moment of conflict is
+  *exposed* when the first vehicle's information about the other is stale (latest CAM older
+  than 1 s) or shows no conflict (the latest CAM, extended by its speed and heading, gives no
+  TTC below 4 s). The **conflict exposure share** is exposed time over conflict time, both
+  summed over all pairs; *conflict exposure* is the exposed time in seconds and *conflicts
+  missed* the conflicts that lay entirely in stale time. It counts only the silence that matters,
+  and with it where a policy goes silent, not only how much. Its limits: it depends on the
+  scenario's geometry and speeds and on the 4 s threshold; a vehicle's information is taken
+  from the CAMs the reference receiver heard, which without a channel model is close to what
+  that vehicle received but not the same; and it measures situational awareness, not a
+  warning that came too late. Even without changes it is not 0 (1.8 % in the pilot's
+  baseline): an extended CAM misses a turn.
+
+**Decision (draft 0.4, before stage A).** The design first declared the stale share primary
+and kept conflict exposure secondary until the pilot showed how often conflicts occur. The
+pilot (10.9.9) had conflicts in every run (about 120 s of conflict time per run), and it showed
+the stale share misjudging the kind of policy this experiment exists to compare: the mix zone
+had a third of periodic-30's stale share, yet the same conflict exposure share (0.21 and 0.21),
+because it goes silent a quarter as often but exactly where the vehicles meet. The primary
+safety measure is therefore the conflict exposure share. The share rather than the seconds,
+because it does not grow with the number of conflicts a run's random turns produce (in the
+pilot its spread over seeds was 26 % of the mean against 25 to 41 % for the seconds) and it
+compares across the conditions of stage B, whose vehicle counts produce very different numbers
+of conflicts. The stale share stays as a secondary measure and as a sensitivity frontier, so
+results can be compared with work that uses it. The change was made after the pilot and before
+any stage A run, and is recorded here for that reason.
 
 The guessing attacker links every new pseudonym to a random silent track. Replayed on the same
 frames, it gives the chance level of each run empirically, instead of the formula 1 / vehicles,
@@ -764,7 +804,7 @@ which ignores how many vehicles were actually silent at the moment.
 | H1 | A silent period lowers tracking success to chance level only when several vehicles change together (mix zone with `min_vehicles` 2, dynamic mix zone); with periodic triggers it adds stale time without that effect | where silence is worth its cost |
 | H2 | Stale share is close to changes per second × (mean silent period + two CAM intervals) | a check that the measurement works; a large deviation means something else delays the first message |
 | H3 | Warning loss is close to the share of time spent silent | a check of the probe |
-| H4 | A dynamic mix zone reaches the tracking success of a fixed mix zone at a lower stale share | whether the dynamic zone is the better policy |
+| H4 | A dynamic mix zone reaches the tracking success of a fixed mix zone at a lower conflict exposure share | whether the dynamic zone is the better policy |
 | H5 | The policies on the frontier differ between 2, 4 and 8 vehicles | whether a single recommendation can hold across densities |
 
 #### 10.9.5 Runs
@@ -774,8 +814,8 @@ which ignores how many vehicles were actually silent at the moment.
 - **Pilot:** two policies and the baseline, 10 seeds each, at 4 vehicles. It checks the
   pipeline and measures the spread of the primary measures over seeds.
 - **Seeds:** chosen from the pilot so that the 95 % confidence interval of tracking success is
-  at most ± 0.1 wide, for the strongest attacker and for each attacker alone: 12 per cell
-  (10.9.9).
+  at most ± 0.1 wide, for the strongest attacker and for each attacker alone, and that of the
+  conflict exposure share at most ± 0.05: 12 per cell (10.9.9).
 - **Stage A, screening:** all 15 policies and the baseline at 4 vehicles with spread speeds:
   192 runs at 12 seeds, about 18 hours one after another.
 - **Stage B, conditions:** the policies on or near the stage A frontier (at most 5) and the
@@ -792,20 +832,21 @@ which ignores how many vehicles were actually silent at the moment.
   condition.
 - **Hard limit first:** a policy that loses warnings beyond its silent time is reported, but
   excluded from the frontier.
-- **Sensitivity:** the frontier is recomputed with the staleness threshold at 0.5 s and 2 s, and
-  with each attacker. A statement that does not survive these is reported as conditional on the
+- **Sensitivity:** the frontier is recomputed with the conflict exposure share at a TTC
+  threshold of 3 s and 5 s and a staleness threshold of 0.5 s and 2 s, with the stale share in
+  its place, and with each attacker. A statement that does not survive these is reported as conditional on the
   setting it depends on.
 - **Hypotheses:** each is reported as supported, not supported or undecided, with the numbers.
 
 #### 10.9.7 Result
 
-- **Charts:** per condition, stale share across and tracking success up, one point per policy
+- **Charts:** per condition, conflict exposure share across and tracking success up, one point per policy
   with its confidence intervals, the frontier drawn through the undominated points, and the
   chance level as a line.
 - **Table:** the frontier policies per condition, with both primary measures and their
   intervals.
 - **Statements:** of the form "with 4 vehicles at spread speeds, policy P gave tracking success
-  T ± t at stale share S ± s; no tested policy was better on both", each followed by the limits
+  T ± t at conflict exposure share E ± e; no tested policy was better on both", each followed by the limits
   of 10.13.
 - **Test summary:** a document in `results/` in the form of the existing summaries, and the raw
   per-run results kept for re-analysis.
@@ -836,33 +877,56 @@ cannot produce:
 3–13 s silent periods; 4 vehicles at 30, 37, 43 and 50 km/h, 5 minutes per run, seeds 201 to
 210: 30 runs, 2026-11-25 and 26. `vnapctl frontier` on the sweep, mean [95 % interval]:
 
-| Policy | Changes per run | Strongest attacker | Tracking success | A0 alone | Chance (guessing) | Stale share | Unexplained warnings |
-|---|---|---|---|---|---|---|---|
-| periodic-30 | 40 | A0 | 0.51 [0.46, 0.55] | 0.51 | 0.23 [0.22, 0.23] | 22.3 [21.6, 23.0] % | 0 |
-| mixzone-min2 | 10 | guessing | 0.41 [0.40, 0.41] | 0.20 [0.10, 0.30] | 0.41 [0.40, 0.41] | 6.3 [5.9, 6.7] % | 0 |
-| baseline | 0 | – | – | – | – | 0.0 % | 0 |
+| Policy | Changes per run | Strongest attacker | Tracking success | A0 alone | Chance (guessing) | Conflict exposure share | Stale share | Unexplained warnings |
+|---|---|---|---|---|---|---|---|---|
+| periodic-30 | 40 | A0 | 0.51 [0.46, 0.55] | 0.51 | 0.23 [0.22, 0.23] | 20.5 [17.1, 23.2] % | 22.3 [21.7, 22.9] % | 0 |
+| mixzone-min2 | 10 | guessing | 0.41 [0.40, 0.41] | 0.20 [0.10, 0.30] | 0.41 [0.40, 0.41] | 20.6 [17.6, 23.9] % | 6.3 [5.9, 6.7] % | 0 |
+| baseline | 0 | – | – | – | – | 1.8 [1.6, 2.1] % | 0.0 % | 0 |
+
+The analysis was first run with the stale share as the primary safety measure, as declared;
+the figures here are with the conflict exposure share, the primary measure since draft 0.4
+(10.9.3).
 
 - **Seeds: 12 per cell.** For tracking success within ± 0.1 (95 %), the most spread measure
   sets the count: A0 in the mix zone, sd 0.17 over seeds (10 changes a run, so a run's success
-  moves in steps of 0.1). By the strongest attacker alone 3 would do. Stage A is then
-  16 × 12 = 192 runs (about 18 hours), stage B up to 6 × 6 × 12 = 432 (about 40 hours).
-- **Frontier:** the mix zone is better than periodic-30 on both primary measures, beyond
-  chance, and is the frontier; also with the stale threshold at 0.5 s and 2 s, and with A0
-  alone. With the guessing attacker alone neither beats the other (0.41 against 0.23 tracking).
+  moves in steps of 0.1). The conflict exposure share (sd 0.05) needs 5 for ± 0.05, the
+  strongest attacker alone 3. Stage A is then 16 × 12 = 192 runs (about 18 hours), stage B up
+  to 6 × 6 × 12 = 432 (about 40 hours), before runs repeated for host pauses.
+- **Frontier: both policies.** The mix zone tracks less (0.41 against 0.51, beyond chance) at
+  the same conflict exposure share, but is not better on it, so neither dominates the other.
+  The frontier depends on the setting:
+
+  | Sensitivity | periodic-30 | mixzone-min2 | Frontier |
+  |---|---|---|---|
+  | primary (TTC 4 s, stale 1 s) | 20.5 % | 20.6 % | both |
+  | TTC 3 s | 20.0 % | 24.2 % | both |
+  | TTC 5 s | 21.0 % | 18.0 % | mix zone |
+  | stale threshold 0.5 s | 27.0 % | 29.2 % | both |
+  | stale threshold 2 s | 18.2 % | 14.1 % | mix zone |
+  | stale share instead | 22.3 % | 6.3 % | mix zone |
+  | A0 alone (tracking 0.51 / 0.20) | | | both |
+  | guessing attacker alone (0.23 / 0.41) | | | periodic-30 |
+
+  Close to the collision (TTC 3 s) the mix zone leaves vehicles uninformed more often than
+  periodic changes: its silence falls exactly where they meet. With an earlier warning range or
+  a longer tolerance for old information it does better. A statement that the mix zone is the
+  better policy at 4 vehicles is therefore conditional on the TTC threshold and the staleness
+  tolerance, as 10.9.6 requires it to be reported.
 - **The chance level matters.** In the mix zone A0 did worse than guessing: changes come in
   pairs at the crossing, so a guess among the two silent tracks is right about half the time,
   while A0's position links went to the wrong vehicle. The strongest attacker per policy keeps
   such a policy from looking better than it is.
 - **Secondary measures:** per run, warnings lost 17.6 (periodic-30) against 4.0 (mix zone) and
-  delayed 110 against 30, all explained by the silent periods. Conflict exposure, though, is
-  about the same: 26.1 [19.8, 31.9] s against 23.2 [19.9, 26.6] s (baseline 2.2 s), with 3.5
-  and 2.3 conflicts entirely in stale time. The mix zone silences a quarter as often, but where
-  the vehicles meet, so stale share and conflict exposure rank the two policies differently
-  (10.14).
+  delayed 110 against 30, all explained by the silent periods. Conflict exposure in seconds is
+  26.1 [19.8, 31.9] against 23.2 [19.9, 26.6] (baseline 2.2), with 3.5 and 2.3 conflicts
+  entirely in stale time. The mix zone silences a quarter as often, but where the vehicles
+  meet, so the stale share and the conflict exposure share rank the two policies differently;
+  this led to draft 0.4 (10.9.3).
 - **The host:** 9 of the 30 runs had to be repeated: 8 for pauses of the VM (gaps of 15 to 32
   min between CPU samples), one for a collector crash (`sleep length must be non-negative`,
   fixed). Two host effects showed in runs that completed, and the analysis now leaves them out
-  (`overhead.json` version 9):
+  (`overhead.json` version 9; version 10 adds the conflict exposure share at the sensitivity
+  thresholds):
   - a 30 s NVMe stall (mix zone, seed 209) stamped a vehicle's change, its silent period and the
     end of it at the stall's end. The warnings it sent meanwhile looked lost outside a silent
     period (20 unexplained), which would have put the mix zone off the frontier. A silent period
@@ -907,7 +971,7 @@ run; 10.7.1 does so.
 |---|---|---|
 | Privacy | primary: tracking success ratio; secondary: time and distance followed, synchronization ratio | `score.json`, `overhead.json`, Results tab, report |
 | PKI | cost: certificates per vehicle and hour, pool storage | `metrics.json`, report |
-| Safety | primary: stale share; hard limit: lost warnings; secondary: conflict exposure, delivery ratio, gap | `overhead.json`, `metrics.json`, Results tab, report |
+| Safety | primary: conflict exposure share; hard limit: lost warnings; secondary: stale share, conflict exposure in seconds, delivery ratio, gap | `overhead.json`, `metrics.json`, Results tab, report |
 | Security | cost: CPU per change, chain checks, security bytes per message | `overhead.json`, `metrics.json`, report |
 
 #### 10.10.3 Deferred and optional metrics
@@ -1016,10 +1080,9 @@ phase 4 run then showed every CAM carrying the full certificate, which led to ST
 - Whether several run instances can run in parallel on the host; stages A and B take about two
   days one after another.
 - Whether the host carries 8 vehicles with a PKI, an eavesdropper and the collectors.
-- The TTC threshold for conflict exposure (4 s), and whether conflict exposure should replace
-  stale share as the primary safety measure. In the pilot (10.9.9) conflicts occurred in every
-  run, and the two measures ranked the policies differently: the mix zone had a third of
-  periodic-30's stale share but about the same conflict exposure. To be decided before stage A.
+- The TTC threshold for conflict exposure (4 s). Since draft 0.4 the conflict exposure share is
+  the primary safety measure (10.9.3), and the pilot's frontier changed between 3 s and 5 s
+  (10.9.9), so the threshold carries weight; 3 s and 5 s are reported as sensitivity.
 - The window for the change synchronization ratio: 2 s, or overlapping silent periods only.
 - Whether revocation and misbehaviour detection should get their own design, and whether the
   optional stage C is worth its runs before then.

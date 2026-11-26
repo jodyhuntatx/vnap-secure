@@ -349,27 +349,39 @@ experiment ([PRD 10.9.6](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#1096-
 
 - **Conditions and policies:** each group of the plan is a condition, each cell but the baseline
   a policy.
-- **Primary measures, per run:** the tracking success of the strongest attacker and the stale
-  share. The attackers are the eavesdropper as it ran (A0) and the
+- **Primary measures, per run:** the tracking success of the strongest attacker and the
+  conflict exposure share. The attackers are the eavesdropper as it ran (A0) and the
   [guessing attacker](../functional/eavesdropper-and-scoring.md#chance-level-the-guessing-attacker)
   on the same frames; the strongest is the one with the higher mean for the policy.
+- **The two safety measures** ([PRD 10.9.3](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#1093-primary-and-secondary-measures)):
+  - *stale share*: the share of time a vehicle's latest CAM is older than 1 s, from its first
+    CAM to the end of the recording. It counts every silent second the same, wherever the
+    vehicle is.
+  - *conflict exposure share* (primary): of the time two vehicles were in conflict (true
+    time-to-collision below 4 s, from the recorded positions), the share in which one's
+    information about the other was stale or, extended by its speed and heading, showed no
+    conflict. It counts only the silence that falls where vehicles meet. A mix zone, which goes
+    silent exactly there, can have a low stale share and a high conflict exposure share.
 - **Intervals:** 95 %, from 2000 bootstrap resamples over the seeds (the run is the unit).
 - **Hard limit:** a policy that lost or delayed warnings beyond what its silent periods explain
   (`denm_unexplained`, needs a `[probe]`) is shown but left off the frontier.
 - **Frontier:** the policies no other policy beats on both primary measures, where beating means
   no worse on both and better on one beyond chance (the bootstrap interval of the paired
-  difference over seeds excludes 0). Again with the stale threshold at 0.5 s and 2 s, and with
-  each attacker alone.
-- **Seeds needed:** per policy, the seeds for a 95 % interval of tracking success within ±0.1,
-  from the spread over the seeds run, for the strongest attacker and for each attacker alone
-  (the sensitivity frontiers use them); the measure with the most spread sets it. The largest
+  difference over seeds excludes 0). Again with the conflict exposure share at a TTC threshold
+  of 3 s and 5 s and a stale threshold of 0.5 s and 2 s, with the stale share in its place, and
+  with each attacker alone.
+- **Seeds needed:** per policy, the seeds for 95 % intervals of tracking success within ±0.1
+  (for the strongest attacker and for each attacker alone: the sensitivity frontiers use them)
+  and of the conflict exposure share within ±0.05, from the spread over the seeds run; the
+  measure that needs the most sets it. The largest
   over the policies is the condition's.
-- **Chart:** `frontier-<group>.svg`, stale share across and tracking success up, one point per
+- **Chart:** `frontier-<group>.svg`, conflict exposure share across and tracking success up, one point per
   policy with its intervals, the frontier dashed, the guessing attacker's level as hollow
   markers.
 
 Runs whose `overhead.json` is of an older version are analysed again first, so a sweep from
-before the guessing attacker gains it.
+before the guessing attacker or the conflict exposure share at the sensitivity thresholds
+gains them.
 
 ## Your own scenarios
 

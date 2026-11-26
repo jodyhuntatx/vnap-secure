@@ -230,7 +230,7 @@ def ttc(pa, va, pb, vb, distance=CONFLICT_DISTANCE_M):
     return (-b - math.sqrt(disc)) / (2 * a)
 
 
-def conflicts(tracks, cams, vehicle_of, stale_s, outages, extend):
+def conflicts(tracks, cams, vehicle_of, stale_s, outages, extend, ttc_s=CONFLICT_TTC_S):
     """Conflict exposure between every pair of vehicles. `tracks`: {station id: [(t, lat, lon, speed,
     heading)]} (5 Hz), `cams`: {vehicle: [(t, cert, bytes, full, lat, lon, speed, heading, sid)]} as the
     reference receiver heard them, `vehicle_of`: station id -> vehicle name. Ticks during outages are left out."""
@@ -266,14 +266,14 @@ def conflicts(tracks, cams, vehicle_of, stale_s, outages, extend):
                 (pa, va), (pb, vb) = now[ra], now[rb]
                 true = ttc(pa, va, pb, vb)
                 key = (vehicle_of[ra], vehicle_of[rb])   # what ra's vehicle knows about rb's
-                in_conflict = true is not None and true < CONFLICT_TTC_S
+                in_conflict = true is not None and true < ttc_s
                 cam = latest.get(vehicle_of[rb])
                 stale = cam is None or t - cam[0] > stale_s or cam[4] is None
                 missed = stale
                 if not stale:
                     lat, lon = extend(cam[4], cam[5], cam[6], cam[7], t - cam[0])
                     believed = ttc(pa, va, _xy(lat, lon, lat0, lon0), _velocity(cam[6], cam[7]))
-                    missed = believed is None or believed >= CONFLICT_TTC_S
+                    missed = believed is None or believed >= ttc_s
                 if in_conflict:
                     conflict_time += step
                     pairs.setdefault(key, {"conflict_s": 0.0, "exposure_s": 0.0})
@@ -292,7 +292,7 @@ def conflicts(tracks, cams, vehicle_of, stale_s, outages, extend):
         events.append({"receiver": key[0], "other": key[1], "from": cur["start"], "to": ticks[-1],
                        "missed": cur["stale_all"], "exposure_s": round(cur["exposure_s"], 2)})
     return {
-        "ttc_s": CONFLICT_TTC_S, "distance_m": CONFLICT_DISTANCE_M, "stale_s": stale_s,
+        "ttc_s": ttc_s, "distance_m": CONFLICT_DISTANCE_M, "stale_s": stale_s,
         "conflicts": len(events), "conflict_s": round(conflict_time, 1), "exposure_s": round(exposure, 1),
         "exposure_share": round(exposure / conflict_time, 3) if conflict_time else None,
         "missed": sum(1 for e in events if e["missed"]),

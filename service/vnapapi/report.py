@@ -309,7 +309,8 @@ def facts(d):
               "cost.denm_delay_ms_max": w.get("delay_ms_max") or 0, "cost.denm_unexplained": w.get("unexplained") or 0,
               "cost.denm_id_leaks": w.get("id_leaks") or 0,
               "cost.conflicts_available": int(bool(c)), "cost.conflicts": c.get("conflicts") or 0,
-              "cost.conflict_exposure_s": c.get("exposure_s") or 0, "cost.conflict_missed": c.get("missed") or 0})
+              "cost.conflict_exposure_s": c.get("exposure_s") or 0, "cost.conflict_missed": c.get("missed") or 0,
+              "cost.conflict_exposure_share": c.get("exposure_share") or 0})
     # the stations' operation counters and CPU time: 0 when not measured
     ops, cpu = (o.get("counters") or {}).get("summary") or {}, (o.get("cpu") or {}).get("summary") or {}
     f.update({"cost.ops_available": int(bool(ops)), "cost.id_change_us_mean": ops.get("id_change_us_mean") or 0,
@@ -413,7 +414,9 @@ def _cost_section(d, number):
                                                f"({w['lost_in_silence']} in a silent period)"])
     if c:
         rows.append(["Conflict exposure", f"{c['exposure_s']} s of {c['conflict_s']} s in conflict (true time-to-collision "
-                                          f"below {c['ttc_s']:g} s) with stale or misleading information; "
+                                          f"below {c['ttc_s']:g} s) with stale or misleading information"
+                                          + (f", {round(100 * c['exposure_share'])} % of it" if c.get("exposure_share") is not None else "")
+                                          + "; "
                                           f"{c['missed']} of {c['conflicts']} conflicts missed entirely"])
     if o.get("outages"):
         total = sum(x["s"] for x in o["outages"])

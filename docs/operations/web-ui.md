@@ -177,7 +177,8 @@ at all. Warnings triggered before the sender or the receiver had been on the air
 heard) for 2 s are left out as start-up. A red note marks DENMs that still carried the configured stationId after a change
 (a station image without the DENM fix): the run's privacy result is then not valid. With
 recorded positions, *conflict exposure*: the time two vehicles' true time-to-collision was
-below 4 s while one's information about the other was stale or showed no conflict.
+below 4 s while one's information about the other was stale or showed no conflict, and its
+share of all the time in conflict (the primary safety measure of the joint experiment).
 
 **Computation.** With the stations' operation counters (images from `vnap:r2-p20`) and CPU
 samples (runs with a collector from 2026-11-25): the ID change time on the vehicle, the chain
