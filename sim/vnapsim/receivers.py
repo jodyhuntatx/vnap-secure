@@ -28,6 +28,7 @@ CONFLICT_TTC_S = 4.0      # forward-collision and intersection warnings act in t
 CONFLICT_DISTANCE_M = 4.0  # centres this close count as a collision (about a car length)
 DELAY_TOLERANCE_MS = 250  # scheduling slack of the probe, the broker and the station
 SILENCE_SLACK_S = 0.25    # a trigger this soon before the change line may still meet the silence
+STARTUP_S = 2.0           # warnings triggered before the recording plus this are left out: receivers still starting
 
 
 def read_collector(tar_path):
@@ -107,10 +108,14 @@ def verification(receptions, owner, changes):
     }
 
 
-def warnings(probe, receptions, owner, configured, history, outages):
+def warnings(probe, receptions, owner, configured, history, outages, start=None):
     """Per triggered DENM and receiver: delay of the first copy received, or lost; explained by the sender's
     silent period or not. `history`: station -> read_station_log() result (changes with silent_ms);
-    `configured`: station -> configured stationId; `outages`: [(from, to)] in Unix time."""
+    `configured`: station -> configured stationId; `outages`: [(from, to)] in Unix time; `start`: the
+    first frame recorded, or station -> its first CAM heard (key None: the first frame, for the others).
+    DENMs triggered before the sender's or receiver's start + STARTUP_S are left out (during_startup): the probe starts
+    once the stations are up, but they may not yet send or take messages."""
+    starts = start if isinstance(start, dict) else {None: start}
     triggers = [p for p in probe if p.get("event") == "trigger"]
     sends = {}
     for p in probe:
@@ -157,6 +162,8 @@ def warnings(probe, receptions, owner, configured, history, outages):
         for rx in receivers:
             if rx == sender:
                 continue
+            begin = [x for x in (starts.get(sender, starts.get(None)), starts.get(rx, starts.get(None))) if x is not None]
+            startup = bool(begin) and t < max(begin) + STARTUP_S   # either end may not be up yet
             got = first.get((p["seq"], rx))
             delay = None if got is None else max(0, round((got - t) * 1000))
             # a trigger just before the change: in the silence only if its first copy did not go out in time
@@ -169,8 +176,8 @@ def warnings(probe, receptions, owner, configured, history, outages):
                 explained = delay <= left * 1000 + (repeat or 0) * 1000 + DELAY_TOLERANCE_MS
             rows.append({"seq": p["seq"], "sender": sender, "receiver": rx, "t": t,
                          "silent_left_ms": round(left * 1000), "delay_ms": delay, "lost": got is None,
-                         "explained": explained or outage, "outage": outage})
-    clean = [r for r in rows if not r["outage"]]
+                         "explained": explained or outage, "outage": outage, "startup": startup})
+    clean = [r for r in rows if not r["outage"] and not r["startup"]]
     got = [r["delay_ms"] for r in clean if not r["lost"]]
     on_time = [r for r in clean if not r["lost"] and r["delay_ms"] < ((repeat or 1.0) * 1000)]
     silent = [r for r in clean if r["silent_left_ms"] > 0]
@@ -183,7 +190,8 @@ def warnings(probe, receptions, owner, configured, history, outages):
         "lost_outside_silence": sum(1 for r in clean if r["lost"] and r["silent_left_ms"] == 0),
         "unexplained": sum(1 for r in clean if not r["explained"]),
         "id_leaks": leaks, "id_leak_examples": leak_examples,
-        "during_outage": len(rows) - len(clean),
+        "during_outage": sum(1 for r in rows if r["outage"]),
+        "during_startup": sum(1 for r in rows if r["startup"] and not r["outage"]),
         "worst": sorted((r for r in clean if r["lost"] or r["delay_ms"] >= (repeat or 1.0) * 1000),
                         key=lambda r: (not r["lost"], -(r["delay_ms"] or 0)))[:20],
     }

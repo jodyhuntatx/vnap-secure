@@ -7,7 +7,7 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 | Document | Product requirements document (PRD), draft 0.3 |
 | Date | 2026-11-25 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24) |
 | Owner | Joseph Hunt |
-| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 5 are delivered |
+| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 6 are delivered |
 | Repositories | vnap-secure (harness, vnapctl, service, docs), vanetza-nap patch set in `patches/vanetza-nap/` (socktap patches), C-ITS-PKI (certificate tooling) |
 | Source | `Specs/VNAP-Secure-Simulation-Service-PRD.md`; the PDF is generated from it (`make docs-pdf`) |
 
@@ -307,7 +307,7 @@ and the PKI service's log.
 | 8. Web UI | runs list, scenario templates and builder with map, live view, control, results | a user can author, run, observe and evaluate a scenario without the command line | 2026-10-08 |
 | 9. Hardening | backups, TOTP, MCP endpoint for automation | - | 2026-10-08, except the MCP endpoint |
 | Station fidelity (draft 0.2) | STA-1 to STA-4: CAM generation by EN 302 637-2, current stationId in DENMs, security operation counters, certificate after the silent period | CAM intervals follow the vehicle's dynamics (about 0.4 s at 36 km/h, 1 s when stationary); the first CAM after a silent period carries the full certificate; no configured stationId on the network after a change; operation counts per change and refill in `overhead.json` | 2026-11-24 (vnap:r2-p20, r2-p21) |
-| Overhead measurement (draft 0.3) | phases 1 to 8 of section 10.12: disruption analysis and run metrics (1); collector, warning probe, conflict exposure (2); CPU sampler and sweep (3); station counters (4); report and Results tab (5); joint experiment (6, 7); misbehaviour detection (8, optional) | the "done when" of each phase in 10.12 | phases 1 (2026-10-19), 2 and 4 (2026-11-24), 3 and 5 (2026-11-25); phase 6 next |
+| Overhead measurement (draft 0.3) | phases 1 to 8 of section 10.12: disruption analysis and run metrics (1); collector, warning probe, conflict exposure (2); CPU sampler and sweep (3); station counters (4); report and Results tab (5); joint experiment (6, 7); misbehaviour detection (8, optional) | the "done when" of each phase in 10.12 | phases 1 (2026-10-19), 2 and 4 (2026-11-24), 3 and 5 (2026-11-25), 6 (2026-11-26); phase 7 next |
 
 ## 9. Risks and open questions
 
@@ -458,8 +458,8 @@ is accepted. Section 10.10.3 says what measuring revocation would take.
 | RSU CPU, ms | 9 ± 16 | −112 ± 22 | −115 ± 40 | all vehicles' changes |
 | PKI CPU, ms | 32 ± 3 | 49 ± 1 | 48 ± 2 | all vehicles' changes |
 | RSU verifications | −0.3 ± 0.4 | −19.7 ± 2.7 | −20.1 ± 0.8 | all vehicles' changes |
-| stale time, s | 0.01 ± 0.00 | 6.6 ± 0.5 | 7.2 ± 0.6 | the vehicle's own change rate |
-| stale time in the mix zone, s | 0.00 ± 0.00 | 7.1 ± 0.6 | 8.4 ± 0.3 | two points per seed (baseline, cell) |
+| stale time, s | 0.01 ± 0.00 | 6.7 ± 0.4 | 7.3 ± 0.5 | the vehicle's own change rate |
+| stale time in the mix zone, s | 0.00 ± 0.00 | 6.8 ± 1.2 | 8.4 ± 0.3 | two points per seed (baseline, cell) |
 
 - **The change itself is below what the host resolves.** Without a silent period the vehicle's
   and the RSU's CPU per change cannot be told from zero. Between runs of one cell the vehicle
@@ -479,13 +479,23 @@ is accepted. Section 10.10.3 says what measuring revocation would take.
   about the silent period less 1 s. The negative CPU slopes are this saving; they do not show
   that a change is free.
 - **Saturation:** at changes every 10 or 5 s the vehicles are silent most of the time (at 5 s
-  with 6 to 12 s, almost always: hardly any CAMs, so stale share and tracking fall to about
-  0). Those four cells are left out of the slopes (`fit_exclude`); with them the 6–12 s stale
-  time came out as 0.13 s per change.
+  with 6 to 12 s, almost always: stale 97% of the time, tracking 0). The staleness stops growing
+  with the rate, so those four cells are left out of the slopes (`fit_exclude`).
+- **Stale time to the end of the recording:** since 2026-11-26 the stale share runs from a
+  vehicle's first CAM to the end of the recording. Before, a vehicle kept silent to the end was
+  not stale after its last CAM: the 5 s, 6–12 s cell showed 0.2%. The time before its first CAM
+  is start-up, not silence: in one run (interval 30 s, 3–13 s, seed 102) the vehicles came on
+  the air 6 to 14 s after the recording started.
+- **A disk stall seen only in the station logs:** in the mix zone, 3–13 s, seed 103, the first
+  30 s are an outage (an NVMe timeout): the stations' log lines waited for the disk, so a
+  change and its silent period were stamped at the end of the stall, while the radio kept going.
+  Such stretches are found since 2026-11-26 (10.12, phase 6). The figures here are recomputed
+  with both (`overhead.json` version 9).
 - **Mix zone:** one change a minute per car gives too little range in the rate for the CPU
   slopes (vehicle −137 ± 145 ms without silence). Its stale time and tracking (81% of changes
   tracked without silence, 17 to 19% with) are the result, and its conflict exposure: about 2 s
-  per run without silence, 29 s with it, and 9 to 10 conflicts per run entirely in stale time.
+  per run without silence, 26 to 29 s with it, and 8 to 9 conflicts per run entirely in stale
+  time.
 - **Test summary:** [`results/overhead-sweep-2026-11-25.docx`](../results/overhead-sweep-2026-11-25.docx)
   (phase 5), generated by `scripts/results/overhead-sweep-2026-11-25.py` from the sweep.
 - **Pauses of the host:** the VM was paused three times during the sweep, for up to 80 min. The
@@ -764,11 +774,12 @@ which ignores how many vehicles were actually silent at the moment.
 - **Pilot:** two policies and the baseline, 10 seeds each, at 4 vehicles. It checks the
   pipeline and measures the spread of the primary measures over seeds.
 - **Seeds:** chosen from the pilot so that the 95 % confidence interval of tracking success is
-  at most ± 0.1 wide. 10 per cell is the starting estimate.
+  at most ± 0.1 wide, for the strongest attacker and for each attacker alone: 12 per cell
+  (10.9.9).
 - **Stage A, screening:** all 15 policies and the baseline at 4 vehicles with spread speeds:
-  160 runs, about 15 hours one after another.
+  192 runs at 12 seeds, about 18 hours one after another.
 - **Stage B, conditions:** the policies on or near the stage A frontier (at most 5) and the
-  baseline, under all 6 combinations of vehicles and speeds: up to 360 runs, about 33 hours.
+  baseline, under all 6 combinations of vehicles and speeds: up to 432 runs, about 40 hours.
 - **Runner:** `vnapctl sweep` (phase 3), shared with the adversarial agents design: a plan of
   scenario variants over a seed list, one results directory per run, resumable.
 
@@ -817,6 +828,51 @@ cannot produce:
 | Safety applications | stale information is not the same as a warning that came too late | a reference application (e.g. forward collision or intersection warning) and lost warning lead time |
 | OBU hardware | CPU times on a VM do not carry over | per-operation times measured on an OBU or its security module |
 | Validation | the setup has not been shown to reproduce known results | reproduce one or two published mix-zone or silent-period results; independent review |
+
+#### 10.9.9 Results of the pilot (phase 6)
+
+`sim/sweeps/joint-pilot.toml` on `vnap:r2-p21`: the baseline (no changes), changes every 30 s
+(`periodic-30`) and the crossing's mix zone with at least 2 vehicles (`mixzone-min2`), all with
+3–13 s silent periods; 4 vehicles at 30, 37, 43 and 50 km/h, 5 minutes per run, seeds 201 to
+210: 30 runs, 2026-11-25 and 26. `vnapctl frontier` on the sweep, mean [95 % interval]:
+
+| Policy | Changes per run | Strongest attacker | Tracking success | A0 alone | Chance (guessing) | Stale share | Unexplained warnings |
+|---|---|---|---|---|---|---|---|
+| periodic-30 | 40 | A0 | 0.51 [0.46, 0.55] | 0.51 | 0.23 [0.22, 0.23] | 22.3 [21.6, 23.0] % | 0 |
+| mixzone-min2 | 10 | guessing | 0.41 [0.40, 0.41] | 0.20 [0.10, 0.30] | 0.41 [0.40, 0.41] | 6.3 [5.9, 6.7] % | 0 |
+| baseline | 0 | – | – | – | – | 0.0 % | 0 |
+
+- **Seeds: 12 per cell.** For tracking success within ± 0.1 (95 %), the most spread measure
+  sets the count: A0 in the mix zone, sd 0.17 over seeds (10 changes a run, so a run's success
+  moves in steps of 0.1). By the strongest attacker alone 3 would do. Stage A is then
+  16 × 12 = 192 runs (about 18 hours), stage B up to 6 × 6 × 12 = 432 (about 40 hours).
+- **Frontier:** the mix zone is better than periodic-30 on both primary measures, beyond
+  chance, and is the frontier; also with the stale threshold at 0.5 s and 2 s, and with A0
+  alone. With the guessing attacker alone neither beats the other (0.41 against 0.23 tracking).
+- **The chance level matters.** In the mix zone A0 did worse than guessing: changes come in
+  pairs at the crossing, so a guess among the two silent tracks is right about half the time,
+  while A0's position links went to the wrong vehicle. The strongest attacker per policy keeps
+  such a policy from looking better than it is.
+- **Secondary measures:** per run, warnings lost 17.6 (periodic-30) against 4.0 (mix zone) and
+  delayed 110 against 30, all explained by the silent periods. Conflict exposure, though, is
+  about the same: 26.1 [19.8, 31.9] s against 23.2 [19.9, 26.6] s (baseline 2.2 s), with 3.5
+  and 2.3 conflicts entirely in stale time. The mix zone silences a quarter as often, but where
+  the vehicles meet, so stale share and conflict exposure rank the two policies differently
+  (10.14).
+- **The host:** 9 of the 30 runs had to be repeated: 8 for pauses of the VM (gaps of 15 to 32
+  min between CPU samples), one for a collector crash (`sleep length must be non-negative`,
+  fixed). Two host effects showed in runs that completed, and the analysis now leaves them out
+  (`overhead.json` version 9):
+  - a 30 s NVMe stall (mix zone, seed 209) stamped a vehicle's change, its silent period and the
+    end of it at the stall's end. The warnings it sent meanwhile looked lost outside a silent
+    period (20 unexplained), which would have put the mix zone off the frontier. A silent period
+    logged as over sooner than its length, right after 5 s or more without a log line, is now an
+    outage seen by *station log*.
+  - in one baseline run (seed 205) the vehicles came on the air 6 s after the RSU; warnings
+    triggered before that were 2 to 3 s late. Start-up now runs per station: a warning before
+    its sender or receiver has been heard for 2 s is left out.
+- **Raw results:** `~/vnap-sweeps/joint-pilot` on the host (`frontier.txt`, `frontier.json`,
+  `frontier-v4-spread.svg`).
 
 ### 10.10 Metrics catalogue
 
@@ -907,8 +963,9 @@ run; 10.7.1 does so.
 | Results tab | `service/ui/js/views/overhead.js` | the run's figures, timeline, changes, vehicles, receivers and computation | phases 1, 2, 5 |
 | Test summary | `results/overhead-sweep-2026-11-25.docx`, `scripts/results/` | the sweep of 10.4.1 in the form of the other summaries | phase 5 |
 | Batch runner | `sim/vnapsim/sweep.py` (`vnapctl sweep`), shared with the adversarial agents design | a plan of scenario variants over a seed list, resumable; slopes per seed | phase 3 |
-| Guessing attacker | eavesdropper | links each new pseudonym to a random silent track | phase 6, not built |
-| Joint analysis | `sim/vnapsim/frontier.py` | bootstrap intervals, frontier per condition, sensitivity, charts and the result table | phase 6, not built |
+| Guessing attacker | `sim/vnapsim/guessing.py`, replayed on the eavesdropper's frames | links each new pseudonym to a random silent track, 200 seeded times: the run's chance level (`overhead.json` `guessing`) | phase 6 |
+| Joint analysis | `sim/vnapsim/frontier.py` (`vnapctl frontier`) | bootstrap intervals, frontier per condition, sensitivity, charts and the result table; seeds needed | phase 6 |
+| Pilot plan | `sim/sweeps/joint-pilot.toml` | two policies and the baseline, 10 seeds, 4 vehicles at spread speeds, 5 minutes; results in 10.9.9 | phase 6 |
 | 8-vehicle scenario | `sim/scenarios/` | the crossing with 8 vehicles | phase 7, not built |
 | Misbehaving vehicle and detector (optional) | `sim/images/mobility/`, `sim/vnapsim/mbd.py` | false positions for chosen vehicles; plausibility checks on `messages.jsonl` | phase 8, not built |
 
@@ -921,7 +978,7 @@ run; 10.7.1 does so.
 | 4 | station counters and timing (new image tag) | counts per change and refill in `overhead.json` | 2026-11-24 (`vnap:r2-p20`) |
 | 3 | CPU sampler; baseline and sweep on the two scenarios, on `vnap:r2-p21` | cost-per-change slopes with their spread over seeds | 2026-11-25 (10.4.1) |
 | 5 | metrics, report section, Results tab for the counts and CPU; a test summary in `results/` | the sweep reported in the form of the existing summaries | 2026-11-25 |
-| 6 | joint experiment: guessing attacker, joint analysis, pilot | the seed count per cell is settled | |
+| 6 | joint experiment: guessing attacker, joint analysis, pilot | the seed count per cell is settled | 2026-11-26: 12 seeds (10.9.9) |
 | 7 | joint experiment: stages A and B, analysis, test summary | the frontier per condition and the hypotheses reported, with intervals and sensitivity | |
 | 8 (optional) | misbehaving vehicle and detector; stage C: the frontier policies with one misbehaving vehicle | detection rate and time to detection reported with and without changes | |
 
@@ -960,7 +1017,9 @@ phase 4 run then showed every CAM carrying the full certificate, which led to ST
   days one after another.
 - Whether the host carries 8 vehicles with a PKI, an eavesdropper and the collectors.
 - The TTC threshold for conflict exposure (4 s), and whether conflict exposure should replace
-  stale share as the primary safety measure once the pilot shows how often conflicts occur.
+  stale share as the primary safety measure. In the pilot (10.9.9) conflicts occurred in every
+  run, and the two measures ranked the policies differently: the mix zone had a third of
+  periodic-30's stale share but about the same conflict exposure. To be decided before stage A.
 - The window for the change synchronization ratio: 2 s, or overlapping silent periods only.
 - Whether revocation and misbehaviour detection should get their own design, and whether the
   optional stage C is worth its runs before then.

@@ -187,6 +187,11 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="list the runs still to do")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("frontier", help="privacy against safety over a sweep's runs: intervals, the frontier of "
+                                        "undominated policies, sensitivity, seeds needed (the joint experiment)")
+    p.add_argument("dir", help="sweep directory (vnapctl sweep); writes frontier.json, frontier.txt, frontier-*.svg")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("certs", help="the committed test certificate sets: validity, regeneration")
     p.add_argument("action", nargs="?", choices=("status", "regenerate"), default="status")
     p.add_argument("set", nargs="?", choices=("v2", "v3"), help="regenerate: which set")
@@ -257,6 +262,13 @@ def main():
         from . import sweep
         try:
             return sweep.main(args, log=progress if not args.quiet else lambda *_: None)
+        except (OSError, ValueError) as e:
+            return fail(str(e), EXIT_USAGE)
+
+    if args.cmd == "frontier":
+        from . import frontier
+        try:
+            return frontier.main(args)
         except (OSError, ValueError) as e:
             return fail(str(e), EXIT_USAGE)
 

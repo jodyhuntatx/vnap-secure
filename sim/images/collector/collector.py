@@ -199,9 +199,9 @@ def run_probe(probe, stations, clients, sent, live, running):
         heapq.heappush(queue, (start + rng.uniform(0, interval), order, "trigger", name, 0, 0, None))
         order += 1
     while running.is_set():
-        when = queue[0][0]
-        if when > time.time():
-            time.sleep(min(0.05, when - time.time()))
+        wait = queue[0][0] - time.time()   # read the clock once: a second read may already be past `when`
+        if wait > 0:
+            time.sleep(min(0.05, wait))
             continue
         _, _, kind, name, s, n, payload = heapq.heappop(queue)
         now = time.time()

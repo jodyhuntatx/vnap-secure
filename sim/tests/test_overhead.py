@@ -138,7 +138,7 @@ class OverheadTest(unittest.TestCase):
         c1 = next(c for c in r["changes"] if c["vehicle"] == "car1")
         self.assertEqual((c1["silent_ms"], c1["gap_ms"], c1["cams_missing"]), (2000, 3000, 2))
         car1 = next(v for v in r["vehicles"] if v["vehicle"] == "car1")
-        self.assertEqual(car1["stale_share"], round(2.0 / 30, 3))       # 3 s gap: 2 s with information older than 1 s
+        self.assertEqual(car1["stale_share"], round(2.0 / 30.5, 3))     # 3 s gap: 2 s older than 1 s, of the 30.5 s recorded
         self.assertEqual(car1["delivery_ratio"], round(29 / 31, 3))
         lane = next(t for t in r["timeline"] if t["vehicle"] == "car1")
         self.assertEqual(lane["gaps"], [[10.0, 13.0, "silent"]])
@@ -172,6 +172,19 @@ class OverheadTest(unittest.TestCase):
         self.assertEqual((car1["stale_share"], car1["delivery_ratio"], car1["gap_ms_max"]), (0.0, 1.0, 1000))
         lane = next(t for t in r["timeline"] if t["vehicle"] == "car1")
         self.assertEqual(lane["gaps"], [[20.0, 25.0, "outage"]])
+
+    def test_a_station_log_stamped_late_is_an_outage(self):
+        # the host stalled from 5 to 12 s: car2's lines meanwhile reached the disk at 12 s, its change and the
+        # 4 s silent period with them, so the silence is logged as over at once
+        d = results_dir()
+        with open(os.path.join(d, "car2.log"), "w") as f:
+            f.writelines(f"{stamp(T0 + t)} {text}\n" for t, text in [
+                (-1, "[PSEUDONYM] v3 pool of 8 certificate(s), changed on events only, starting at index 0 (certificate=b1)"),
+                (5, "[COUNTERS] {}"), (12, "[PSEUDONYM] changed pool index 0 -> 1 (of 8), certificate=b2"),
+                (12.0005, "[IDCHANGE] silent period 4000 ms"), (12.001, "[IDCHANGE] silent period over, 4 frame(s) suppressed")])
+        r = overhead.analyse(d)
+        self.assertEqual([(o["from"], o["to"], o["seen_by"]) for o in r["outages"]], [(5.0, 12.001, ["station log"])])
+        self.assertEqual(overhead.analyse(results_dir(silent_ms=2000))["outages"], [])   # a silence logged in time
 
     def test_a_change_during_an_outage_is_marked(self):
         r = overhead.analyse(results_dir(outage=(9.6, 13.4)))
@@ -217,9 +230,24 @@ class OverheadTest(unittest.TestCase):
             m = json.load(f)["metrics"]
         self.assertEqual((m["car1.pseudonym.changed"], m["car1.idchange.silent"], m["car1.cam.tx"], m["car2.cam.tx"]), (1, 1, 29, 31))
         self.assertEqual((m["car1.gap_ms_max"], m["car1.stale_share"], m["changes.total"], m["changes.unexplained"]),
-                         (3000, round(2.0 / 30, 3), 2, 0))
+                         (3000, round(2.0 / 30.5, 3), 2, 0))
         self.assertEqual((m["privacy.tracking_success"], m["outages"]), (0.5, 0))
         self.assertIn("car1.pos_error_m_p95", m)
+
+    def test_silent_to_the_end_is_stale(self):
+        # car1 sends nothing after its change at 10 s (lose: 25 s): stale from 11 s to the end of the recording
+        car1 = next(v for v in overhead.analyse(results_dir(lose=25))["vehicles"] if v["vehicle"] == "car1")
+        self.assertEqual(car1["stale_share"], round((30.5 - 10 - 1.0) / 30.5, 3))
+        self.assertEqual(car1["stale_share_at"]["2.0"], round((30.5 - 10 - 2.0) / 30.5, 3))
+
+    def test_guessing_attacker(self):
+        from vnapsim import guessing
+        g = overhead.analyse(results_dir(silent_ms=2000))["guessing"]
+        # car2's b2 (11.5 s) appears while both cars are silent: a coin toss. Right, and car1's a2 (13 s) then has only
+        # car1's track left (2 of 2 correct); wrong, and a2 goes to car2's b1 track (0 of 2). Expected 0.5.
+        self.assertEqual((g["candidates_mean"], g["window_s"], g["formula"]), (1.5, guessing.DEFAULT_WINDOW_S, 0.5))
+        self.assertTrue(0.4 <= g["tracking_success"] <= 0.6, g)
+        self.assertAlmostEqual(g["tracking_success_sd"], 0.5, places=1)
 
     def test_metrics_of_counters_and_cpu(self):
         from vnapsim import collect

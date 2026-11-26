@@ -19,6 +19,8 @@ export function overheadPanel(panel, o) {
     figure(s.tracking_success === null ? "–" : pct(s.tracking_success), `tracking success (${s.linked_correctly ?? 0} of ${s.changes} changes followed)`,
       "share of the pseudonym changes the eavesdropper linked correctly: the lower, the better the privacy"),
     figure(String(s.linked_wrongly ?? "–"), "changes linked to the wrong vehicle", "the eavesdropper's mistakes: it joined two different vehicles"),
+    o.guessing ? figure(pct(o.guessing.tracking_success), `chance level (1 / vehicles: ${pct(o.guessing.formula)})`,
+      `tracking success of an attacker guessing among the tracks silent at each change (${o.guessing.candidates_mean} on average, within ${o.guessing.window_s} s), replayed ${o.guessing.repetitions} times on the same frames`) : null,
     figure(pct(s.sync_ratio), "changes synchronized", `share of changes with another vehicle changing within ${o.settings.sync_window_s} s: what a mix zone aims at`),
     recv ? figure(ms(s.gap_ms_max), `longest reception gap (mean ${ms(s.gap_ms_mean)})`, "per change: from the last CAM under the old pseudonym to the first under the new one; the vehicle is missing from every receiver's view meanwhile") : null,
     recv ? figure(pct(s.stale_share), "time information was stale", `share of time a receiver's latest CAM of a vehicle was older than ${o.settings.stale_s} s (mean over vehicles)`) : null,

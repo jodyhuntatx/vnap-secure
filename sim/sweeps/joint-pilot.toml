@@ -1,0 +1,25 @@
+# Pilot of the joint experiment (PRD 10.9.5, phase 6): two policies and the baseline, 10 seeds each, at
+# 4 vehicles with spread speeds, 5 minutes per run. It checks the pipeline and measures the spread of the
+# primary measures over seeds, from which the seed count of stages A and B is chosen.
+#   ../vnapctl sweep <dir> --plan sweeps/joint-pilot.toml     (about 3.1 h; resumes where it stopped)
+#   ../vnapctl frontier <dir>                                  (frontier.txt: intervals, frontier, seeds needed)
+description = "joint experiment pilot: periodic 30 s and mix zone (2 vehicles) with 3-13 s silence, against no changes"
+duration_s = 300
+seeds = [201, 202, 203, 204, 205, 206, 207, 208, 209, 210]
+# held fixed (10.9.2): vnap:r2-p21, random turns, refill from the run's PKI, the warning probe; spread speeds
+set = ["image=vnap:r2-p21",
+       "probe.interval_s=10.0",
+       "stations.obu1.mobility.speed_kmh=30", "stations.obu2.mobility.speed_kmh=37",
+       "stations.obu3.mobility.speed_kmh=43", "stations.obu4.mobility.speed_kmh=50",
+       "defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000",
+       'check.expect=["eavesdropper.decode_errors==0"]']
+
+[[group]]
+# the condition: 4 vehicles, spread speeds
+name = "v4-spread"
+scenario = "crossing"
+baseline = ["control.mix_zones=[]"]
+
+[group.factors.policy]
+"periodic-30" = ["control.mix_zones=[]", 'control.client.mode="periodic"', "control.client.interval=30"]
+"mixzone-min2" = ["control.mix_zones.crossing.min_vehicles=2"]

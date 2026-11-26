@@ -79,6 +79,25 @@ class Warnings(unittest.TestCase):
         self.assertEqual(w["id_leaks"], 1)
         self.assertEqual(w["on_time"], 1)
 
+    def test_startup_left_out(self):
+        # a warning triggered before the recording started, received late: left out, not unexplained
+        late = [{"t": T0 + 3.0, "rx": "rsu", "m": "denm", "seq": 1, "hdr": 2, "orig": 2}]
+        w = receivers.warnings(probe_records([(T0 + 1, "car1")]), late, {}, self.configured, self.history, [], start=T0 + 1.5)
+        self.assertEqual((w["deliveries"], w["during_startup"], w["unexplained"]), (0, 1, 0))
+        w = receivers.warnings(probe_records([(T0 + 1, "car1")]), late, {}, self.configured, self.history, [])
+        self.assertEqual((w["deliveries"], w["unexplained"]), (1, 1))
+
+    def test_startup_per_station(self):
+        # the sender came on the air late (its first CAM at 4 s): its warning at 1 s is start-up, not unexplained
+        late = [{"t": T0 + 4.0, "rx": "rsu", "m": "denm", "seq": 1, "hdr": 2, "orig": 2}]
+        starts = {None: T0, "car1": T0 + 4.0}
+        w = receivers.warnings(probe_records([(T0 + 1, "car1")]), late, {}, self.configured, self.history, [], start=starts)
+        self.assertEqual((w["deliveries"], w["during_startup"], w["unexplained"]), (0, 1, 0))
+        starts = {None: T0, "car1": T0}   # on the air from the start: the 3 s delay is unexplained
+        late = [{"t": T0 + 6.0, "rx": "rsu", "m": "denm", "seq": 1, "hdr": 2, "orig": 2}]
+        w = receivers.warnings(probe_records([(T0 + 3, "car1")]), late, {}, self.configured, self.history, [], start=starts)
+        self.assertEqual((w["deliveries"], w["unexplained"]), (1, 1))
+
     def test_no_probe(self):
         self.assertIsNone(receivers.warnings([], [], {}, {}, {}, []))
 

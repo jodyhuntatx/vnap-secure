@@ -103,6 +103,7 @@ rejection happens.
 ./vnapctl overhead RESULTS_DIR [--json] [--write]    # privacy and cost of a stopped run's pseudonym changes
 ./vnapctl sweep DIR --plan PLAN [--dry-run]          # a plan of runs over seeds, then the cost per change
 ./vnapctl sweep DIR --analyse [--json]               # analyse a sweep's runs again
+./vnapctl frontier DIR [--json]                      # privacy against safety over a sweep's runs
 ./vnapctl certs [status] [v2|v3] [--json]           # the committed test certificates' validity
 ./vnapctl certs regenerate v2|v3 [--lifetime KEY=N ...]   # a new set; see docs/certificates.md
 ```
@@ -335,6 +336,40 @@ design ([PRD](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#104-method), 10.
   whose samples have a gap of more than 2 s (`overhead.json` `cpu.settings.gap_s_max`) is
   marked failed (`sweep-error.txt`: host paused) and repeated on the next start; the analysis
   leaves such runs out and names them.
+
+### Joint analysis
+
+`frontier` weighs privacy against safety over a sweep's runs, the analysis of the joint
+experiment ([PRD 10.9.6](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#1096-analysis)):
+
+```sh
+./vnapctl sweep ~/vnap-sweeps/joint-pilot --plan sweeps/joint-pilot.toml   # the pilot, about 3.1 hours
+./vnapctl frontier ~/vnap-sweeps/joint-pilot                                # frontier.txt, .json, -<group>.svg
+```
+
+- **Conditions and policies:** each group of the plan is a condition, each cell but the baseline
+  a policy.
+- **Primary measures, per run:** the tracking success of the strongest attacker and the stale
+  share. The attackers are the eavesdropper as it ran (A0) and the
+  [guessing attacker](../functional/eavesdropper-and-scoring.md#chance-level-the-guessing-attacker)
+  on the same frames; the strongest is the one with the higher mean for the policy.
+- **Intervals:** 95 %, from 2000 bootstrap resamples over the seeds (the run is the unit).
+- **Hard limit:** a policy that lost or delayed warnings beyond what its silent periods explain
+  (`denm_unexplained`, needs a `[probe]`) is shown but left off the frontier.
+- **Frontier:** the policies no other policy beats on both primary measures, where beating means
+  no worse on both and better on one beyond chance (the bootstrap interval of the paired
+  difference over seeds excludes 0). Again with the stale threshold at 0.5 s and 2 s, and with
+  each attacker alone.
+- **Seeds needed:** per policy, the seeds for a 95 % interval of tracking success within ±0.1,
+  from the spread over the seeds run, for the strongest attacker and for each attacker alone
+  (the sensitivity frontiers use them); the measure with the most spread sets it. The largest
+  over the policies is the condition's.
+- **Chart:** `frontier-<group>.svg`, stale share across and tracking success up, one point per
+  policy with its intervals, the frontier dashed, the guessing attacker's level as hollow
+  markers.
+
+Runs whose `overhead.json` is of an older version are analysed again first, so a sweep from
+before the guessing attacker gains it.
 
 ## Your own scenarios
 

@@ -114,6 +114,9 @@ data runs keep, so runs stopped before them show them too, without the position 
   - *tracking success*: the share of changes the eavesdropper linked correctly (lower is
     more private);
   - changes linked to the wrong vehicle;
+  - *chance level*: the tracking success of an attacker guessing among the vehicles silent at
+    each change ([guessing attacker](../functional/eavesdropper-and-scoring.md#chance-level-the-guessing-attacker));
+    a tracking success near it means the eavesdropper did no better than guessing;
   - *changes synchronized*: the share with another vehicle changing within 2 s;
   - *longest reception gap* and its mean;
   - *time information was stale*: the share of time the latest CAM of a vehicle was older
@@ -158,8 +161,9 @@ restarts at a random phase. With one, a gap is the silent period plus up to that
 **Outages.** When the host stalls, all containers stop together: a slow disk (the VM's virtual
 NVMe disk can take 30 s to complete a request) or a restart of the host's network blocks the
 stations, the eavesdropper and the recorder. The analysis finds these stretches: the receiver
-heard nothing although a station outside its silent period should have sent, or the recorder
-stopped ticking. Changes in an outage are marked *outage*, and gaps, stale time and delivery
+heard nothing although a station outside its silent period should have sent, the recorder
+stopped ticking, or a station's log was stamped late (a silent period logged as over sooner
+than its length: the lines waited for the disk). Changes in an outage are marked *outage*, and gaps, stale time and delivery
 leave that time out. Rerun when the outages cover much of the run; see
 [troubleshooting](troubleshooting.md#outages-in-a-runs-results) for the host side.
 
@@ -169,7 +173,8 @@ the run and within 5 s after the receiver first heard a vehicle's new identity. 
 [warning probe](../reference/scenario-format.md) (`[probe]`), the warnings lost and delayed,
 and a table of the late and lost ones with the silence left when each was triggered: a
 warning triggered in the sender's silent period arrives with the first copy after it, or not
-at all. A red note marks DENMs that still carried the configured stationId after a change
+at all. Warnings triggered before the sender or the receiver had been on the air (first CAM
+heard) for 2 s are left out as start-up. A red note marks DENMs that still carried the configured stationId after a change
 (a station image without the DENM fix): the run's privacy result is then not valid. With
 recorded positions, *conflict exposure*: the time two vehicles' true time-to-collision was
 below 4 s while one's information about the other was stale or showed no conflict.

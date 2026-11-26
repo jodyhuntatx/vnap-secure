@@ -10,7 +10,7 @@ import unittest
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from vnapsim import cpu, sweep  # noqa: E402
+from vnapsim import cpu, overhead, sweep  # noqa: E402
 
 T0 = 1_800_000_000.0
 
@@ -101,7 +101,7 @@ class Sweep(unittest.TestCase):
                 noise = 0.5 if r["seed"] == 1 else -0.5
                 out = sweep.run_dir(d, r)
                 os.makedirs(out)
-                o = {"duration_s": 600.0, "outages": [],
+                o = {"version": overhead.VERSION, "duration_s": 600.0, "outages": [],
                      "summary": {"vehicles": 4, "changes": int(round(4 * 600 * rate)),
                                  "cpu_vehicle_ms_per_s": 50 + 4 * rate + noise, "cpu_rsu_ms_per_s": 30 + 2 * 4 * rate,
                                  "stale_share": 0.1 * rate if silent else 0.0},
@@ -134,7 +134,7 @@ class Sweep(unittest.TestCase):
                 out = sweep.run_dir(d, r)
                 os.makedirs(out)
                 with open(os.path.join(out, "overhead.json"), "w") as f:
-                    json.dump({"duration_s": 600.0, "summary": {"vehicles": 4, "changes": int(round(4 * 600 * rate)),
+                    json.dump({"version": overhead.VERSION, "duration_s": 600.0, "summary": {"vehicles": 4, "changes": int(round(4 * 600 * rate)),
                                                                 "cpu_vehicle_ms_per_s": cpu}}, f)
                 with open(os.path.join(out, "sweep-run.json"), "w") as f:
                     json.dump(r, f)
@@ -153,7 +153,7 @@ class Sweep(unittest.TestCase):
                 os.makedirs(out)
                 gap = 4829.0 if (r["cell"], r["seed"]) == ("baseline", 2) else 0.1
                 with open(os.path.join(out, "overhead.json"), "w") as f:
-                    json.dump({"duration_s": 600.0, "summary": {"vehicles": 4, "changes": 0},
+                    json.dump({"version": overhead.VERSION, "duration_s": 600.0, "summary": {"vehicles": 4, "changes": 0},
                                "cpu": {"settings": {"gap_s_max": gap}, "stations": []}}, f)
                 with open(os.path.join(out, "sweep-run.json"), "w") as f:
                     json.dump(r, f)

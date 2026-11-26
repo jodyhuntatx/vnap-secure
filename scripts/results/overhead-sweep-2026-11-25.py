@@ -184,7 +184,7 @@ def main(sweep_dir, out=OUT):
                    "time per change: " + ", ".join(f"{fmt((mby.get('silence-' + s) or {}).get('stale_share', {}).get('slope'))} s "
                                                    f"with silence {s}" for s in ("3-13", "6-12"))
                    + ". The silent period brought tracking down from about 80 % of the changes to below 20 %, and conflict "
-                     "exposure up from about 2 s to 29 s per run, with 9 to 10 conflicts per run lying entirely in stale "
+                     "exposure up from about 2 s to 26 to 29 s per run, with 8 to 9 conflicts per run lying entirely in stale "
                      "time: the vehicles go silent exactly where they meet. At one change a minute the CPU slopes are too "
                      "noisy to use (vehicle -137 ± 145 ms without silence)."))
 

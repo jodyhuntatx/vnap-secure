@@ -24,6 +24,38 @@ Results measured with images up to `r2-p16` carry the CAM timing caveat describe
 `r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
 CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
 
+## 2026-11-26: overhead design phase 6: guessing attacker, joint analysis, pilot
+
+- **Guessing attacker** (`sim/vnapsim/guessing.py`): links each new pseudonym to a random silent
+  track, 200 seeded times; its tracking success is the run's chance level (`overhead.json`
+  `guessing`, summary `guess_tracking_success`). In the report's section 4.4 and the Results
+  tab as *Chance level*; facts `cost.guess_*`
+  ([chance level](docs/functional/eavesdropper-and-scoring.md#chance-level-the-guessing-attacker)).
+- **Joint analysis:** `vnapctl frontier DIR`: per condition of a sweep, bootstrap intervals over
+  seeds, the strongest attacker per policy, the warning hard limit, the frontier and its
+  sensitivity (stale threshold 0.5 s and 2 s, each attacker alone), the secondary measures, a
+  chart, and the seeds needed: by the most spread of the strongest attacker and each attacker
+  alone ([vnapctl](docs/operations/vnapctl.md#joint-analysis)). The stale share at 0.5 s and 2 s
+  is in the summary (`stale_share_0_5`, `stale_share_2_0`).
+- **Pilot** (`sim/sweeps/joint-pilot.toml`, PRD 10.9.9): 30 runs. The seed count is settled at
+  12 per cell. The mix zone (2 vehicles) is the frontier against periodic changes every 30 s:
+  tracking 0.41 against 0.51, stale share 6% against 22%, but about the same conflict exposure.
+- **Analysis changes** (`overhead.json` version 9; `vnapctl sweep --analyse` now recomputes older
+  files, as `vnapctl frontier` does):
+  - stale time runs from a vehicle's first CAM to the end of the recording: a vehicle kept
+    silent to the end is stale after its last CAM, and the time before its first CAM is
+    start-up;
+  - a station log stamped late by a disk stall (a silent period logged as over sooner than its
+    length, right after 5 s without a log line) is an outage, seen by *station log*;
+  - warnings triggered before their sender or receiver had been heard for 2 s are left out as
+    start-up (`during_startup`).
+
+  The phase 3 figures change with these (PRD 10.4.1): stale time per change with 3–13 s 6.7 s
+  (was 7.1), in the mix zone 6.8 s (was 7.1); mix zone conflict exposure 26 to 29 s per run
+  (was 29). The [test summary](results/overhead-sweep-2026-11-25.docx) is regenerated.
+- **Collector:** the probe loop crashed with `sleep length must be non-negative` when the clock
+  passed the next send time between two reads; it reads the clock once now.
+
 ## 2026-11-25: overhead design phase 5: report, Results tab, test summary
 
 - **Report** (`report.docx`): section 4.6, *Computation*: the ID change time, chain checks and
@@ -570,7 +602,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 | 8 | Web UI | 2026-10-08 |
 | 9 | Hardening: backups, TOTP | 2026-10-08; MCP endpoint not yet |
 | draft 0.2 | Station fidelity (STA-1 to STA-4): CAM generation, stationId in DENMs, operation counters, certificate after the silent period | 2026-11-24 |
-| draft 0.3 | Overhead measurement (OVH-1 to OVH-6, section 10): phases 1 to 5 | 2026-10-19, 2026-11-24, 2026-11-25; phase 6 next |
+| draft 0.3 | Overhead measurement (OVH-1 to OVH-6, section 10): phases 1 to 6 | 2026-10-19, 2026-11-24, 2026-11-25, 2026-11-26; phase 7 next |
 
 ## Documentation moves
 

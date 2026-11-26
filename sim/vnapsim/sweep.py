@@ -47,6 +47,8 @@ import sys
 import time
 import tomllib
 
+from .overhead import load_or_analyse
+
 HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 VNAPCTL = os.path.join(HERE, "vnapctl")
 
@@ -182,8 +184,7 @@ def run_plan(plan, out, instance=0, dry_run=False, log=print):
 def row(d):
     """The figures of one collected run, or None."""
     try:
-        with open(os.path.join(d, "overhead.json")) as f:
-            o = json.load(f)
+        o = load_or_analyse(d)   # recomputed when older, so a sweep's figures follow the current analysis
         with open(os.path.join(d, "sweep-run.json")) as f:
             r = json.load(f)
     except (OSError, ValueError):

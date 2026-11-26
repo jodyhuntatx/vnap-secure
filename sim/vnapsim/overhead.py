@@ -28,7 +28,9 @@ receivers' verification failures and the warning probe's delays and losses; with
 conflict exposure. Phase 4 (vnapsim.counters): with station images from vnap:r2-p20, the stations'
 security operation counts and times, per change (the ID change, the neighbours' chain checks) and per
 refill (key derivations, batch checks). Phase 3 (vnapsim.cpu): the containers' CPU time from the
-collector's samples, per station (the cost per change comes from the sweep, vnapsim.sweep).
+collector's samples, per station (the cost per change comes from the sweep, vnapsim.sweep). Phase 6
+(vnapsim.guessing): the guessing attacker's tracking success on the same frames, the run's chance level,
+and the stale share at the thresholds of STALE_SENSITIVITY_S.
 
   python3 -m vnapsim.overhead <results dir> [--json] [--write]
 """
@@ -44,13 +46,15 @@ import sys
 import tarfile
 from datetime import datetime
 
-from .logs import RE_CHANGED, RE_IDC_SILENT, RE_POOL_START, RE_REJECTED
+from .logs import RE_CHANGED, RE_IDC_SILENT, RE_IDC_SILENT_END, RE_POOL_START, RE_REJECTED
 from . import counters as op_counters
 from . import cpu as cpu_time
+from . import guessing
 from . import receivers
 
-VERSION = 5
+VERSION = 9
 STALE_S = 1.0          # the longest CAM interval of EN 302 637-2
+STALE_SENSITIVITY_S = (0.5, 2.0)   # the stale share again at these thresholds (PRD 10.9.6)
 SYNC_WINDOW_S = 2.0    # changes of two vehicles this close count as synchronized
 GAP_MARK = 1.5         # timeline: inter-CAM gaps longer than this many median intervals are drawn
 TOLERANCE_MS = 250     # scheduling slack before a gap counts as longer than its causes explain
@@ -59,6 +63,8 @@ OUTAGE_S = 2.5         # no frame from anyone for this long, though a station sh
 EXPECTED_S = 1.5       # ... should have sent: this long outside its silent periods (more than one CAM interval)
 STALL_S = 1.0          # the recorder ticks 5 times a second; a tick this late means the host stalled
 BURST_S = 0.5          # after an outage, frames read from the socket buffer at once
+LOG_LAG_S = 1.0        # a silent period logged as over this much sooner than its length: the log was stamped late
+LOG_STALL_S = 5.0      # ... right after the station's log was quiet this long (stations log counters every second)
 KEY_BYTES = 32         # ECDSA P-256 private key, stored with each authorization ticket
 EARTH_RADIUS = 6371008.8
 
@@ -91,13 +97,19 @@ def extend(lat, lon, speed, heading, dt):
 
 
 def read_station_log(path):
-    """The pseudonym history of one station: start certificate, changes, rejections, silent periods."""
-    out = {"start": None, "changes": [], "rejected": 0, "silent": []}
+    """The pseudonym history of one station: start certificate, changes, rejections, silent periods (with
+    the time logged as over), and the gaps in its log longer than STALL_S (for lagged_logs)."""
+    out = {"start": None, "changes": [], "rejected": 0, "silent": [], "silent_end": [], "log_gaps": []}
+    last = None
     with open(path, errors="replace") as f:
         for line in f:
+            t = log_time(line)
+            if t is not None:
+                if last is not None and t - last > STALL_S:
+                    out["log_gaps"].append((last, t))
+                last = t if last is None else max(last, t)
             if "[PSEUDONYM]" not in line and "[IDCHANGE] silent period" not in line:
                 continue
-            t = log_time(line)
             if (m := RE_POOL_START.search(line)) and out["start"] is None:
                 out["start"] = {"t": t, "cert": m[4]}
             elif m := RE_CHANGED.search(line):
@@ -106,7 +118,35 @@ def read_station_log(path):
                 out["rejected"] += 1
             elif m := RE_IDC_SILENT.search(line):
                 out["silent"].append({"t": t, "ms": int(m[1])})
+            elif RE_IDC_SILENT_END.search(line):
+                out["silent_end"].append(t)
     return out
+
+
+def lagged_logs(history):
+    """Stretches a station's log was stamped late: the host stalled (an NVMe timeout holds disk I/O for 30 s)
+    and the lines written meanwhile got the time they reached the disk. It shows where a silent period is
+    logged as over sooner than its length, in a burst right after the log was quiet for LOG_STALL_S; the
+    stretch runs from the last line before the burst to the end of the silence as logged. A silence cut
+    short by the next change (another silent period logged before its end) is not one. [(from, to)].
+    The CAMs heard may show nothing: the radio kept going."""
+    found = []
+    for hist in history.values():
+        ends = sorted(t for t in hist.get("silent_end", []) if t is not None)
+        starts = sorted(s["t"] for s in hist["silent"] if s["t"] is not None)
+        for s in hist["silent"]:
+            if s["t"] is None:
+                continue
+            end = next((t for t in ends if t >= s["t"]), None)
+            if end is None or end - s["t"] >= s["ms"] / 1000 - LOG_LAG_S:
+                continue
+            if any(s["t"] < t <= end for t in starts):
+                continue   # restarted by the next change
+            gap = next((g for g in hist.get("log_gaps", []) if g[1] - g[0] >= LOG_STALL_S
+                        and 0 <= s["t"] - g[1] <= BURST_S), None)
+            if gap:
+                found.append((gap[0], end))
+    return found
 
 
 def read_frames(tar_path):
@@ -172,10 +212,11 @@ def covered(a, b, intervals):
     return total
 
 
-def find_outages(frames, owner, silent_windows, ticks):
+def find_outages(frames, owner, silent_windows, ticks, lagged=()):
     """Stretches the reference receiver heard nothing from a station that should have sent (not in a
-    silent period, heard before and after), and stretches the position recorder stalled: the link or
-    the host was down, not the change. [(from, to, seen by)], merged where they overlap."""
+    silent period, heard before and after), stretches the position recorder stalled, and stretches a
+    station's log was stamped late (lagged_logs): the link or the host was down, not the change.
+    [(from, to, seen by)], merged where they overlap."""
     found = []
     times = [f[0] for f in frames]
     first, last = {}, {}   # sender (vehicle name, or certificate of a station without pseudonyms) -> times
@@ -194,6 +235,7 @@ def find_outages(frames, owner, silent_windows, ticks):
                     found.append([a, b, "receiver"])
                     break
     found += [[a, b, "recorder"] for a, b in zip(ticks, ticks[1:]) if b - a > STALL_S]
+    found += [[a, b, "station log"] for a, b in lagged]
     merged = []
     for a, b, by in sorted(found):
         if merged and a <= merged[-1][1]:
@@ -272,6 +314,7 @@ def analyse(results_dir):
         links[link["new"]] = link
     t0 = min([f[0] for f in frames or []] + [c["t"] for h in history.values() for c in h["changes"] if c["t"]], default=None)
     t_end = max([f[0] for f in frames or []], default=None)
+    t_first = min([f[0] for f in frames or []], default=None)   # the recording, for stale time and delivery
     rel = lambda t: r3(t - t0) if t is not None and t0 is not None else None   # noqa: E731
 
     # the silent period of each change: the station logs it right before or after the change line
@@ -281,7 +324,7 @@ def analyse(results_dir):
                                    and -1.0 <= s["t"] - c["t"] < 2.0), 0)
     silent_windows = {name: [(c["t"], c["t"] + c["silent_ms"] / 1000 + 2 * STALE_S) for c in hist["changes"] if c["t"]]
                       for name, hist in history.items()}
-    outages = find_outages(frames or [], owner, silent_windows, ticks)
+    outages = find_outages(frames or [], owner, silent_windows, ticks, lagged_logs(history))
 
     def in_outage(a, b):
         # frames buffered during a stall may be stamped in a burst right after it (older eavesdroppers stamp
@@ -381,10 +424,16 @@ def analyse(results_dir):
         chains_all += followed
         # inter-CAM gaps that overlap an outage are left out with their time: the link or host was down
         kept = [b - a for a, b in zip(times, times[1:]) if not in_outage(a, b)]
-        lost = sum(b - a for a, b in zip(times, times[1:]) if in_outage(a, b))
-        stale = sum(max(0.0, g - STALE_S) for g in kept)
-        window = (times[-1] - times[0] - lost) if len(times) > 1 else 0
-        missing = sum(max(0, round(g / median) - 1) for g in kept) if median else 0
+        # stale time and delivery from the vehicle's first CAM (before it, it was starting, not silent) to the end
+        # of the recording: the time after its last CAM counts, so that a vehicle kept silent to the end
+        # (changes faster than its silent periods) is stale
+        edges = (list(zip(times, times[1:])) + [(times[-1], t_end)]) if times else []
+        held = [b - a for a, b in edges if not in_outage(a, b)]
+        lost = sum(b - a for a, b in edges if in_outage(a, b))
+        stale = sum(max(0.0, g - STALE_S) for g in held)
+        stale_at = {str(th): sum(max(0.0, g - th) for g in held) for th in STALE_SENSITIVITY_S}
+        window = (t_end - times[0] - lost) if len(times) > 1 else 0
+        missing = sum(max(0, round(g / median) - 1) for g in held) if median else 0
         pool = (next((st.get("security") or {} for st in vehicles if st["name"] == name), {})).get("pseudonym_pool")
         refill = next((st["pseudonym"].get("refill") for st in vehicles if st["name"] == name), None)
         peak = (pool or 0) + ((refill or {}).get("added") or 0) if pool else None
@@ -397,6 +446,7 @@ def analyse(results_dir):
             "gap_ms_p95": round(pct(kept, 0.95) * 1000) if kept else None,
             "gap_ms_max": round(max(kept) * 1000) if kept else None,
             "stale_share": r3(stale / window) if window else None,
+            "stale_share_at": {k: r3(v / window) for k, v in stale_at.items()} if window else None,
             "delivery_ratio": r3(len(cams) / (len(cams) + missing)) if cams else None,
             "full_cert_share": r3(sum(1 for c in cams if c[3]) / len(cams)) if cams else None,
             "cam_bytes_mean": round(statistics.mean(c[2] for c in cams)) if cams else None,
@@ -441,12 +491,16 @@ def analyse(results_dir):
     outage_times = [(a, b) for a, b, _ in outages]
     verification = receivers.verification(receptions, id_owner, id_changes) if receptions is not None else None
     configured = {st["name"]: st.get("station_id") for st in status.get("stations", [])}
-    warnings = receivers.warnings(probe, receptions or [], id_owner, configured, history, outage_times) if probe else None
+    warnings = receivers.warnings(probe, receptions or [], id_owner, configured, history, outage_times,
+                                  start={name: v[0][0] for name, v in by_vehicle.items() if v} | {None: t_first}) if probe else None
     conflicts = receivers.conflicts(tracks, by_vehicle, {sid: n for n, sid in station_id.items()}, STALE_S,
                                     outage_times, extend) if tracks and frames else None
     # phase 4: the stations' operation counters
     ops = op_counters.analyse(logs, [{"vehicle": name, "t": c["t"], "silent_ms": c["silent_ms"]}
                                      for name, h in history.items() for c in h["changes"]])
+    # phase 6: the guessing attacker on the eavesdropper's frames: the chance level of this run
+    guess = guessing.analyse(frames, owner, [c["cert"] for h in history.values() for c in h["changes"]],
+                             guessing.link_window(results_dir)) if frames and score is not None else None
     # phase 3: the containers' CPU time, sampled by the collector
     roles = {st["name"]: "vehicle" if st.get("pseudonym") else "rsu" if st.get("station_type") == 15 else "station"
              for st in status.get("stations", [])}
@@ -491,6 +545,10 @@ def analyse(results_dir):
             "unexplained": sum(1 for c in measured if c["explained"] is False),
             "outage_changes": len(measured) - len(clean),
             "stale_share": r3(statistics.mean(shares)) if shares else None,
+            **{f"stale_share_{str(th).replace('.', '_')}": r3(statistics.mean(v["stale_share_at"][str(th)] for v in per_vehicle
+                                                                              if v.get("stale_share_at")))
+               if any(v.get("stale_share_at") for v in per_vehicle) else None for th in STALE_SENSITIVITY_S},
+            "guess_tracking_success": guess["tracking_success"] if guess else None,
             "delivery_ratio": r3(statistics.mean(delivery)) if delivery else None,
             "sync_ratio": r3(sum(1 for c in changes if c["synchronized_with"]) / len(changes)) if changes else None,
             "full_cert_share": r3(statistics.mean(v["full_cert_share"] for v in per_vehicle if v["full_cert_share"] is not None))
@@ -528,7 +586,7 @@ def analyse(results_dir):
         },
         "collector": "recorded" if receptions is not None else None,
         "verification": verification, "warnings": warnings, "conflicts": conflicts,
-        "counters": ops, "cpu": cpu,
+        "counters": ops, "cpu": cpu, "guessing": guess,
         "outages": [{"from": rel(a), "to": rel(b), "s": r3(b - a), "seen_by": by} for a, b, by in outages],
         "vehicles": per_vehicle, "changes": changes, "timeline": timeline,
     }
@@ -582,6 +640,11 @@ def format_text(result):
              f"followed mean {num(s['followed_s_mean'], 's')}, longest {num(s['followed_s_max'], 's')}"
              + (f" ({num(s['followed_m_max'], 'm')})" if s.get("followed_m_max") is not None else ""),
              f"synchronized changes {pctf(s['sync_ratio'])}"]
+    g = result.get("guessing")
+    if g:
+        lines.append(f"guessing attacker (chance level): tracking success {pctf(g['tracking_success'])} "
+                     f"(sd {g['tracking_success_sd']} over {g['repetitions']} guesses; {g['candidates_mean']} silent tracks "
+                     f"per change within {g['window_s']:g} s; 1 / vehicles: {pctf(g['formula'])})")
     if result["reference_receiver"]:
         lines += [f"reception gap mean {s['gap_ms_mean']} ms, max {s['gap_ms_max']} ms; stale {pctf(s['stale_share'])}; "
                   f"delivery {pctf(s['delivery_ratio'])}; ghost mean {num(s['ghost_ms_mean'], 'ms')}",

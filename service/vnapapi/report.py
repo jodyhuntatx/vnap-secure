@@ -318,6 +318,8 @@ def facts(d):
               "cost.unknown_signer_per_change": ops.get("unknown_signer_per_change") or 0,
               "cost.cpu_available": int(bool(cpu)), "cost.cpu_vehicle_ms_per_s": cpu.get("vehicle_ms_per_s") or 0,
               "cost.cpu_rsu_ms_per_s": cpu.get("rsu_ms_per_s") or 0, "cost.cpu_pki_ms_per_s": cpu.get("pki_ms_per_s") or 0})
+    g = o.get("guessing") or {}
+    f.update({"cost.guess_available": int(bool(g)), "cost.guess_tracking_success": g.get("tracking_success") or 0})
     # without an eavesdropper its facts are 0, so every rule can be evaluated; rules about it ask for eavesdropper==1
     f.update({key: 0 for key in ("links", "links.correct", "links.wrong", "links.correct_share", "links.over_chance",
                                  "pattern.explained", "pattern.share", "pattern.pairings", "followed.longest", "tracks",
@@ -366,6 +368,11 @@ def _cost_section(d, number):
     if s.get("tracking_success") is not None:
         rows.append(["Tracking success", f"{pct(s['tracking_success'])} ({s['linked_correctly']} of {s['changes']} changes followed, "
                                          f"{s['linked_wrongly']} linked to another vehicle)"])
+    g = o.get("guessing")
+    if g:
+        rows.append(["Chance level", f"{pct(g['tracking_success'])} of the changes followed by an attacker guessing among the "
+                                     f"tracks silent at each change ({g['candidates_mean']} on average, within "
+                                     f"{g['window_s']:g} s); 1 / vehicles would say {pct(g['formula'])}"])
     rows.append(["Changes synchronized", f"{pct(s['sync_ratio'])} (another vehicle changed within {o['settings']['sync_window_s']:g} s)"])
     lifetimes = [v["lifetime_s_mean"] for v in o["vehicles"] if v.get("lifetime_s_mean") is not None]
     if lifetimes:

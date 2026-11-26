@@ -61,13 +61,17 @@ docker run --rm -v DIR:/w vnap:msgcheck decode-v3 /w/msg.enc
 ## Outages in a run's results
 
 The *Results* tab, `vnapctl overhead` and section 4.4 of the report list **outages**:
-stretches in which the eavesdropper heard nothing although a station should have sent, or the
-position recorder stopped. The cause is the host, not the stations:
+stretches in which the eavesdropper heard nothing although a station should have sent, the
+position recorder stopped, or a station's log was stamped late (seen by *station log*: a silent
+period logged as over sooner than its length). The cause is the host, not the stations:
 
 - **A stalled disk.** `journalctl -k | grep nvme` shows lines like `nvme nvme0: I/O tag 143
   (f08f) QID 3 timeout, completion polled`. The VM's virtual NVMe controller lost a completion
   interrupt, and Linux waited its I/O timeout (30 s by default) before looking. Processes
-  writing to disk stop for that long, and Docker timestamps their log lines late. The
+  writing to disk stop for that long, and Docker timestamps their log lines late. The radio
+  may keep going meanwhile, so the eavesdropper hears nothing amiss; the station's log shows
+  it, with a pseudonym change, its silent period and the end of it stamped within a
+  millisecond. The
   eavesdropper and the recorder write to memory (tmpfs) since 2026-10-19 and the eavesdropper
   stamps frames with the kernel's receive time, so they ride out most stalls. To shorten the
   stalls themselves, lower the timeout with the kernel parameter `nvme_core.io_timeout=4` (in

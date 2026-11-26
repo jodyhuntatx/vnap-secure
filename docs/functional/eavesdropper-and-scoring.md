@@ -100,6 +100,19 @@ python3 images/eavesdropper/eavesdropper.py --pcap capture.pcap --log-dir out/  
 | **Station predictions in actual order across identity changes** (per track) | the real vehicle behind each pseudonym of the track, in the order the eavesdropper added them: `obu1 → obu1 → obu2`. In `score.json`: `stations` | one name throughout means that vehicle was followed; each change of name is a wrong link |
 | **Followed** (per track) | pseudonym changes through which this track stayed on one vehicle | the share can overstate tracking: a track alternating between two cars is 50 % one car but follows neither |
 
+### Chance level: the guessing attacker
+
+How good a result is depends on how often a guess would be right. `1 / vehicles` ignores how many
+vehicles were actually silent when a new pseudonym appeared: without a silent period usually only
+the vehicle that changed is, and a guess is nearly always right. `sim/vnapsim/guessing.py` measures
+it instead: an attacker that sees the eavesdropper's frames and links every new pseudonym to a
+track chosen at random among those silent at that moment (last heard between 0.8 of its CAM
+interval and the eavesdropper's link window ago). Replayed 200 times with fixed seeds on the same
+frames, its tracking success (correct links / changes made) is the run's chance level, in
+`overhead.json` (`guessing`, `summary.guess_tracking_success`), the summary report and the
+*Results* tab. In the joint experiment it counts as one of the attackers; where it beats the
+eavesdropper, the eavesdropper did worse than guessing ([vnapctl frontier](../operations/vnapctl.md#joint-analysis)).
+
 ## Related
 
 - **Results:** what the eavesdropper achieved against each scenario, with recommendations for
@@ -221,6 +234,7 @@ Facts (all numbers; 0 where the run has no eavesdropper):
 | `cost.conflicts_available`, `cost.conflicts`, `cost.conflict_exposure_s`, `cost.conflict_missed` | conflicts computed (1, needs recorded positions); conflicts (true TTC below 4 s, per vehicle's view of the other), the time in them with stale or misleading information, and those entirely in stale time |
 | `cost.ops_available`, `cost.id_change_us_mean`, `cost.chain_checks_per_change`, `cost.receivers_per_change`, `cost.unknown_signer_per_change` | the stations' operation counters were logged (1, images from vnap:r2-p20); the mean ID change time; per change, the chain checks of the new certificate at the receivers, the receivers, and the messages whose signer they knew only by digest |
 | `cost.cpu_available`, `cost.cpu_vehicle_ms_per_s`, `cost.cpu_rsu_ms_per_s`, `cost.cpu_pki_ms_per_s` | the collector sampled CPU time (1); mean CPU time of a vehicle, the RSU and the PKI in ms per second (1000 is one core) |
+| `cost.guess_available`, `cost.guess_tracking_success` | the guessing attacker was replayed (1, with an eavesdropper); its tracking success, the run's chance level |
 | `identifier.*`, `position.*`, `timing.*` | per technique: `links`, `correct`, `correct_share` |
 | `pattern.explained`, `pattern.share`, `pattern.pairings` | wrong links one fixed pairing explains, as a share of the wrong links, and the number of pairings |
 | `followed.longest`, `tracks`, `tracks.mixed` | longest correct chain; vehicle tracks, and those joining several vehicles |
