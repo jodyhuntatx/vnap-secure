@@ -310,6 +310,14 @@ def facts(d):
               "cost.denm_id_leaks": w.get("id_leaks") or 0,
               "cost.conflicts_available": int(bool(c)), "cost.conflicts": c.get("conflicts") or 0,
               "cost.conflict_exposure_s": c.get("exposure_s") or 0, "cost.conflict_missed": c.get("missed") or 0})
+    # the stations' operation counters and CPU time: 0 when not measured
+    ops, cpu = (o.get("counters") or {}).get("summary") or {}, (o.get("cpu") or {}).get("summary") or {}
+    f.update({"cost.ops_available": int(bool(ops)), "cost.id_change_us_mean": ops.get("id_change_us_mean") or 0,
+              "cost.chain_checks_per_change": ops.get("chain_checks_per_change") or 0,
+              "cost.receivers_per_change": ops.get("receivers_per_change") or 0,
+              "cost.unknown_signer_per_change": ops.get("unknown_signer_per_change") or 0,
+              "cost.cpu_available": int(bool(cpu)), "cost.cpu_vehicle_ms_per_s": cpu.get("vehicle_ms_per_s") or 0,
+              "cost.cpu_rsu_ms_per_s": cpu.get("rsu_ms_per_s") or 0, "cost.cpu_pki_ms_per_s": cpu.get("pki_ms_per_s") or 0})
     # without an eavesdropper its facts are 0, so every rule can be evaluated; rules about it ask for eavesdropper==1
     f.update({key: 0 for key in ("links", "links.correct", "links.wrong", "links.correct_share", "links.over_chance",
                                  "pattern.explained", "pattern.share", "pattern.pairings", "followed.longest", "tracks",
@@ -467,14 +475,61 @@ def _cost_section(d, number):
             b.append(("p", f"... and {len(o['outages']) - 10} more (overhead.json)."))
     if v or w or c:
         b += _receivers_section(o, number)
+    if o.get("counters") or o.get("cpu"):
+        b += _computation_section(o, number)
     missing = ([] if o.get("positions") else ["position error during gaps and conflict exposure (the run has no recorded "
                                                "true positions)"]) \
         + ([] if v else ["verification failures at the receivers (no collector recording)"]) \
-        + ([] if w else ["delayed or lost warnings (no warning probe: a [probe] section)"])
+        + ([] if w else ["delayed or lost warnings (no warning probe: a [probe] section)"]) \
+        + ([] if o.get("counters") else ["operation counts (a station image without counters, before vnap:r2-p20)"]) \
+        + ([] if o.get("cpu") else ["CPU time (no collector CPU samples)"])
     if missing:
         b.append(("p", "Not measured in this run: " + "; ".join(missing) + "."))
-    b.append(("p", "The stations' CPU time and operation counts are in overhead.json and metrics.json, not yet in this "
-                   "report (phase 5 of the overhead design, section 10 of the PRD)."))
+    return b
+
+
+def _computation_section(o, number):
+    """Subsection .6: the stations' security operations (counters) and CPU time (cgroups)."""
+    ops, cpu = o.get("counters"), o.get("cpu")
+    us = lambda x: "-" if x is None else f"{x:,.0f} µs"   # noqa: E731
+    num = lambda x, unit="": "-" if x is None else f"{x:g}{unit}"   # noqa: E731
+    b = [("h2", f"{number}.6 Computation: security operations and CPU time")]
+    b.append(("p", "What the changes cost the stations' processors. The operation counts come from the stations' own "
+                   "counters and carry over to other hardware; the times, and the CPU time of each container read from its "
+                   "cgroup, only compare runs on this host. A change costs the vehicle its ID change and each neighbour a "
+                   "check of the new certificate's chain; a refill costs the vehicle a key derivation and a chain check per "
+                   "certificate. The cost of one change in CPU time is too small to read from a single run: it comes from a "
+                   "sweep of runs at different change rates against a run without changes (vnapctl sweep)."))
+    rows = []
+    if ops:
+        t = ops["summary"]
+        rows += [["ID change on the vehicle", f"{us(t['id_change_us_mean'])} on average, {us(t['id_change_us_max'])} at most"],
+                 ["Chain checks per change", f"{num(t['chain_checks_per_change'])} at {num(t['receivers_per_change'])} receivers, "
+                                             f"{us(t['chain_check_us_per_change'])} in all ({us(t['chain_check_us_mean'])} each)"],
+                 ["Unknown signers per change", f"{num(t['unknown_signer_per_change'])} (messages a receiver could not check "
+                                                "because it had only the digest of the new certificate)"],
+                 ["Signing and verifying", f"{t['signs']:,} messages signed ({us(t['sign_us_mean'])} each), {t['verifies']:,} "
+                                           f"verified ({us(t['verify_us_mean'])} each)"],
+                 ["Refills", f"{_plural(t['refills'], 'batch')}: {t['derivations']} key derivations "
+                             f"({us(t['derivation_us_mean'])} each), {t['batch_checks']} certificate checks "
+                             f"({us(t['batch_check_us_mean'])} each)"]]
+    if cpu:
+        t = cpu["summary"]
+        rows.append(["CPU time", f"vehicles {num(t['vehicle_ms_per_s'])} ms per second on average, RSU "
+                                 f"{num(t['rsu_ms_per_s'])}, PKI {num(t['pki_ms_per_s'])} (1000 ms per second is one core)"])
+    b.append(("table", ["Measure", "Value"], rows, [0.35, 0.65]))
+    counted = {st["station"]: st for st in (ops or {}).get("stations", [])}
+    sampled = {st["station"]: st for st in (cpu or {}).get("stations", [])}
+    names = sorted(set(counted) | set(sampled), key=lambda n: ((sampled.get(n) or {}).get("role") == "pki", n))
+    if names:
+        b.append(("table", ["Station", "CPU ms/s", "p95 (1 s)", "Signed/s", "Verified/s", "Sign", "Verify", "Chain checks"],
+                  [[_short(n), num((sampled.get(n) or {}).get("ms_per_s")), num((sampled.get(n) or {}).get("ms_per_s_p95")),
+                    num((counted.get(n) or {}).get("signs_per_s")), num((counted.get(n) or {}).get("verifies_per_s")),
+                    us((counted.get(n) or {}).get("sign_us_mean")), us((counted.get(n) or {}).get("verify_us_mean")),
+                    str(((counted.get(n) or {}).get("totals") or {}).get("chain_check", ["-"])[0]) if n in counted else "-"]
+                   for n in names], [0.14, 0.12, 0.12, 0.11, 0.12, 0.13, 0.13, 0.13]))
+        b.append(("p", "Sign and verify: the mean time of one message, signature included. p95: the 95th percentile of the "
+                       "CPU time over 1 s windows."))
     return b
 
 

@@ -14,7 +14,7 @@ cycle therefore carried over to its new identity. Matching on that timing alone 
 that ignores timing. vnap:r2-p17 restarts the CAM timer at a random phase on every ID change
 (the same matching then linked 1 of 13). See [pseudonym change](../docs/functional/pseudonym-change.md#cam-timing).
 
-**CAM rate.** Every result below was measured with images up to vnap:r2-p20, which sent a CAM
+**CAM rate.** Every result below except the overhead sweep (vnap:r2-p21) was measured with images up to vnap:r2-p20, which sent a CAM
 every second whatever the vehicle did. Every CAM then carried the full certificate, CAM timing
 was strictly regular, and neighbours heard a moving car less often than EN 302 637-2 asks
 (about every 0.4 s at 36 km/h). vnap:r2-p21 generates CAMs as the standard specifies; rerun a
@@ -38,6 +38,7 @@ PKI); the earlier files are in the git history.
 | [mixzone-test-2026-10-04-r2-p17.docx](mixzone-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone` rerun on vnap:r2-p17 (CAM timer rephase), eavesdropper linking by timing and position | 18 links, none correct; timing at chance level, but 19 of 19 position links (replay) form the same one-road rotation, so a pattern-aware attacker can still undo them |
 | [mixzone-random-test-2026-10-04-r2-p17.docx](mixzone-random-test-2026-10-04-r2-p17.docx) | `c-its-pki-mixzone-random` rerun on vnap:r2-p17 | 12 links, none correct; timing at chance level and position mistakes without a pattern |
 | [pki-refill-test-2026-10-07.docx](pki-refill-test-2026-10-07.docx) | `c-its-pki-refill-sweep` (batch sizes 4–32, four OBUs refilling together) and `c-its-pki-mixzone-pki` (random-turn mix zone with the run's own PKI) | refresh time ≈ PKI issue time (≈50 ms per ticket) × batch size × stations asking at once; no starvation, reuse or cross-run sharing; mix-zone links: 4 of 25 correct, timing at chance |
+| [overhead-sweep-2026-11-25.docx](overhead-sweep-2026-11-25.docx) | `crossing:periodic` (changes every 60, 30, 10, 5 s) and `crossing` (mix zone), each with no silent period, 3–13 s and 6–12 s, against a run without changes; 3 seeds, 51 runs on vnap:r2-p21 | a change's CPU cost is below what the host resolves (counted: about 26 ms per vehicle, 7 ms at the RSU); the PKI about 32 ms per certificate; a silent period saves about 20 RSU verifications per change but leaves receivers stale for its length less 1 s, and in the mix zone raised conflict exposure from about 2 s to 29 s per run |
 
 Each document has the setup, every link scored against ground truth, limitations and
 recommendations for subsequent scenarios.

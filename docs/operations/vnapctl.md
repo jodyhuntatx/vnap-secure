@@ -282,7 +282,8 @@ run instead of a check window. It adds:
   3 s after its silent period), `ops.chain_check_us_mean`, `.derivation_us_mean`,
   `.batch_check_us_mean`, `.sign_us_mean`, `.verify_us_mean` (per operation), and per station
   `<station>.ops.sign_us_mean`, `.verify_us_mean`, `.chain_check_us_mean`, `.signs_per_s`,
-  `.verifies_per_s`. `overhead.json` has the same per change (`counters.changes`) and per refill
+  `.verifies_per_s`, and per vehicle `<vehicle>.change.ms_mean`, `.ms_max` (its ID changes, in
+  ms). `overhead.json` has the same per change (`counters.changes`) and per refill
   (`counters.refills`: certificates, derivations and batch checks with their times).
 
 The control channel (`control.*`) is recorded only by a live check. The cost names are per
@@ -314,7 +315,7 @@ design ([PRD](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#104-method), 10.
   30, 10 and 5 s, each with no silent period, 3 to 13 s and 6 to 12 s, and the mix zone with the
   same three silent periods; 3 seeds of 3 minutes, 51 runs, about 3.6 hours.
 - **Runs:** `DIR/<group>/<cell>/seed-<seed>/`, each a results directory as `collect` writes it,
-  with `sweep-run.json` (the cell and its overrides). A run with `metrics.json` is not run again,
+  with `sweep-run.json` (the cell and its overrides). A collected run (with `sweep-run.json`) is not run again,
   so a stopped sweep continues where it was; a failed one leaves `sweep-error.txt` and is
   retried. The seeds are the outer loop, so a partial sweep has whole seeds.
 - **Analysis:** `sweep.json` and `sweep.txt`: per cell, the mean and spread over seeds of the
@@ -330,9 +331,10 @@ design ([PRD](../../Specs/VNAP-Secure-Simulation-Service-PRD.md#104-method), 10.
   the CPU slope is the net effect of the changes' work and of that saving. The RSU's
   verifications per second, also fitted, show the saving on its own.
 - **Host pauses:** a paused VM does not stop a run's 180 s from counting, but the CPU samples
-  are timed by the wall clock and then show a gap. Check each run's `cpu.jsonl` for gaps longer
-  than about 2 s, move the affected run's directory out of `DIR` (the analysis reads every run
-  under it) and start the sweep again; it reruns only that run.
+  are timed by the wall clock and then show a gap, which makes the run's CPU rates too low. A run
+  whose samples have a gap of more than 2 s (`overhead.json` `cpu.settings.gap_s_max`) is
+  marked failed (`sweep-error.txt`: host paused) and repeated on the next start; the analysis
+  leaves such runs out and names them.
 
 ## Your own scenarios
 

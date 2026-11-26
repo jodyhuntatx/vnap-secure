@@ -10,7 +10,8 @@ percentile over 1 s windows, and a 1 s timeline. The cost of a change is not rea
 it: a change costs a few milliseconds against about 60 ms/s of other work, and when vehicles change
 together their silent periods lower everyone's load at the same moment. It comes from the sweep instead
 (vnapsim.sweep): the rate against the change rate over runs, with a run without changes as the baseline.
-Times are for comparisons on one host.
+Times are for comparisons on one host. A paused VM leaves a gap between samples (settings.gap_s_max) and
+makes the rates too low; the sweep reruns such runs.
 """
 
 import bisect
@@ -102,7 +103,9 @@ def analyse(samples, roles):
     mean = lambda xs: _r(statistics.mean(xs), 2) if xs else None  # noqa: E731
     return {
         "settings": {"samples": len(times),
-                     "interval_ms": _r(1000 * (times[-1] - times[0]) / (len(times) - 1)) if len(times) > 1 else None},
+                     "interval_ms": _r(1000 * (times[-1] - times[0]) / (len(times) - 1)) if len(times) > 1 else None,
+                     # a long gap between samples: the host (a VM) was paused, and the rates over the run are too low
+                     "gap_s_max": _r(max((b - a for a, b in zip(times, times[1:])), default=0.0), 2)},
         "stations": stations,
         "summary": {
             "vehicle_ms_per_s": mean(by_role("vehicle")), "rsu_ms_per_s": mean(by_role("rsu")),

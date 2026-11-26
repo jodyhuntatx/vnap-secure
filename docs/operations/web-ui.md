@@ -174,8 +174,13 @@ at all. A red note marks DENMs that still carried the configured stationId after
 recorded positions, *conflict exposure*: the time two vehicles' true time-to-collision was
 below 4 s while one's information about the other was stale or showed no conflict.
 
-The stations' operation counts (images from `vnap:r2-p20`) and CPU time (runs with a collector
-from 2026-11-25) are in `overhead.json` and `metrics.json`, not yet on this tab.
+**Computation.** With the stations' operation counters (images from `vnap:r2-p20`) and CPU
+samples (runs with a collector from 2026-11-25): the ID change time on the vehicle, the chain
+checks of the new certificate and the unknown signers at the receivers per change, the refills,
+and the mean CPU time of a vehicle, the RSU and the PKI; a table per station with its CPU time,
+a line of it per second, and its signing and verifying. Counts carry over to other hardware,
+times compare runs on one host only; the CPU cost of one change comes from a
+[sweep](vnapctl.md#sweeps), not from one run.
 
 The summary report has the same figures in its section 4, *Cost of the pseudonym changes*
 ([summary report](../functional/eavesdropper-and-scoring.md#summary-report)).

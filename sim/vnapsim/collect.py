@@ -32,7 +32,7 @@ from .receivers import identities, read_collector
 from .scoring import score_run
 from .status import Simulation, build_status
 
-METRICS_VERSION = 4
+METRICS_VERSION = 5
 
 
 def collect(sim, out):
@@ -224,6 +224,13 @@ def write_metrics(out):
         for key in ("sign_us_mean", "verify_us_mean", "chain_check_us_mean", "signs_per_s", "verifies_per_s"):
             if st.get(key) is not None:
                 m[f"{st['station']}.ops.{key}"] = st[key]
+    took = {}   # the ID change on each vehicle, PREPARE to the last COMMIT (counters)
+    for c in (o.get("counters") or {}).get("changes", []):
+        if c.get("id_change_us") is not None:
+            took.setdefault(c["vehicle"], []).append(c["id_change_us"])
+    for n, us in took.items():
+        m[f"{n}.change.ms_mean"] = round(sum(us) / len(us) / 1000, 3)
+        m[f"{n}.change.ms_max"] = round(max(us) / 1000, 3)
     for st in (o.get("cpu") or {}).get("stations", []):
         for key in ("ms_per_s", "ms_per_s_p95"):
             if st.get(key) is not None:
@@ -241,7 +248,7 @@ def write_metrics(out):
         # rx and verification come from the stations' MQTT output: the collector's recording, else only a live check
         "not_collected": ([] if receptions else ["<station>.<message>.rx, .rx_from.*, .success_rate, .failed (no collector "
                                                  "recording: a run without [collector], or from before it)"])
-        + ([] if o.get("counters") else ["ops.*, <station>.ops.* (no [COUNTERS] lines: "
+        + ([] if o.get("counters") else ["ops.*, <station>.ops.*, <vehicle>.change.* (no [COUNTERS] lines: "
                                                                        "a station image before vnap:r2-p20)"])
         + ([] if o.get("cpu") else ["cpu.*, <station>.cpu.* (no CPU samples: a run without a collector, or from "
                                     "before phase 3)"])

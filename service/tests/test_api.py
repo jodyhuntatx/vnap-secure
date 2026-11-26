@@ -639,6 +639,29 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((f["cost.available"], f["cost.unexplained_gaps"], f["cost.unexplained_gap_ms_max"]), (1, 1, 2000))
         self.assertIn("Look into the long reception gaps.", [title for title, _ in recommend(f)[0]])
 
+    def test_report_computation_section(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "sim", "tests"))
+        from test_overhead import add_counters_and_cpu, results_dir
+        import zipfile
+        from vnapapi.report import facts, gather, recommend, write_report
+        d = results_dir(silent_ms=2000)
+        with zipfile.ZipFile(write_report(d)) as z:
+            text = re.sub(r"<[^>]+>", " ", z.read("word/document.xml").decode())
+        self.assertNotIn("4.6 Computation", text)
+        self.assertIn("operation counts (a station image without counters", text)
+        add_counters_and_cpu(d)
+        os.remove(os.path.join(d, "overhead.json"))
+        with zipfile.ZipFile(write_report(d)) as z:
+            text = re.sub(r"<[^>]+>", " ", z.read("word/document.xml").decode())
+        for expected in ("4.6 Computation: security operations and CPU time", "ID change on the vehicle", "850 µs on average",
+                         "Chain checks per change", "CPU time", "vehicles 60", "Signed/s"):
+            self.assertIn(expected, text)
+        f = facts(gather(d))
+        self.assertEqual((f["cost.ops_available"], f["cost.cpu_available"], f["cost.id_change_us_mean"]), (1, 1, 850))
+        self.assertNotIn("Send the certificate with the first message after a change.", [t for t, _ in recommend(f)[0]])
+        f["cost.unknown_signer_per_change"] = 2.2
+        self.assertIn("Send the certificate with the first message after a change.", [t for t, _ in recommend(f)[0]])
+
     # ------------------------------------------------------------ test certificates
     def test_test_certificates(self):
         from vnapsim import testcerts

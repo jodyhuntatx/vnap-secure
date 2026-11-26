@@ -89,6 +89,37 @@ def results_dir(silent_ms=0, eavesdropper=True, lose=None, outage=None, position
     return d
 
 
+
+def add_counters_and_cpu(d):
+    """Add station counters (car1's change took 850 us; car2 and the RSU check its new AT) and the collector's
+    CPU samples (car1 50, car2 70, rsu 40, pki 2 ms per second) to a results_dir()."""
+    def counters(name, extra):
+        lines = []
+        for k in range(1, 31):
+            c = {"sign": [k, 2000 * k], "verify": [2 * k, 8000 * k]}
+            if k >= 12:
+                c.update(extra)
+            lines.append(f"{stamp(T0 + k + 0.001)} [COUNTERS] {json.dumps(c)}\n")
+        return lines
+    for name, extra, more in (("car1", {}, [f"{stamp(T0 + 10.0001)} [IDCHANGE] completed in 850 us\n"]),
+                              ("car2", {"chain_check": [1, 9000]}, []), ("rsu", {"chain_check": [1, 7000]}, [])):
+        path = os.path.join(d, f"{name}.log")
+        lines = []
+        if os.path.isfile(path):
+            with open(path) as f:
+                lines = f.readlines()
+        with open(path, "w") as f:
+            f.writelines(sorted(lines + counters(name, extra) + more))
+    rates = {"car1": 50.0, "car2": 70.0, "rsu": 40.0, "pki": 2.0}
+    data = "".join(json.dumps({"t": T0 + k / 10, "u": {n: int(r * 100 * k) for n, r in rates.items()}}) + "\n"
+                   for k in range(301)).encode()
+    path = os.path.join(d, "collector-logs.tar")
+    with tarfile.open(path, "a" if os.path.isfile(path) else "w") as tar:
+        info = tarfile.TarInfo("logs/cpu.jsonl")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return d
+
 class OverheadTest(unittest.TestCase):
     def test_changes_gaps_and_outcomes(self):
         r = overhead.analyse(results_dir())
@@ -189,6 +220,29 @@ class OverheadTest(unittest.TestCase):
                          (3000, round(2.0 / 30, 3), 2, 0))
         self.assertEqual((m["privacy.tracking_success"], m["outages"]), (0.5, 0))
         self.assertIn("car1.pos_error_m_p95", m)
+
+    def test_metrics_of_counters_and_cpu(self):
+        from vnapsim import collect
+        d = add_counters_and_cpu(results_dir(silent_ms=2000))
+        with open(os.path.join(d, "status.json")) as f:
+            status = json.load(f)
+        for st in status["stations"]:
+            st.update(chain=[], errors=[])
+            if st["pseudonym"]:
+                st["pseudonym"]["control"] = {"connected": True}
+        status["disk"] = {"free_gb": 10}
+        with open(os.path.join(d, "status.json"), "w") as f:
+            json.dump(status, f)
+        self.assertEqual(collect.analyse(d), [])
+        with open(os.path.join(d, "metrics.json")) as f:
+            r = json.load(f)
+        m = r["metrics"]
+        self.assertEqual((m["car1.change.ms_mean"], m["car1.change.ms_max"]), (0.85, 0.85))
+        self.assertNotIn("car2.change.ms_mean", m)                     # car2 logged no completed change
+        self.assertAlmostEqual(m["car2.cpu.ms_per_s"], 70.0, places=0)
+        self.assertAlmostEqual(m["cpu.pki_ms_per_s"], 2.0, places=0)
+        self.assertIn("rsu.ops.verifies_per_s", m)
+        self.assertFalse(any(x.startswith("ops.") or x.startswith("cpu.") for x in r["not_collected"]))
 
     def test_written_once_and_reused(self):
         d = results_dir()

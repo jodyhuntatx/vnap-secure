@@ -71,10 +71,63 @@ export function overheadPanel(panel, o) {
       v.pool_peak ? `${v.pool_peak}${v.pool_bytes ? ` (${(v.pool_bytes / 1024).toFixed(1)} KiB)` : ""}` : "–",
       v.refill && v.refill.batches ? `${v.refill.batches} batch(es), ${v.refill.refresh_ms_mean} ms` : "–"])));
   if (o.verification || o.warnings) panel.append(...receivers(o, short, ms));
+  if (o.counters || o.cpu) panel.append(...computation(o, short, hint, figure));
   panel.append(h("p", { class: "muted" }, o.positions ? "" : "No recorded true positions in this run, so no position error or conflict exposure. ",
     o.verification ? "" : "No collector recording, so no verification at the receivers. ",
     o.warnings ? "" : "No warning probe in this run ([probe] in the scenario). ",
-    "The stations' CPU time and operation counts are in overhead.json and metrics.json, not yet on this tab (section 10 of Specs/VNAP-Secure-Simulation-Service-PRD.md)."));
+    o.counters ? "" : "No operation counters (a station image before vnap:r2-p20). ",
+    o.cpu ? "" : "No CPU samples (no collector, or a run before 2026-11-25)."));
+}
+
+// the stations' security operations (their counters) and CPU time (their cgroups)
+function computation(o, short, hint, figure) {
+  const us = (x) => (x === null || x === undefined ? "–" : `${Math.round(x).toLocaleString("en")} µs`);
+  const num = (x) => (x === null || x === undefined ? "–" : String(x));
+  const t = o.counters ? o.counters.summary : null, c = o.cpu ? o.cpu.summary : null;
+  const out = [h("h3", {}, "Computation"), h("p", { class: "muted" },
+    "What the changes cost the stations' processors. Operation counts carry over to other hardware; times and CPU time only compare runs on this host. ",
+    "The CPU time of a single change is too small to read from one run: it comes from a sweep against a run without changes (vnapctl sweep).")];
+  out.push(h("div", { class: "figures" },
+    t ? figure(us(t.id_change_us_mean), `ID change on the vehicle (at most ${us(t.id_change_us_max)})`, "PREPARE to the last COMMIT of a full ID change, on the vehicle") : null,
+    t ? figure(num(t.chain_checks_per_change), `chain checks per change (${num(t.receivers_per_change)} receivers, ${us(t.chain_check_us_per_change)})`,
+      "every receiver checks the new certificate against its AA once, when it first hears it") : null,
+    t ? figure(num(t.unknown_signer_per_change), "unknown signers per change", "messages a receiver could not check because it had only the digest of the new certificate") : null,
+    t ? figure(`${t.refills}`, `refills (${t.derivations} key derivations, ${t.batch_checks} certificate checks)`, "certificate batches installed during the run") : null,
+    c ? figure(`${num(c.vehicle_ms_per_s)} ms/s`, `CPU per vehicle (RSU ${num(c.rsu_ms_per_s)}, PKI ${num(c.pki_ms_per_s)})`,
+      "mean CPU time of the containers, read from their cgroups 10 times a second; 1000 ms/s is one core") : null));
+  const counted = Object.fromEntries(((o.counters || {}).stations || []).map((st) => [st.station, st]));
+  const sampled = Object.fromEntries(((o.cpu || {}).stations || []).map((st) => [st.station, st]));
+  const names = [...new Set([...Object.keys(counted), ...Object.keys(sampled)])]
+    .sort((a, b) => ((sampled[a] || {}).role === "pki") - ((sampled[b] || {}).role === "pki") || a.localeCompare(b));
+  const top = Math.max(1, ...Object.values(sampled).flatMap((st) => st.timeline.map((p) => p[1] || 0)));
+  out.push(table(
+    [hint("Station", ""), hint("CPU ms/s", "mean CPU time over the run"), hint("p95", "95th percentile over 1 s windows"),
+      hint("CPU over time", "per second; the same scale for every station"),
+      hint("Signed/s", "messages signed per second"), hint("Verified/s", "messages verified per second"),
+      hint("Sign", "mean time to sign a message"), hint("Verify", "mean time to verify a message"),
+      hint("Chain checks", "new certificates of other stations checked against their AA")],
+    names.map((n) => {
+      const p = sampled[n] || {}, k = counted[n] || {};
+      return [short(n), num(p.ms_per_s), num(p.ms_per_s_p95), p.timeline ? spark(p.timeline, top) : "–",
+        num(k.signs_per_s), num(k.verifies_per_s), us(k.sign_us_mean), us(k.verify_us_mean),
+        k.totals && k.totals.chain_check ? k.totals.chain_check[0] : "–"];
+    })));
+  return out;
+}
+
+// a small line of CPU time per second
+function spark(timeline, top) {
+  const NS = "http://www.w3.org/2000/svg", W = 160, H = 24;
+  const end = Math.max(1, timeline.length ? timeline[timeline.length - 1][0] : 1);
+  const el = document.createElementNS(NS, "svg");
+  el.setAttribute("class", "spark");
+  el.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  el.setAttribute("width", W);
+  el.setAttribute("height", H);
+  const line = document.createElementNS(NS, "polyline");
+  line.setAttribute("points", timeline.map(([t, v]) => `${((t / end) * W).toFixed(1)},${(H - 1 - ((v || 0) / top) * (H - 2)).toFixed(1)}`).join(" "));
+  el.append(line);
+  return el;
 }
 
 // what each station made of the messages it received, and the warnings that came late or not at all

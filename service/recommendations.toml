@@ -77,6 +77,13 @@ title = "Look into the verification failures after changes."
 text = "{cost.verify_failed_after_change} messages failed verification within 5 s after a receiver first heard a vehicle's new identity ({cost.verify_failed} in the whole run, section 4.5). A receiver that cannot check a new certificate discards the vehicle's messages until it can."
 
 [[rule]]
+id = "unknown-signers"
+priority = 71
+when = ["cost.ops_available==1", "changes>=1", "cost.unknown_signer_per_change>=0.5"]
+title = "Send the certificate with the first message after a change."
+text = "Each pseudonym change left the receivers with {cost.unknown_signer_per_change:.1f} messages on average whose signer they knew only by the digest of a certificate they had not seen (section 4.6). The first message under a new identity, or the first after its silent period, should carry the full certificate; station images before vnap:r2-p21 could lose it in the silent period (CHANGELOG, 2026-11-24)."
+
+[[rule]]
 id = "conflicts-missed"
 priority = 70
 when = ["cost.conflicts_available==1", "cost.conflict_missed>=1"]

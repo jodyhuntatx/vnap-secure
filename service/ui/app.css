@@ -108,4 +108,5 @@ textarea.prose { font-family: inherit; font-size: inherit; }
 .swatch { display: inline-block; width: 14px; height: 8px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
 .swatch.recv { background: var(--accent); opacity: 0.35; } .swatch.silent { background: var(--warn); } .swatch.gap { background: var(--bad); opacity: 0.6; }
 .swatch.outage { background: var(--muted); opacity: 0.55; }
+.spark { display: block; } .spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.2; }
 th.sortable { cursor: pointer; user-select: none; }

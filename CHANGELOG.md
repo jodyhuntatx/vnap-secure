@@ -24,6 +24,25 @@ Results measured with images up to `r2-p16` carry the CAM timing caveat describe
 `r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
 CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
 
+## 2026-11-25: overhead design phase 5: report, Results tab, test summary
+
+- **Report** (`report.docx`): section 4.6, *Computation*: the ID change time, chain checks and
+  unknown signers per change, signing and verifying, refills, and the CPU time per station.
+  New facts `cost.ops_*`, `cost.cpu_*` and the rule `unknown-signers`
+  ([facts](docs/functional/eavesdropper-and-scoring.md#suggested-next-runs)).
+- **Results tab:** *Computation*, the same figures with a per-station table and a line of CPU
+  time per second ([web UI](docs/operations/web-ui.md#privacy-and-cost-of-the-pseudonym-changes)).
+- **Metrics:** `<vehicle>.change.ms_mean`, `.ms_max` (`metrics.json` version 5); the PRD's
+  metrics table (10.7.2) now says where each is.
+- **Test summary:** [results/overhead-sweep-2026-11-25.docx](results/overhead-sweep-2026-11-25.docx),
+  generated from the phase 3 sweep by `scripts/results/overhead-sweep-2026-11-25.py`. Counted,
+  a change costs a vehicle about 26 ms and the RSU about 7 ms on this host, within the CPU
+  slopes. In the mix zone a silent period brought tracking from 81% to below 20% and conflict
+  exposure from about 2 s to 29 s per run.
+- **Host pauses:** `overhead.json` `cpu.settings.gap_s_max`; `vnapctl sweep` repeats a run whose CPU
+  samples have a gap of more than 2 s, and its analysis leaves such runs out. A run counts as
+  done once it has `sweep-run.json`.
+
 ## 2026-11-25: overhead design phase 3: CPU time and the cost-per-change sweep
 
 - **CPU sampler:** the collector reads each station's and the PKI's cgroup `cpu.stat` 10 times a
@@ -551,7 +570,7 @@ commit, 2026-05-21, to `6beadfb`). Files that were never committed are archived 
 | 8 | Web UI | 2026-10-08 |
 | 9 | Hardening: backups, TOTP | 2026-10-08; MCP endpoint not yet |
 | draft 0.2 | Station fidelity (STA-1 to STA-4): CAM generation, stationId in DENMs, operation counters, certificate after the silent period | 2026-11-24 |
-| draft 0.3 | Overhead measurement (OVH-1 to OVH-6, section 10): phases 1 to 4 | 2026-10-19, 2026-11-24, 2026-11-25; phase 5 next |
+| draft 0.3 | Overhead measurement (OVH-1 to OVH-6, section 10): phases 1 to 5 | 2026-10-19, 2026-11-24, 2026-11-25; phase 6 next |
 
 ## Documentation moves
 

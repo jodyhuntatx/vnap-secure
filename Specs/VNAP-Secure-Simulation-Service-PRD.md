@@ -7,7 +7,7 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 | Document | Product requirements document (PRD), draft 0.3 |
 | Date | 2026-11-25 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24) |
 | Owner | Joseph Hunt |
-| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 4 are delivered |
+| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 5 are delivered |
 | Repositories | vnap-secure (harness, vnapctl, service, docs), vanetza-nap patch set in `patches/vanetza-nap/` (socktap patches), C-ITS-PKI (certificate tooling) |
 | Source | `Specs/VNAP-Secure-Simulation-Service-PRD.md`; the PDF is generated from it (`make docs-pdf`) |
 
@@ -66,7 +66,7 @@ developments:
 | Stations (socktap) | as in 2.1, plus: growing pseudonym pool refilled from the run's PKI, butterfly key derivation on the station (r2-p18, r2-p19); DENMs carry the current stationId after an ID change, security operation counters (r2-p20); CAM generation by EN 302 637-2 (r2-p21) |
 | Service | API service with accounts, roles, quotas, jobs, live events, control actions, results and audit log; web UI with templates, builder and map, live view, results; backups and TOTP |
 | PKI | per-run PKI service (C-ITS-PKI): root, EA, AA, enrolment, initial batches, refill |
-| Measurement | eavesdropper scoring; per-run privacy and cost of the pseudonym changes (`overhead.json`, `metrics.json`); verification collector and warning probe; operation counts per change and refill; CPU time per station and the cost-per-change sweep (`vnapctl sweep`) (section 10, phases 1 to 4) |
+| Measurement | eavesdropper scoring; per-run privacy and cost of the pseudonym changes (`overhead.json`, `metrics.json`); verification collector and warning probe; operation counts per change and refill; CPU time per station and the cost-per-change sweep (`vnapctl sweep`); all of them in the report and the Results tab (section 10, phases 1 to 5) |
 
 ## 3. Goals and non-goals
 
@@ -307,7 +307,7 @@ and the PKI service's log.
 | 8. Web UI | runs list, scenario templates and builder with map, live view, control, results | a user can author, run, observe and evaluate a scenario without the command line | 2026-10-08 |
 | 9. Hardening | backups, TOTP, MCP endpoint for automation | - | 2026-10-08, except the MCP endpoint |
 | Station fidelity (draft 0.2) | STA-1 to STA-4: CAM generation by EN 302 637-2, current stationId in DENMs, security operation counters, certificate after the silent period | CAM intervals follow the vehicle's dynamics (about 0.4 s at 36 km/h, 1 s when stationary); the first CAM after a silent period carries the full certificate; no configured stationId on the network after a change; operation counts per change and refill in `overhead.json` | 2026-11-24 (vnap:r2-p20, r2-p21) |
-| Overhead measurement (draft 0.3) | phases 1 to 8 of section 10.12: disruption analysis and run metrics (1); collector, warning probe, conflict exposure (2); CPU sampler and sweep (3); station counters (4); report and Results tab (5); joint experiment (6, 7); misbehaviour detection (8, optional) | the "done when" of each phase in 10.12 | phases 1 (2026-10-19), 2 and 4 (2026-11-24), 3 (2026-11-25); phase 5 next |
+| Overhead measurement (draft 0.3) | phases 1 to 8 of section 10.12: disruption analysis and run metrics (1); collector, warning probe, conflict exposure (2); CPU sampler and sweep (3); station counters (4); report and Results tab (5); joint experiment (6, 7); misbehaviour detection (8, optional) | the "done when" of each phase in 10.12 | phases 1 (2026-10-19), 2 and 4 (2026-11-24), 3 and 5 (2026-11-25); phase 6 next |
 
 ## 9. Risks and open questions
 
@@ -466,7 +466,9 @@ is accepted. Section 10.10.3 says what measuring revocation would take.
   CPU varies by 2 to 8 ms/s against a base of about 80 ms/s; at up to 12 changes a minute that
   bounds a change's CPU cost below about 150 ms. The receivers do no extra verifications. The
   per-change costs of signing, chain checks and derivation are the operation counts of phase 4,
-  and they are what carries over to other hardware (10.5.3).
+  and they are what carries over to other hardware (10.5.3). Counted, a change of every vehicle
+  costs a vehicle its ID change (0.4 ms), three chain checks (7.3 ms each) and a batch check
+  (4 ms), about 26 ms; the RSU one chain check, about 7 ms. Both lie within the CPU slopes.
 - **The PKI is measurable:** about 32 ms of CPU per certificate issued. It comes in steps with
   the refills: at one change a minute the pools of 4 last the 3 minutes and the PKI stays at its
   idle rate. That matches the issue time of about 50 ms per ticket in the refill test of
@@ -482,11 +484,15 @@ is accepted. Section 10.10.3 says what measuring revocation would take.
   time came out as 0.13 s per change.
 - **Mix zone:** one change a minute per car gives too little range in the rate for the CPU
   slopes (vehicle −137 ± 145 ms without silence). Its stale time and tracking (81% of changes
-  tracked without silence, 17 to 19% with) are the result.
+  tracked without silence, 17 to 19% with) are the result, and its conflict exposure: about 2 s
+  per run without silence, 29 s with it, and 9 to 10 conflicts per run entirely in stale time.
+- **Test summary:** [`results/overhead-sweep-2026-11-25.docx`](../results/overhead-sweep-2026-11-25.docx)
+  (phase 5), generated by `scripts/results/overhead-sweep-2026-11-25.py` from the sweep.
 - **Pauses of the host:** the VM was paused three times during the sweep, for up to 80 min. The
   sleep of a run counts monotonic time, so the runs were still 180 s long, but CPU samples
   timed by the wall clock showed gaps of up to 4829 s. One run was affected and was run again.
-  A sample gap longer than about 2 s means the run must be repeated.
+  The sweep now marks a run with a gap of more than 2 s between CPU samples as failed and
+  repeats it (`cpu.settings.gap_s_max`); the analysis leaves such runs out.
 
 ### 10.5 Computation load
 
@@ -658,22 +664,26 @@ definition. The batch runner of the joint experiment uses the same files.
 
 | Metric | Meaning | State |
 |---|---|---|
-| `<station>.change.ms_mean`, `.ms_max` | time of the change handshake on the station | proposed; the times are in `overhead.json` (`id_change_us`) |
+| `<vehicle>.change.ms_mean`, `.ms_max` | time of the change handshake on the vehicle | in `metrics.json` (phase 5) |
 | `cpu.*`, `<station>.cpu.ms_per_s`, `.ms_per_s_p95` | CPU time of the stations and the PKI, ms per second; the cost per change is a slope over the runs of a sweep (`sweep.json`) | in `metrics.json` (phase 3) |
 | `<station>.ops.*`, `ops.*` | operation counts and times, among them chain checks and unknown signers caused by other vehicles' changes | in `metrics.json` (phase 4) |
-| `<receiver>.gap_ms_max`, `.gap_ms_mean` | reception gaps around changes, over all senders | proposed; in `overhead.json` |
-| `<receiver>.stale_share` | share of time information about some sender was older than the threshold | proposed; in `overhead.json` |
-| `<receiver>.pos_error_m_p95` | 95th percentile of the position error during gaps | proposed; in `overhead.json` |
+| `<vehicle>.gap_ms_max`, `.gap_ms_mean` | reception gaps around the vehicle's changes, at the reference receiver | in `metrics.json` (phase 1) |
+| `<vehicle>.stale_share` | share of time the latest CAM of the vehicle was older than the threshold | in `metrics.json` (phase 1) |
+| `<vehicle>.pos_error_m_p95`, `pos_error_m_p95` | 95th percentile of the position error during gaps | in `metrics.json` (phase 1) |
 | `denm.*`, `verify.*` | warning probe and verification results | in `metrics.json` (phase 2) |
-| `<receiver>.ipg_ms_p95`, `<receiver>.delivery_ratio` | inter-packet gap and delivery ratio of CAMs | proposed; in `overhead.json` |
+| `<vehicle>.ipg_ms_p95`, `.ipg_ms_max`, `<vehicle>.delivery_ratio` | inter-packet gap and delivery ratio of the vehicle's CAMs | in `metrics.json` (phase 1) |
 | `conflict.*` | conflict exposure and missed conflicts (10.6.4) | in `metrics.json` (phase 2) |
-| `<station>.cert_bytes`, `<station>.pool_bytes`, `msg.cam.bytes_mean` | sizes and storage (10.5.4) | proposed; in `overhead.json` |
+| `msg.cert_bytes`, `<vehicle>.pool_bytes`, `msg.cam.bytes_mean` | sizes and storage (10.5.4) | in `metrics.json` (phase 1) |
+
+The reception metrics are named by the sending vehicle: the reference receiver hears every frame on
+the lossless link, so what it misses of a vehicle every receiver misses.
 
 - **Summary report:** section 4 of `report.docx`, *Cost of the pseudonym changes*, and facts
   for `recommendations.toml` (rules such as `warnings-lost`, `unexplained-gaps`,
-  `silence-without-privacy`). The operation counts are not yet in the report (phase 5).
-- **Results tab:** the per-run figures next to the privacy result; the operation counts are not
-  yet shown (phase 5).
+  `silence-without-privacy`, `unknown-signers`). Section 4.6, *Computation*, has the operation
+  counts and the CPU time per station (phase 5).
+- **Results tab:** the per-run figures next to the privacy result, and under *Computation* the
+  operation counts and the CPU time per station, with a line of it per second (phase 5).
 
 ### 10.8 Relation to the adversarial agents design
 
@@ -893,7 +903,9 @@ run; 10.7.1 does so.
 | Station counters and timing | `patches/vanetza-nap/`, `sim/vnapsim/counters.py` | change timing line; counts and times of signatures, verifications, chain checks, unknown signers, derivations | phase 4 (`vnap:r2-p20`) |
 | CPU sampler | `sim/images/collector/`, `sim/vnapsim/cpu.py` | cgroup CPU time of each station container and the PKI, 10 times a second | phase 3 |
 | Sweep plan | `sim/sweeps/overhead.toml` | baseline and variants of 10.4 | phase 3 |
-| Metrics and report | `sim/vnapsim/check.py`, `service/vnapapi/report.py` | 10.7.2 | phases 1, 2; the counts in phase 5 |
+| Metrics and report | `sim/vnapsim/check.py`, `service/vnapapi/report.py` | 10.7.2 | phases 1, 2, 5 |
+| Results tab | `service/ui/js/views/overhead.js` | the run's figures, timeline, changes, vehicles, receivers and computation | phases 1, 2, 5 |
+| Test summary | `results/overhead-sweep-2026-11-25.docx`, `scripts/results/` | the sweep of 10.4.1 in the form of the other summaries | phase 5 |
 | Batch runner | `sim/vnapsim/sweep.py` (`vnapctl sweep`), shared with the adversarial agents design | a plan of scenario variants over a seed list, resumable; slopes per seed | phase 3 |
 | Guessing attacker | eavesdropper | links each new pseudonym to a random silent track | phase 6, not built |
 | Joint analysis | `sim/vnapsim/frontier.py` | bootstrap intervals, frontier per condition, sensitivity, charts and the result table | phase 6, not built |
@@ -908,7 +920,7 @@ run; 10.7.1 does so.
 | 2 | verification collector; warning probe; conflict exposure | probe warnings during silent periods are reported lost or delayed, the others delivered | 2026-11-24 |
 | 4 | station counters and timing (new image tag) | counts per change and refill in `overhead.json` | 2026-11-24 (`vnap:r2-p20`) |
 | 3 | CPU sampler; baseline and sweep on the two scenarios, on `vnap:r2-p21` | cost-per-change slopes with their spread over seeds | 2026-11-25 (10.4.1) |
-| 5 | metrics, report section, Results tab for the counts and CPU; a test summary in `results/` | the sweep reported in the form of the existing summaries | |
+| 5 | metrics, report section, Results tab for the counts and CPU; a test summary in `results/` | the sweep reported in the form of the existing summaries | 2026-11-25 |
 | 6 | joint experiment: guessing attacker, joint analysis, pilot | the seed count per cell is settled | |
 | 7 | joint experiment: stages A and B, analysis, test summary | the frontier per condition and the hypotheses reported, with intervals and sensitivity | |
 | 8 (optional) | misbehaving vehicle and detector; stage C: the frontier policies with one misbehaving vehicle | detection rate and time to detection reported with and without changes | |

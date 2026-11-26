@@ -24,8 +24,9 @@ A plan (TOML) names the runs:
   none = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]
 
 Runs go to <out>/<group>/<cell>/seed-<seed>/, cells named "baseline" or "interval-60_silence-none". A run
-that has metrics.json is not run again, so a stopped sweep resumes where it was; a failed one leaves
-sweep-error.txt and is retried on the next start.
+that has sweep-run.json (written once it is collected) is not run again, so a stopped sweep resumes where it was; a failed one leaves
+sweep-error.txt and is retried on the next start, as is a run whose CPU samples have a gap of more than
+PAUSE_S (the host was paused: its CPU rates would be too low).
 
 The analysis reads every run's overhead.json, fits each measure against the change rate per seed (least
 squares over the baseline and the cells that differ only in the change rate), and reports the slope as the
@@ -110,6 +111,19 @@ def _vnapctl(*args, timeout=600):
     return p.returncode, p.stdout + p.stderr
 
 
+PAUSE_S = 2.0   # a gap between CPU samples this long: the host was paused
+
+
+def paused(d):
+    """The longest gap between the run's CPU samples if longer than PAUSE_S, else None."""
+    try:
+        with open(os.path.join(d, "overhead.json")) as f:
+            gap = ((json.load(f).get("cpu") or {}).get("settings") or {}).get("gap_s_max")
+    except (OSError, ValueError):
+        return None
+    return gap if gap and gap > PAUSE_S else None
+
+
 def run_one(r, d, duration, instance, log):
     """Start, observe, collect, stop. Returns None or an error text."""
     os.makedirs(d, exist_ok=True)
@@ -126,6 +140,8 @@ def run_one(r, d, duration, instance, log):
     _vnapctl("-q", "down", r["scenario"], *inst)
     if not os.path.isfile(os.path.join(d, "metrics.json")):
         return f"collect failed ({code}):\n{text}"
+    if gap := paused(d):
+        return f"host paused: the CPU samples have a gap of {gap:g} s; the run is repeated on the next start"
     with open(os.path.join(d, "sweep-run.json"), "w") as f:
         json.dump({**r, "duration_s": duration, "collected_at": time.time()}, f, indent=1)
     return None
@@ -133,7 +149,7 @@ def run_one(r, d, duration, instance, log):
 
 def run_plan(plan, out, instance=0, dry_run=False, log=print):
     todo = runs(plan)
-    done = [r for r in todo if os.path.isfile(os.path.join(run_dir(out, r), "metrics.json"))]
+    done = [r for r in todo if os.path.isfile(os.path.join(run_dir(out, r), "sweep-run.json"))]
     left = [r for r in todo if r not in done]
     per_run = plan["duration_s"] + 75
     log(f"{len(todo)} run(s), {len(done)} done, {len(left)} to go: about {len(left) * per_run / 3600:.1f} h")
@@ -210,9 +226,12 @@ def spread(values):
 
 
 def analyse(out, plan=None):
-    rows = []
+    rows, skipped = [], []
     for root, _, files in os.walk(out):
         if "sweep-run.json" in files and "overhead.json" in files:
+            if paused(root):
+                skipped.append(os.path.relpath(root, out))
+                continue
             r = row(root)
             if r:
                 rows.append(r)
@@ -224,7 +243,7 @@ def analyse(out, plan=None):
     groups = {}
     for r in rows:
         groups.setdefault(r["group"], []).append(r)
-    result = {"runs": len(rows), "groups": []}
+    result = {"runs": len(rows), "paused": sorted(skipped), "groups": []}
     for name, rs in sorted(groups.items()):
         rf = rate_factor.get(name)
         cells = {}
@@ -283,6 +302,8 @@ def _fmt(sp, scale=1.0, digits=1):
 
 def format_text(result):
     lines = [f"{result['runs']} run(s)"]
+    if result.get("paused"):
+        lines.append(f"left out, the host was paused (CPU sample gap over {PAUSE_S:g} s): " + ", ".join(result["paused"]))
     for g in result["groups"]:
         lines += ["", f"group {g['group']}" + (f" (change rate set by '{g['rate_factor']}')" if g["rate_factor"] else "")]
         lines.append(f"  {'cell':<28} {'runs':>4} {'ch/min':>7} {'veh CPU':>9} {'RSU CPU':>9} {'PKI CPU':>8} "

@@ -145,6 +145,29 @@ class Sweep(unittest.TestCase):
         self.assertEqual([c["cell"] for c in g["cells"] if not c["fitted"]], ["interval-10_silence-none"])
         self.assertIn("interval-10_silence-none *", text)
 
+    def test_paused_runs_left_out(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = self.plan(d)
+            for r in sweep.runs(plan):
+                out = sweep.run_dir(d, r)
+                os.makedirs(out)
+                gap = 4829.0 if (r["cell"], r["seed"]) == ("baseline", 2) else 0.1
+                with open(os.path.join(out, "overhead.json"), "w") as f:
+                    json.dump({"duration_s": 600.0, "summary": {"vehicles": 4, "changes": 0},
+                               "cpu": {"settings": {"gap_s_max": gap}, "stations": []}}, f)
+                with open(os.path.join(out, "sweep-run.json"), "w") as f:
+                    json.dump(r, f)
+            result, text = sweep.write_analysis(d, plan)
+            self.assertEqual(sweep.paused(os.path.join(d, "periodic", "baseline", "seed-2")), 4829.0)
+        self.assertEqual((result["runs"], result["paused"]), (9, ["periodic/baseline/seed-2"]))
+        self.assertIn("left out, the host was paused", text)
+
+    def test_cpu_gap(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "collector-logs.tar")
+            cpu_tar(path, {"car1": 50.0})
+            self.assertAlmostEqual(cpu.analyse(cpu.read(path), {"car1": "vehicle"})["settings"]["gap_s_max"], 0.1, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
