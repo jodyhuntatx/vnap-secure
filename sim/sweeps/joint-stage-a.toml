@@ -1,0 +1,35 @@
+# Stage A of the joint experiment (PRD 10.9.5, screening): all 15 policies (5 change triggers x 3 silent
+# periods) and the baseline at 4 vehicles with spread speeds, 12 seeds each (the count the pilot set,
+# 10.9.9), 5 minutes per run: 192 runs.
+#   ../vnapctl sweep <dir> --plan sweeps/joint-stage-a.toml   (about 18 h; resumes where it stopped)
+#   ../vnapctl frontier <dir>                                  (frontier.txt: intervals, frontier, sensitivity)
+description = "joint experiment stage A: 15 policies and the baseline at 4 vehicles, spread speeds"
+duration_s = 300
+seeds = [301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312]
+# held fixed (10.9.2): vnap:r2-p21, random turns, refill from the run's PKI, the warning probe; spread speeds
+set = ["image=vnap:r2-p21",
+       "probe.interval_s=10.0",
+       "stations.obu1.mobility.speed_kmh=30", "stations.obu2.mobility.speed_kmh=37",
+       "stations.obu3.mobility.speed_kmh=43", "stations.obu4.mobility.speed_kmh=50",
+       'check.expect=["eavesdropper.decode_errors==0"]']
+
+[[group]]
+# the condition: 4 vehicles, spread speeds (the pilot's, so its runs compare)
+name = "v4-spread"
+scenario = "crossing"
+baseline = ["control.mix_zones=[]"]
+
+[group.factors.trigger]
+"periodic-30" = ["control.mix_zones=[]", 'control.client.mode="periodic"', "control.client.interval=30"]
+"periodic-10" = ["control.mix_zones=[]", 'control.client.mode="periodic"', "control.client.interval=10"]
+"mixzone-min1" = ["control.mix_zones.crossing.min_vehicles=1"]
+"mixzone-min2" = ["control.mix_zones.crossing.min_vehicles=2"]
+# the dynamic mix zone at the schema's defaults: a change when 2 vehicles (itself included) are within
+# 50 m, at most every 30 s per vehicle
+"dynamic" = ["control.mix_zones=[]", "control.dynamic_mix_zone.min_vehicles=2",
+             "control.dynamic_mix_zone.radius_m=50", "control.dynamic_mix_zone.cooldown_s=30"]
+
+[group.factors.silence]
+none = ["defaults.pseudonyms.silent_min_ms=0", "defaults.pseudonyms.silent_max_ms=0"]
+"3-13" = ["defaults.pseudonyms.silent_min_ms=3000", "defaults.pseudonyms.silent_max_ms=13000"]
+"6-12" = ["defaults.pseudonyms.silent_min_ms=6000", "defaults.pseudonyms.silent_max_ms=12000"]
