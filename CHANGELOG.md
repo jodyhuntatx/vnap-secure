@@ -24,6 +24,15 @@ Results measured with images up to `r2-p16` carry the CAM timing caveat describe
 `r2-p20` sent a CAM every second whatever the vehicle did, with the full certificate on every
 CAM; use `CAM_GENERATION=fixed` on a newer image to reproduce their results.
 
+## 2026-11-27: stage A of the joint experiment; the frontier explained (PRD draft 0.5)
+
+- **Stage A plan:** `sim/sweeps/joint-stage-a.toml`, the 15 policies (5 change triggers × 3
+  silent periods) and the baseline at 4 vehicles with spread speeds, 12 seeds, 192 runs. The
+  dynamic mix zone uses the schema's defaults (2 vehicles within 50 m, at most every 30 s).
+- **PRD 10.9.6:** what the frontier means (the Pareto frontier: dominance, the trade-off, and
+  that it does not pick a single best policy), and the dominance rule as `vnapctl frontier`
+  applies it (no worse on both means, better on one beyond its paired 95 % interval).
+
 ## 2026-11-26: conflict exposure share as the primary safety measure (PRD draft 0.4)
 
 - **Decision:** the joint experiment's primary safety measure is the conflict exposure share

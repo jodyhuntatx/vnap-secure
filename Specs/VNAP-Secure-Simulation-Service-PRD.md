@@ -4,10 +4,10 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 
 | Item | Value |
 |---|---|
-| Document | Product requirements document (PRD), draft 0.4 |
-| Date | 2026-11-26 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24; draft 0.3: 2026-11-25) |
+| Document | Product requirements document (PRD), draft 0.5 |
+| Date | 2026-11-27 (draft 0.1: 2026-10-07; draft 0.2: 2026-11-24; draft 0.3: 2026-11-25; draft 0.4: 2026-11-26) |
 | Owner | Joseph Hunt |
-| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 6 are delivered; draft 0.4 makes the conflict exposure share the primary safety measure of the joint experiment (10.9.3) |
+| Status | Phases 1 to 9 delivered, except the MCP endpoint of phase 9 (see [8. Delivery plan](#8-delivery-plan)). Draft 0.2 adds the station requirements of section 5.10 (STA-1 to STA-4); draft 0.3 merges the overhead measurement design (5.11, section 10), whose phases 1 to 6 are delivered; draft 0.4 makes the conflict exposure share the primary safety measure of the joint experiment (10.9.3); draft 0.5 explains its frontier (10.9.6) |
 | Repositories | vnap-secure (harness, vnapctl, service, docs), vanetza-nap patch set in `patches/vanetza-nap/` (socktap patches), C-ITS-PKI (certificate tooling) |
 | Source | `Specs/VNAP-Secure-Simulation-Service-PRD.md`; the PDF is generated from it (`make docs-pdf`) |
 
@@ -19,6 +19,7 @@ Product requirements: multi-user web service and per-run PKI with butterfly cert
 | 0.2 | 2026-11-24 | source moved to Markdown in the repository; state of delivery (2.3, 8); station requirements STA-1 to STA-4 (5.10): CAM generation by EN 302 637-2, current stationId in every message after an ID change, security operation counters, full certificate in the first CAM after a silent period; risk "CAM generation rate" (9) |
 | 0.3 | 2026-11-25 | the overhead measurement design (`VNAP-Secure-Pseudonym-Change-Overhead-Design.docx`, design draft 0.3) merged as section 10, brought up to date with phases 1, 2 and 4 and with CAM generation by EN 302 637-2; requirements OVH-1 to OVH-6 (5.11); overhead phases in the delivery plan (8) |
 | 0.4 | 2026-11-26 | after the pilot (10.9.9): the primary safety measure of the joint experiment is the conflict exposure share instead of the stale share, with both measures defined (10.9.3); seeds, sensitivity, charts and H4 follow; the open question on it is closed (10.14) |
+| 0.5 | 2026-11-27 | what the frontier of the joint experiment means: the Pareto frontier, dominance, and what it does not decide (10.9.6); the dominance rule stated as implemented |
 
 ## 1. Summary
 
@@ -825,11 +826,30 @@ which ignores how many vehicles were actually silent at the moment.
 
 #### 10.9.6 Analysis
 
+**The frontier.** The term is short for the *Pareto frontier* of economics and optimisation
+(after Vilfredo Pareto), also called the efficient frontier or the trade-off curve. Privacy and
+safety pull against each other here: more silence makes vehicles harder to track but leaves the
+others with stale information. Each policy is one compromise between the two, and lower is
+better on both primary measures. A policy is *dominated* when another is no worse on both and
+better on at least one: there is then no reason to choose it. The policies that are not
+dominated, where one side can only be improved by giving something up on the other, form the
+frontier. On the chart of 10.9.7 (conflict exposure share across, tracking success up) they are
+the edge of the cloud of points nearest the ideal corner at the bottom left: the boundary of
+what the tested policies achieve. Moving along it trades one goal for the other; a policy
+behind it wastes something for nothing. The same idea is the production possibility frontier of
+economics and the efficient frontier of investment portfolios (risk against return).
+
+The frontier removes the poor choices but does not pick among the good ones. Choosing a point on
+it means weighing privacy against exposure, a value judgement, so the result reports the
+frontier and not a single best policy. Two rules differ from the textbook form: a difference
+counts only when it exceeds its confidence interval over seeds, so noise does not move a policy
+off the frontier, and a policy that breaks the hard limit is left out whatever its numbers.
+
 - **Unit:** the run. Links within a run are not independent, so confidence intervals come from
   resampling runs (bootstrap over seeds), not links.
-- **Frontier:** a policy is dominated if another policy is better on both primary measures and
-  the difference on at least one exceeds its confidence interval. The frontier is reported per
-  condition.
+- **Frontier:** a policy is dominated if another policy is no worse on both primary measures
+  (by their means) and better on at least one beyond chance: the 95 % bootstrap interval of the
+  difference, paired by seed, lies above 0. The frontier is reported per condition.
 - **Hard limit first:** a policy that loses warnings beyond its silent time is reported, but
   excluded from the frontier.
 - **Sensitivity:** the frontier is recomputed with the conflict exposure share at a TTC
